@@ -3,6 +3,7 @@
     "name": "paycore-payroll",
     "slug": "paycore-payroll",
     "version": "1.0.0",
+    "scheme": "paycore",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -21,10 +22,16 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.femi.payroll"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "e322810c-4279-4793-81f4-2a48e9114765"
+      }
     }
   }
 }
