@@ -1,29 +1,58 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
+  darkMode: "class", // 👈 add this line
   content: [
     "./App.{js,jsx,ts,tsx}",
     "./app/**/*.{js,jsx,ts,tsx}",
     "./src/**/*.{js,jsx,ts,tsx}",
+    "./components/**/*.{js,jsx,ts,tsx}",
   ],
   presets: [require("nativewind/preset")],
   theme: {
     extend: {
       colors: {
         brand: {
-          canvas: "#a0c5f6",      // Your fixed sand/peach background
-          card: "#FFFFFF",        // Crisp White Card surface
-          cardTint: "#FFF4E8",    // Soft Warm Surface
-          hero: "#20150F",        // Deep Espresso (High contrast hero banner)
-          dark: "#0F172A",        // High contrast primary title text
-          muted: "#5C4D41",       // Legible secondary/subtitle text
-          border: "#E5B583",      // Warm boundary stroke
+          // Foundation & Canvas
+          canvas: "#F6F5FC",        // Soft Lavender background
+          primary: "#5B4FD1",       // Core PayCore Royal Purple
+          primaryDark: "#4335A0",   // Deep Indigo for active/hover states
+          primaryLight: "#8478F5",  // Bright Purple for gradients and badges
+          hero: "#150F38",          // Midnight Purple (Hero cards & FAB)
           
-          // Semantic Indicators & Buttons
-          primary: "#0D9488",     // Emerald Teal
-          primaryDark: "#0F766E", // Deep Teal Hover/Active
-          warning: "#D97706",     // Amber Notice
-          danger: "#DC2626",      // Crimson Alert
+          // Surfaces & Borders
+          card: "#FFFFFF",          // Elevated White Card surface
+          cardTint: "#EEECFA",      // Soft Purple Surface tint
+          border: "#E7E4F5",        // Clean Slate-Purple Boundary stroke
+          
+          // Typography
+          dark: "#1F1B3D",          // Deep Ink Primary title text
+          muted: "#7A76A6",         // Balanced Secondary text
+          low: "#A6A2CE",           // Subdued/Placeholder text
+          
+          // Status Chips & Semantics
+          success: "#1FAE5C",       // Present / Approved text
+          successBg: "#E7FAEE",     // Present / Approved pill background
+          warning: "#D08A0C",       // Leave / Pending text
+          warningBg: "#FEF2D9",     // Leave / Pending pill background
+          danger: "#E4453C",        // Off Day / Rejected text
+          dangerBg: "#FDE9E8",      // Off Day / Rejected pill background
+          
+          // Accent Actions
+          accentBlue: "#2563EB",    // Timesheet / Blue Card gradient
+          accentSky: "#3B82F6",     // Payrolls / Sky Card gradient
         },
+      },
+      borderRadius: {
+        "2xl": "16px",
+        "3xl": "24px",
+        "4xl": "32px",
+      },
+      // === ADD YOUR CUSTOM FONTS HERE ===
+      fontFamily: {
+        sans: ["Inter-Regular", "sans-serif"], // Makes Inter the default sans font
+        medium: ["Inter-Medium", "sans-serif"],
+        bold: ["Inter-Bold", "sans-serif"],
+        black: ["Inter-Black", "sans-serif"],
       },
     },
   },

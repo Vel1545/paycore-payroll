@@ -1,166 +1,233 @@
-import React from "react";
-import { View, Text, TouchableOpacity, Image, ScrollView } from "react-native";
+import React, { useState } from "react";
 import { 
-  ArrowLeft, Mail, Calendar, Briefcase, 
-  ShieldCheck, Phone, MapPin, Building, Award 
+  View, 
+  Text, 
+  TouchableOpacity, 
+  Image, 
+  ScrollView, 
+  Platform, 
+  Alert,
+  Modal
+} from "react-native";
+import { 
+  User, 
+  Landmark, 
+  FileText, 
+  Bell, 
+  Lock, 
+  HelpCircle, 
+  LogOut, 
+  ChevronRight, 
+  X,
+  ShieldCheck,
+  Building,
+  Mail,
+  Phone
 } from "lucide-react-native";
-import ScreenContainer from "../components/ScreenContainer";
+import { clearActiveSessionOnly } from "../utils/authStorage";
 
 interface ProfileScreenProps {
   navigation: {
-    goBack: () => void;
+    goBack?: () => void;
     navigate: (screen: string) => void;
+    replace?: (screen: string) => void;
+    reset?: (config: any) => void;
   };
+  onLogout?: () => void;
 }
 
-export default function ProfileScreen({ navigation }: ProfileScreenProps) {
-  // Employee Profile Details
+export default function ProfileScreen({ navigation, onLogout }: ProfileScreenProps) {
+  const [activeModal, setActiveModal] = useState<string | null>(null);
+
   const userProfile = {
-    name: "Marcus Vance Sterling",
+    name: "Marcus Smith",
+    role: "HR Manager",
     empId: "EMP-1042",
-    designation: "Principal Software Lead",
-    department: "Core Platform & Infrastructure",
-    officialEmail: "marcus.sterling@paycore.io",
+    email: "marcus.smith@paycore.io",
     phone: "+91 98450 12345",
-    dob: "14 Aug 1994",
-    doj: "15 Mar 2024",
-    workLocation: "Bangalore HQ • Tech Park",
-    employmentType: "Full-Time Regular",
-    reportingManager: "Sarah Jenkins (Director of Eng)",
-    bloodGroup: "O +ve",
+    department: "Human Resources",
+    avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=400&auto=format&fit=crop"
+  };
+
+  const menuItems = [
+    { id: "personal", title: "Personal Information", icon: User },
+    { id: "bank", title: "Bank Details", icon: Landmark },
+    { id: "tax", title: "Tax Information", icon: FileText },
+    { id: "notifications", title: "Notification Settings", icon: Bell },
+    { id: "password", title: "Change Password", icon: Lock },
+    { id: "help", title: "Help & Support", icon: HelpCircle },
+  ];
+
+  const handleLogoutPress = () => {
+    const confirmLogout = async () => {
+      await clearActiveSessionOnly();
+      if (onLogout) {
+        onLogout();
+      } else if (navigation.replace) {
+        navigation.replace("Login");
+      } else if (navigation.reset) {
+        navigation.reset({
+          index: 0,
+          routes: [{ name: "Login" }],
+        });
+      }
+    };
+
+    if (Platform.OS === "web") {
+      if (window.confirm("Are you sure you want to log out?")) {
+        confirmLogout();
+      }
+    } else {
+      Alert.alert("Confirm Logout", "Are you sure you want to log out of your session?", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Logout", style: "destructive", onPress: confirmLogout },
+      ]);
+    }
   };
 
   return (
-    <ScreenContainer>
-      {/* Top Header */}
-      <View className="flex-row items-center justify-between mb-4">
-        <View className="flex-row items-center">
-          <TouchableOpacity 
-            onPress={() => navigation.goBack()}
-            className="w-10 h-10 bg-brand-card border border-brand-border rounded-xl items-center justify-center mr-3 shadow-xs"
-          >
-            <ArrowLeft size={18} color="#0F172A" />
-          </TouchableOpacity>
+    <View className="flex-1 bg-[#5B4FD1]">
+      {/* ========================================================================= */}
+      {/* 1. TOP PURPLE HERO HEADER (Profile Avatar & Title)                         */}
+      {/* ========================================================================= */}
+      <View className="pt-12 pb-8 px-6 max-w-xl mx-auto w-full">
+        <View className="flex-row items-center gap-4">
+          <View className="w-16 h-16 rounded-full border-2 border-white/80 overflow-hidden shadow-sm bg-white">
+            <Image 
+              source={{ uri: userProfile.avatar }} 
+              className="w-full h-full"
+              resizeMode="cover"
+            />
+          </View>
+
           <View>
-            <Text className="text-2xl font-black text-brand-dark tracking-tight">My Hub • Profile</Text>
-            <Text className="text-xs font-bold text-brand-muted">Employee Identity & Official Records</Text>
-          </View>
-        </View>
-
-        <View className="bg-emerald-100 border border-emerald-300 px-3 py-1 rounded-xl flex-row items-center">
-          <ShieldCheck size={14} color="#065F46" />
-          <Text className="text-[10px] font-black text-emerald-900 ml-1">VERIFIED</Text>
-        </View>
-      </View>
-
-      {/* Main Avatar & Hero Card */}
-      <View className="bg-brand-hero border border-brand-hero rounded-3xl p-6 mb-5 shadow-sm items-center">
-        <View className="relative mb-3">
-          <Image 
-            source={{ uri: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=400&auto=format&fit=crop" }}
-            className="w-24 h-24 rounded-full border-4 border-brand-border"
-          />
-          <View className="absolute bottom-0 right-0 bg-brand-primary p-1.5 rounded-full border-2 border-brand-hero">
-            <Award size={14} color="#FFFFFF" />
-          </View>
-        </View>
-
-        <Text className="text-xl font-black text-white">{userProfile.name}</Text>
-        <Text className="text-xs font-bold text-brand-canvas mt-0.5">{userProfile.designation}</Text>
-        
-        <View className="flex-row items-center space-x-2 mt-3">
-          <View className="bg-white/10 px-3 py-1 rounded-full border border-white/15">
-            <Text className="text-[11px] font-black text-white">{userProfile.empId}</Text>
-          </View>
-          <View className="bg-brand-primary/30 px-3 py-1 rounded-full border border-brand-primary/40">
-            <Text className="text-[11px] font-bold text-teal-200">{userProfile.department}</Text>
+            <Text className="text-xl font-black text-white tracking-tight">
+              {userProfile.name}
+            </Text>
+            <Text className="text-xs font-semibold text-purple-200 mt-0.5">
+              {userProfile.role}
+            </Text>
           </View>
         </View>
       </View>
 
-      {/* Primary Details Block */}
-      <Text className="text-xs font-black text-brand-dark uppercase tracking-widest mb-3">
-        Official Details
-      </Text>
-      <View className="bg-brand-card border border-brand-border rounded-3xl p-5 mb-5 shadow-xs divide-y divide-slate-100">
-        {/* Official Email */}
-        <View className="py-3 flex-row items-center justify-between">
-          <View className="flex-row items-center">
-            <View className="w-8 h-8 rounded-xl bg-teal-50 border border-teal-200 items-center justify-center mr-3">
-              <Mail size={16} color="#0D9488" />
-            </View>
-            <View>
-              <Text className="text-[10px] font-bold text-brand-muted uppercase">Official Email</Text>
-              <Text className="text-xs font-black text-brand-dark mt-0.5">{userProfile.officialEmail}</Text>
-            </View>
-          </View>
-        </View>
+      {/* ========================================================================= */}
+      {/* 2. ROUNDED BODY SHEET & ITEM NAVIGATION                                   */}
+      {/* ========================================================================= */}
+      <View className="flex-1 bg-white rounded-t-[36px] shadow-lg overflow-hidden">
+        <ScrollView 
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{
+            paddingTop: 12,
+            paddingBottom: Platform.OS === "web" ? 30 : 110, // Dock clearance
+          }}
+          className="flex-1 max-w-xl mx-auto w-full"
+        >
+          {/* Main Action Rows */}
+          <View className="px-4 divide-y divide-slate-100">
+            {menuItems.map((item) => {
+              const Icon = item.icon;
+              return (
+                <TouchableOpacity
+                  key={item.id}
+                  onPress={() => setActiveModal(item.id)}
+                  activeOpacity={0.7}
+                  className="py-4 px-2 flex-row items-center justify-between"
+                >
+                  <View className="flex-row items-center gap-3.5">
+                    <Icon size={20} color="#7A76A6" />
+                    <Text className="text-sm font-bold text-[#1F1B3D]">
+                      {item.title}
+                    </Text>
+                  </View>
+                  <ChevronRight size={18} color="#A6A2CE" />
+                </TouchableOpacity>
+              );
+            })}
 
-        {/* Date of Joining (DOJ) */}
-        <View className="py-3 flex-row items-center justify-between">
-          <View className="flex-row items-center">
-            <View className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-200 items-center justify-center mr-3">
-              <Briefcase size={16} color="#D97706" />
-            </View>
-            <View>
-              <Text className="text-[10px] font-bold text-brand-muted uppercase">Date of Joining (DOJ)</Text>
-              <Text className="text-xs font-black text-brand-dark mt-0.5">{userProfile.doj}</Text>
-            </View>
+            {/* Logout Row */}
+            <TouchableOpacity
+              onPress={handleLogoutPress}
+              activeOpacity={0.7}
+              className="py-4 px-2 flex-row items-center justify-between"
+            >
+              <View className="flex-row items-center gap-3.5">
+                <LogOut size={20} color="#E4453C" />
+                <Text className="text-sm font-bold text-[#E4453C]">
+                  Logout
+                </Text>
+              </View>
+            </TouchableOpacity>
           </View>
-          <View className="bg-amber-100 px-2.5 py-0.5 rounded-md">
-            <Text className="text-[10px] font-black text-amber-900">2+ Yrs Tenured</Text>
-          </View>
-        </View>
-
-        {/* Date of Birth (DOB) */}
-        <View className="py-3 flex-row items-center justify-between">
-          <View className="flex-row items-center">
-            <View className="w-8 h-8 rounded-xl bg-purple-50 border border-purple-200 items-center justify-center mr-3">
-              <Calendar size={16} color="#7E22CE" />
-            </View>
-            <View>
-              <Text className="text-[10px] font-bold text-brand-muted uppercase">Date of Birth (DOB)</Text>
-              <Text className="text-xs font-black text-brand-dark mt-0.5">{userProfile.dob}</Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Designation & Role */}
-        <View className="py-3 flex-row items-center justify-between">
-          <View className="flex-row items-center">
-            <View className="w-8 h-8 rounded-xl bg-sky-50 border border-sky-200 items-center justify-center mr-3">
-              <Building size={16} color="#0284C7" />
-            </View>
-            <View>
-              <Text className="text-[10px] font-bold text-brand-muted uppercase">Designation</Text>
-              <Text className="text-xs font-black text-brand-dark mt-0.5">{userProfile.designation}</Text>
-            </View>
-          </View>
-        </View>
+        </ScrollView>
       </View>
 
-      {/* Secondary Information Block */}
-      <Text className="text-xs font-black text-brand-dark uppercase tracking-widest mb-3">
-        Organization & Contact
-      </Text>
-      <View className="bg-brand-card border border-brand-border rounded-3xl p-5 mb-8 shadow-xs divide-y divide-slate-100">
-        <View className="py-2.5 flex-row justify-between items-center">
-          <Text className="text-xs font-bold text-brand-muted">Employment Type</Text>
-          <Text className="text-xs font-black text-brand-dark">{userProfile.employmentType}</Text>
+      {/* ========================================================================= */}
+      {/* 3. INFORMATION MODAL (Sheet Preview for Tap Actions)                       */}
+      {/* ========================================================================= */}
+      <Modal visible={!!activeModal} transparent animationType="fade">
+        <View className="flex-1 bg-black/50 justify-center items-center p-4">
+          <View className="w-full max-w-md bg-white rounded-3xl p-5 border border-[#E7E4F5] shadow-2xl">
+            <View className="flex-row items-center justify-between pb-3 border-b border-slate-100 mb-3">
+              <Text className="text-sm font-black text-[#1F1B3D] uppercase tracking-wider">
+                {activeModal === "personal" && "Personal Information"}
+                {activeModal === "bank" && "Verified Bank Account"}
+                {activeModal === "tax" && "Tax & Statutory Info"}
+                {activeModal === "notifications" && "Notification Preferences"}
+                {activeModal === "password" && "Security & Password"}
+                {activeModal === "help" && "Help & Support"}
+              </Text>
+              <TouchableOpacity onPress={() => setActiveModal(null)}>
+                <X size={18} color="#7A76A6" />
+              </TouchableOpacity>
+            </View>
+
+            {activeModal === "personal" && (
+              <View className="space-y-2.5">
+                <View className="flex-row justify-between py-1.5 border-b border-slate-50">
+                  <Text className="text-xs font-bold text-[#7A76A6]">Employee ID</Text>
+                  <Text className="text-xs font-black text-[#1F1B3D]">{userProfile.empId}</Text>
+                </View>
+                <View className="flex-row justify-between py-1.5 border-b border-slate-50">
+                  <Text className="text-xs font-bold text-[#7A76A6]">Department</Text>
+                  <Text className="text-xs font-black text-[#1F1B3D]">{userProfile.department}</Text>
+                </View>
+                <View className="flex-row justify-between py-1.5 border-b border-slate-50">
+                  <Text className="text-xs font-bold text-[#7A76A6]">Official Email</Text>
+                  <Text className="text-xs font-black text-[#1F1B3D]">{userProfile.email}</Text>
+                </View>
+                <View className="flex-row justify-between py-1.5">
+                  <Text className="text-xs font-bold text-[#7A76A6]">Phone</Text>
+                  <Text className="text-xs font-black text-[#1F1B3D]">{userProfile.phone}</Text>
+                </View>
+              </View>
+            )}
+
+            {activeModal === "bank" && (
+              <View className="space-y-2 py-2">
+                <Text className="text-xs font-bold text-[#7A76A6]">Salary Credit Account</Text>
+                <Text className="text-sm font-black text-[#1F1B3D]">HDFC Bank •••• 8842</Text>
+                <Text className="text-[11px] text-emerald-600 font-bold">✓ Active Direct Deposit</Text>
+              </View>
+            )}
+
+            {activeModal !== "personal" && activeModal !== "bank" && (
+              <View className="py-4 items-center">
+                <Text className="text-xs font-medium text-[#7A76A6]">
+                  Record details are synced with corporate enterprise servers.
+                </Text>
+              </View>
+            )}
+
+            <TouchableOpacity 
+              onPress={() => setActiveModal(null)}
+              className="mt-4 bg-[#5B4FD1] py-3 rounded-xl items-center"
+            >
+              <Text className="text-white text-xs font-black">Close</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-        <View className="py-2.5 flex-row justify-between items-center">
-          <Text className="text-xs font-bold text-brand-muted">Reporting Manager</Text>
-          <Text className="text-xs font-black text-brand-dark">{userProfile.reportingManager}</Text>
-        </View>
-        <View className="py-2.5 flex-row justify-between items-center">
-          <Text className="text-xs font-bold text-brand-muted">Work Base Location</Text>
-          <Text className="text-xs font-black text-brand-dark">{userProfile.workLocation}</Text>
-        </View>
-        <View className="py-2.5 flex-row justify-between items-center">
-          <Text className="text-xs font-bold text-brand-muted">Blood Group</Text>
-          <Text className="text-xs font-black text-rose-600">{userProfile.bloodGroup}</Text>
-        </View>
-      </View>
-    </ScreenContainer>
+      </Modal>
+    </View>
   );
 }

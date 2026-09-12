@@ -8,11 +8,12 @@ import {
   Platform, 
   Alert,
   Modal,
-  KeyboardAvoidingView
+  KeyboardAvoidingView,
+  useWindowDimensions
 } from "react-native";
 import * as Linking from "expo-linking";
 import { 
-  ArrowLeft, 
+  ChevronLeft, 
   Send, 
   Paperclip, 
   Megaphone, 
@@ -28,7 +29,8 @@ import {
   X,
   User,
   Hash,
-  Download
+  Download,
+  Sparkles
 } from "lucide-react-native";
 import * as DocumentPicker from "expo-document-picker";
 import ScreenContainer from "../components/ScreenContainer";
@@ -37,6 +39,7 @@ interface ChatScreenProps {
   navigation: {
     goBack: () => void;
     navigate: (screen: string) => void;
+    canGoBack?: () => boolean;
   };
   userSession?: {
     empId: string;
@@ -89,12 +92,15 @@ interface Channel {
 
 const LOCAL_IP = "192.168.31.133";
 const API_BASE_URL = Platform.OS === "web"
-  ? "http://localhost:8080/api/workspace"
+  ? "http://192.168.31.133:8080/api/workspace"
   : `http://${LOCAL_IP}:8080/api/workspace`;
 
 const MAX_FILE_SIZE_MB = 10;
 
 export default function ChatScreen({ navigation, userSession }: ChatScreenProps) {
+  const { width } = useWindowDimensions();
+  const isDesktop = width >= 1024;
+
   const isAdmin = userSession?.isAdmin ?? false;
   const currentEmpId = userSession?.empId || "EMP-1042";
 
@@ -138,12 +144,12 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
     },
   ]);
 
-  // Company Colleague Directory (Direct Message Inbox)
+  // Colleague Directory
   const [allTeamMembers] = useState<TeamMember[]>([
-    { id: "EMP-2031", name: "Sarah Jenkins", role: "QA Engineer", status: "online", lastMessage: "Ready for review", unreadCount: 1 },
-    { id: "EMP-4092", name: "David Miller", role: "Product Manager", status: "online", lastMessage: "Please check the sprint doc" },
-    { id: "EMP-3081", name: "Elena Rostova", role: "Backend Architect", status: "offline", lastMessage: "API endpoint deployed" },
-    { id: "EMP-5012", name: "Alex Chen", role: "DevOps Engineer", status: "online", lastMessage: "Build pipeline passed" },
+    { id: "EMP-2031", name: "Sarah Jenkins", role: "QA Lead", status: "online", lastMessage: "Ready for review", unreadCount: 1 },
+    { id: "EMP-4092", name: "David Miller", role: "Product Manager", status: "online", lastMessage: "Please check sprint doc" },
+    { id: "EMP-3081", name: "Elena Rostova", role: "Backend Lead", status: "offline", lastMessage: "API deployed" },
+    { id: "EMP-5012", name: "Alex Chen", role: "DevOps Lead", status: "online", lastMessage: "Pipeline passed" },
   ]);
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -278,16 +284,13 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
     }
   };
 
-  // Handle Switch to Direct Message with Colleague
   const handleSelectDirectUser = (member: TeamMember) => {
     setChatType("direct");
     setActiveDirectUser(member);
-    // Unique deterministic 1-on-1 DM ID
     const dmRoomId = [currentEmpId, member.id].sort().join("_");
     setActiveConversation(dmRoomId);
   };
 
-  // Handle Switch to Group Channel
   const handleSelectChannel = (channelId: string) => {
     setChatType("groups");
     setActiveDirectUser(null);
@@ -299,7 +302,6 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
     currentChannelObj?.allowedMemberIds?.includes(m.id) || m.id === currentEmpId
   );
 
-  // Pick Document
   const handlePickDeviceDocument = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -330,7 +332,6 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
     }
   };
 
-  // Send Message
   const handleSendMessage = async () => {
     if (!inputText.trim() && !pendingAttachment) return;
 
@@ -527,108 +528,133 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
   };
 
   return (
-    <ScreenContainer scrollable={false}>
-      <View className="flex-1 min-h-0 w-full flex-col justify-between">
+    <ScreenContainer scrollable={false} fullWidth={true}>
+      {/* Outer Flex Container: Holds bottom space so bottom navigation bar does not cover composer */}
+      <View 
+        style={{ 
+          paddingBottom: Platform.OS === "web" ? 40 : 30
+        }} 
+        className="flex-1 min-h-0 w-full flex-col justify-between"
+      >
         
-        {/* Top Header */}
-        <View className="flex-row items-center justify-between mb-2.5 shrink-0">
-          <View className="flex-row items-center">
+        {/* ========================================================================= */}
+        {/* 1. TOP PURPLE BANNER HEADER                                               */}
+        {/* ========================================================================= */}
+        <View className="bg-[#5B4FD1] rounded-3xl p-4 mb-3 shadow-xs flex-row items-center justify-between shrink-0">
+          <View className="flex-row items-center gap-2.5">
             <TouchableOpacity 
-              onPress={() => navigation.goBack()}
-              className="w-9 h-9 bg-brand-card border border-brand-border rounded-xl items-center justify-center mr-2.5 shadow-xs"
+              onPress={() => (navigation.canGoBack?.() ? navigation.goBack() : navigation.navigate("Home"))}
+              className="w-9 h-9 bg-white/20 rounded-2xl items-center justify-center active:opacity-80"
             >
-              <ArrowLeft size={16} color="#0F172A" />
+              <ChevronLeft size={20} color="#FFFFFF" />
             </TouchableOpacity>
             <View>
-              <Text className="text-xl font-black text-brand-dark tracking-tight">Workplace Chat</Text>
-              <Text className="text-[11px] font-bold text-brand-muted">Internal Corporate Messaging</Text>
+              <Text className="text-base md:text-lg font-black text-white tracking-tight">
+                Workplace Chat
+              </Text>
+              <Text className="text-[10px] font-bold text-white/80">
+                PAYCORE • Workspace Real-Time Comms
+              </Text>
             </View>
           </View>
 
-          <View className="flex-row items-center space-x-2">
+          <View className="flex-row items-center gap-2">
             {isAdmin && activeTab === "announcements" && (
               <TouchableOpacity
                 onPress={() => setShowNewAnnouncementModal(true)}
-                className="bg-brand-hero px-3 py-1.5 rounded-xl flex-row items-center shadow-xs"
+                className="bg-white px-3 py-1.5 rounded-full flex-row items-center shadow-xs active:opacity-90"
               >
-                <PlusCircle size={13} color="#FFFFFF" />
-                <Text className="text-white text-xs font-bold ml-1">Post Notice</Text>
+                <PlusCircle size={13} color="#5B4FD1" />
+                <Text className="text-[#5B4FD1] text-xs font-black ml-1">Post Notice</Text>
               </TouchableOpacity>
             )}
+            <View className="bg-white/15 border border-white/25 px-2.5 py-1 rounded-full">
+              <Text className="text-[10px] font-black text-white uppercase">{currentEmpId}</Text>
+            </View>
           </View>
         </View>
 
-        {/* Mode Switch (Chats vs Announcements) */}
-        <View className="flex-row bg-brand-hero/10 p-1 rounded-2xl mb-2.5 border border-brand-border shrink-0">
+        {/* ========================================================================= */}
+        {/* 2. MODE SWITCH: CHATS vs ANNOUNCEMENTS                                    */}
+        {/* ========================================================================= */}
+        <View className="flex-row bg-white p-1 rounded-2xl mb-3 border border-[#E7E4F5] shadow-xs shrink-0">
           <TouchableOpacity
             onPress={() => setActiveTab("channels")}
-            className={`flex-1 py-2 rounded-xl items-center flex-row justify-center ${
-              activeTab === "channels" ? "bg-brand-hero shadow-xs" : ""
+            className={`flex-1 py-2 rounded-xl items-center flex-row justify-center transition-all ${
+              activeTab === "channels" ? "bg-[#5B4FD1] shadow-xs" : ""
             }`}
           >
-            <MessageSquare size={13} color={activeTab === "channels" ? "#FFFFFF" : "#0F172A"} />
-            <Text className={`text-xs font-black ml-1.5 ${activeTab === "channels" ? "text-white" : "text-brand-dark"}`}>
+            <MessageSquare size={13} color={activeTab === "channels" ? "#FFFFFF" : "#7A76A6"} />
+            <Text className={`text-xs font-black ml-1.5 ${activeTab === "channels" ? "text-white" : "text-[#7A76A6]"}`}>
               Chats & Groups
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             onPress={() => setActiveTab("announcements")}
-            className={`flex-1 py-2 rounded-xl items-center flex-row justify-center ${
-              activeTab === "announcements" ? "bg-brand-hero shadow-xs" : ""
+            className={`flex-1 py-2 rounded-xl items-center flex-row justify-center transition-all ${
+              activeTab === "announcements" ? "bg-[#5B4FD1] shadow-xs" : ""
             }`}
           >
-            <Megaphone size={13} color={activeTab === "announcements" ? "#FFFFFF" : "#0F172A"} />
-            <Text className={`text-xs font-black ml-1.5 ${activeTab === "announcements" ? "text-white" : "text-brand-dark"}`}>
+            <Megaphone size={13} color={activeTab === "announcements" ? "#FFFFFF" : "#7A76A6"} />
+            <Text className={`text-xs font-black ml-1.5 ${activeTab === "announcements" ? "text-white" : "text-[#7A76A6]"}`}>
               Broadcasts ({announcements.length})
             </Text>
           </TouchableOpacity>
         </View>
 
-        {/* CHAT TAB (WhatsApp Inbox + Chat Room) */}
+        {/* ========================================================================= */}
+        {/* TAB 1: CHAT & DIRECT INBOX                                                */}
+        {/* ========================================================================= */}
         {activeTab === "channels" && (
           <KeyboardAvoidingView 
             behavior={Platform.OS === "ios" ? "padding" : undefined}
             className="flex-1 min-h-0 flex-col"
           >
-            {/* 1. TOP INBOX BAR: Direct Colleague Messages (WhatsApp Story/Inbox Style) */}
+            {/* Direct Colleague Horizontal Carousel */}
             <View className="mb-2 shrink-0">
-              <View className="flex-row items-center justify-between mb-1.5 px-0.5">
-                <Text className="text-[10px] font-black text-brand-dark uppercase tracking-wider">
-                  Direct Messages (Inbox)
+              <View className="flex-row items-center justify-between mb-1.5 px-1">
+                <Text className="text-[10px] font-black text-[#1F1B3D] uppercase tracking-wider">
+                  Direct Messages
                 </Text>
-                <Text className="text-[9px] font-bold text-brand-muted">Tap coworker to chat 1-on-1</Text>
+                <Text className="text-[9px] font-bold text-[#7A76A6]">Tap colleague to message</Text>
               </View>
               
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row space-x-2">
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row space-x-2 gap-2">
                 {allTeamMembers.map((member) => {
                   const isSelected = chatType === "direct" && activeDirectUser?.id === member.id;
                   return (
                     <TouchableOpacity
                       key={member.id}
                       onPress={() => handleSelectDirectUser(member)}
-                      className={`flex-row items-center px-2.5 py-1.5 rounded-xl border ${
+                      className={`flex-row items-center px-3 py-1.5 rounded-2xl border transition-all ${
                         isSelected 
-                          ? "bg-[#005C4B] border-[#005C4B]" 
-                          : "bg-brand-card border-brand-border"
+                          ? "bg-[#5B4FD1] border-[#5B4FD1] shadow-xs" 
+                          : "bg-white border-[#E7E4F5]"
                       }`}
                     >
                       <View className="relative mr-2">
-                        <View className="w-6 h-6 rounded-full bg-teal-100 items-center justify-center">
-                          <Text className="text-[10px] font-black text-teal-900">{member.name.charAt(0)}</Text>
+                        <View className={`w-7 h-7 rounded-full items-center justify-center ${isSelected ? "bg-white/20" : "bg-[#EEECFA]"}`}>
+                          <Text className={`text-[10px] font-black ${isSelected ? "text-white" : "text-[#5B4FD1]"}`}>
+                            {member.name.charAt(0)}
+                          </Text>
                         </View>
-                        <View className={`w-2 h-2 rounded-full absolute -bottom-0.5 -right-0.5 border border-white ${
-                          member.status === "online" ? "bg-emerald-500" : "bg-slate-400"
+                        <View className={`w-2.5 h-2.5 rounded-full absolute -bottom-0.5 -right-0.5 border border-white ${
+                          member.status === "online" ? "bg-emerald-500" : "bg-slate-300"
                         }`} />
                       </View>
                       
                       <View>
-                        <Text className={`text-[11px] font-black ${isSelected ? "text-white" : "text-brand-dark"}`}>
+                        <Text className={`text-xs font-black ${isSelected ? "text-white" : "text-[#1F1B3D]"}`}>
                           {member.name.split(" ")[0]}
                         </Text>
+                        <Text className={`text-[9px] font-medium ${isSelected ? "text-purple-200" : "text-[#7A76A6]"}`}>
+                          {member.role}
+                        </Text>
                       </View>
+
                       {member.unreadCount && !isSelected ? (
-                        <View className="ml-1.5 bg-emerald-500 px-1 rounded-full items-center justify-center">
+                        <View className="ml-2 bg-[#5B4FD1] px-1.5 py-0.5 rounded-full items-center justify-center">
                           <Text className="text-[8px] font-black text-white">{member.unreadCount}</Text>
                         </View>
                       ) : null}
@@ -638,23 +664,23 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
               </ScrollView>
             </View>
 
-            {/* 2. GROUP CHANNELS SELECTOR BAR */}
+            {/* Channels List Strip */}
             <View className="flex-row items-center justify-between mb-2 shrink-0">
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row space-x-1.5 flex-1 mr-2">
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row space-x-1.5 gap-1.5 flex-1 mr-2">
                 {channels.map((ch) => {
                   const isSelected = chatType === "groups" && activeConversation === ch.id;
                   return (
                     <TouchableOpacity
                       key={ch.id}
                       onPress={() => handleSelectChannel(ch.id)}
-                      className={`px-3 py-1 rounded-xl border flex-row items-center ${
+                      className={`px-3 py-1.5 rounded-xl border flex-row items-center transition-all ${
                         isSelected 
-                          ? "bg-brand-hero border-brand-hero" 
-                          : "bg-brand-cardTint border-brand-border"
+                          ? "bg-[#5B4FD1] border-[#5B4FD1] shadow-xs" 
+                          : "bg-white border-[#E7E4F5]"
                       }`}
                     >
-                      <Hash size={11} color={isSelected ? "#FFFFFF" : "#5C4D41"} />
-                      <Text className={`text-[11px] font-bold ml-0.5 ${isSelected ? "text-white" : "text-brand-dark"}`}>
+                      <Hash size={12} color={isSelected ? "#FFFFFF" : "#7A76A6"} />
+                      <Text className={`text-xs font-bold ml-1 ${isSelected ? "text-white" : "text-[#1F1B3D]"}`}>
                         {ch.name}
                       </Text>
                     </TouchableOpacity>
@@ -666,35 +692,35 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
                 {isAdmin && currentChannelObj?.isCustom && chatType === "groups" && (
                   <TouchableOpacity
                     onPress={() => handleDeleteChannel(currentChannelObj.id)}
-                    className="w-7 h-7 bg-rose-50 border border-rose-200 rounded-lg items-center justify-center"
+                    className="w-7 h-7 bg-rose-50 border border-rose-200 rounded-xl items-center justify-center mr-1"
                   >
                     <Trash2 size={13} color="#E11D48" />
                   </TouchableOpacity>
                 )}
                 <TouchableOpacity
                   onPress={() => setShowNewChannelModal(true)}
-                  className="w-7 h-7 bg-brand-hero rounded-lg items-center justify-center shadow-xs"
+                  className="w-8 h-8 bg-[#5B4FD1] rounded-xl items-center justify-center shadow-xs active:opacity-90"
                 >
-                  <Plus size={14} color="#FFFFFF" />
+                  <Plus size={15} color="#FFFFFF" />
                 </TouchableOpacity>
               </View>
             </View>
 
-            {/* 3. ACTIVE CONVERSATION BANNER (WhatsApp Header Style) */}
-            <View className="bg-[#005C4B] px-3 py-2 rounded-t-2xl flex-row items-center justify-between shrink-0 shadow-xs">
+            {/* Active Conversation Sub-Header */}
+            <View className="bg-white border-t border-x border-[#E7E4F5] px-4 py-2.5 rounded-t-3xl flex-row items-center justify-between shrink-0 shadow-xs">
               <View className="flex-row items-center">
-                <View className="w-7 h-7 rounded-full bg-white/20 items-center justify-center mr-2">
+                <View className="w-8 h-8 rounded-full bg-[#EEECFA] items-center justify-center mr-2.5">
                   {chatType === "direct" ? (
-                    <User size={14} color="#FFFFFF" />
+                    <User size={15} color="#5B4FD1" />
                   ) : (
-                    <Hash size={14} color="#FFFFFF" />
+                    <Hash size={15} color="#5B4FD1" />
                   )}
                 </View>
                 <View>
-                  <Text className="text-xs font-black text-white">
-                    {chatType === "direct" ? activeDirectUser?.name : `# ${currentChannelObj?.name}`}
+                  <Text className="text-xs font-black text-[#1F1B3D]">
+                    {chatType === "direct" ? activeDirectUser?.name : `#${currentChannelObj?.name}`}
                   </Text>
-                  <Text className="text-[9px] text-teal-200 font-medium">
+                  <Text className="text-[10px] text-[#7A76A6] font-semibold">
                     {chatType === "direct" 
                       ? `${activeDirectUser?.role} • ${activeDirectUser?.status}` 
                       : `${activeChannelMembers.length} team members`}
@@ -705,72 +731,75 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
               {chatType === "groups" && (
                 <TouchableOpacity 
                   onPress={() => setShowMemberList(!showMemberList)}
-                  className="bg-white/10 px-2 py-1 rounded-lg flex-row items-center"
+                  className="bg-[#F6F5FC] border border-[#E7E4F5] px-2.5 py-1 rounded-xl flex-row items-center"
                 >
-                  <Users size={12} color="#FFFFFF" />
-                  <Text className="text-[9px] text-white font-bold ml-1">Members</Text>
+                  <Users size={12} color="#5B4FD1" />
+                  <Text className="text-[10px] text-[#5B4FD1] font-black ml-1">Members</Text>
                 </TouchableOpacity>
               )}
             </View>
 
             {/* Member Dropdown Drawer */}
             {showMemberList && chatType === "groups" && (
-              <View className="bg-brand-card border-x border-b border-brand-border p-2 mb-1 shrink-0">
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row space-x-2">
+              <View className="bg-white border-x border-b border-[#E7E4F5] p-2.5 shrink-0">
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row space-x-2 gap-2">
                   {activeChannelMembers.map((m) => (
                     <TouchableOpacity
                       key={m.id}
                       onPress={() => setInputText((prev) => `${prev}@${m.name} `)}
-                      className="bg-brand-cardTint px-2 py-1 rounded-lg border border-brand-border flex-row items-center"
+                      className="bg-[#EEECFA] px-2.5 py-1 rounded-lg border border-[#5B4FD1]/20 flex-row items-center"
                     >
-                      <Text className="text-[10px] font-bold text-brand-dark">@{m.name}</Text>
+                      <Text className="text-[10px] font-bold text-[#5B4FD1]">@{m.name}</Text>
                     </TouchableOpacity>
                   ))}
                 </ScrollView>
               </View>
             )}
 
-            {/* 4. WHATSAPP CHAT STREAM CONTAINER */}
-            <View className="flex-1 min-h-0 bg-[#EFEAE2] border-x border-b border-brand-border rounded-b-3xl p-3 flex-col justify-between overflow-hidden shadow-xs">
+            {/* Main Chat Stream Container */}
+            <View className="flex-1 min-h-0 bg-[#F6F5FC] border-x border-b border-[#E7E4F5] rounded-b-3xl p-3 flex-col justify-between overflow-hidden shadow-xs">
               
-              {/* Messages Stream */}
+              {/* Message Feed */}
               <ScrollView 
                 ref={scrollViewRef}
-                showsVerticalScrollIndicator={false} 
+                showsVerticalScrollIndicator={true} 
                 className="flex-1 min-h-0"
-                contentContainerStyle={{ paddingBottom: 10, flexGrow: 1 }}
+                contentContainerStyle={{ paddingBottom: 16, flexGrow: 1 }}
                 onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
               >
                 {messages.length === 0 ? (
                   <View className="flex-1 py-14 items-center justify-center">
-                    <MessageSquare size={28} color="#8C7A6B" />
-                    <Text className="text-xs font-bold text-brand-muted mt-2">
-                      No messages yet in this conversation.
+                    <View className="w-12 h-12 rounded-full bg-white border border-[#E7E4F5] items-center justify-center mb-2 shadow-xs">
+                      <MessageSquare size={22} color="#A6A2CE" />
+                    </View>
+                    <Text className="text-xs font-black text-[#1F1B3D]">Start the conversation</Text>
+                    <Text className="text-[11px] font-semibold text-[#7A76A6] mt-0.5">
+                      Messages sent here are encrypted & workspace verified.
                     </Text>
                   </View>
                 ) : (
                   messages.map((m) => (
                     <View 
                       key={m.id} 
-                      className={`flex-row mb-2 ${m.isSelf ? "justify-end" : "justify-start"}`}
+                      className={`flex-row mb-2.5 ${m.isSelf ? "justify-end" : "justify-start"}`}
                     >
                       <View 
-                        className={`rounded-2xl px-3 py-2 max-w-[82%] shadow-xs ${
+                        className={`rounded-2xl px-3.5 py-2.5 max-w-[84%] shadow-xs ${
                           m.isSelf 
-                            ? "bg-[#DCF8C6] rounded-tr-none" 
+                            ? "bg-[#5B4FD1] rounded-tr-none" 
                             : "bg-white rounded-tl-none border border-slate-100"
                         }`}
                       >
-                        {/* Sender Label in Group Chat */}
+                        {/* Sender Label */}
                         {!m.isSelf && chatType === "groups" && (
-                          <Text className="text-[10px] font-black text-teal-800 mb-0.5">
+                          <Text className="text-[10px] font-black text-[#5B4FD1] mb-0.5">
                             {m.senderName}
                           </Text>
                         )}
 
-                        {/* Text Message */}
+                        {/* Text */}
                         {m.text ? (
-                          <Text className="text-xs text-slate-800 font-medium leading-relaxed">
+                          <Text className={`text-xs font-medium leading-relaxed ${m.isSelf ? "text-white" : "text-[#1F1B3D]"}`}>
                             {m.text}
                           </Text>
                         ) : null}
@@ -780,30 +809,32 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
                           <TouchableOpacity
                             activeOpacity={0.85}
                             onPress={() => handleDownloadAttachment(m.attachment?.url)}
-                            className="w-full mt-1.5 pt-1.5 border-t border-black/10 flex-row items-center justify-between bg-black/5 p-2 rounded-xl"
+                            className={`w-full mt-2 pt-2 border-t flex-row items-center justify-between p-2 rounded-xl ${
+                              m.isSelf ? "border-white/20 bg-white/10" : "border-slate-100 bg-slate-50"
+                            }`}
                           >
                             <View className="flex-row items-center flex-1 mr-2 min-w-0">
-                              <FileText size={16} color="#075E54" />
+                              <FileText size={16} color={m.isSelf ? "#FFFFFF" : "#5B4FD1"} />
                               <View className="ml-2 flex-1 justify-center min-w-0">
-                                <Text className="text-[11px] font-black text-slate-800" numberOfLines={1} ellipsizeMode="middle">
+                                <Text className={`text-[11px] font-black ${m.isSelf ? "text-white" : "text-[#1F1B3D]"}`} numberOfLines={1}>
                                   {m.attachment.name}
                                 </Text>
-                                <Text className="text-[8px] font-bold text-slate-500">
+                                <Text className={`text-[9px] font-bold ${m.isSelf ? "text-purple-200" : "text-[#7A76A6]"}`}>
                                   {m.attachment.sizeMb} MB • Tap to open
                                 </Text>
                               </View>
                             </View>
-                            <Download size={13} color="#075E54" />
+                            <Download size={13} color={m.isSelf ? "#FFFFFF" : "#5B4FD1"} />
                           </TouchableOpacity>
                         )}
 
-                        {/* Time & Double Tick */}
-                        <View className="flex-row items-center justify-end mt-1 space-x-1">
-                          <Text className="text-[8px] font-bold text-slate-400">
+                        {/* Timestamp & Double Tick */}
+                        <View className="flex-row items-center justify-end mt-1 space-x-1 gap-1">
+                          <Text className={`text-[8.5px] font-bold ${m.isSelf ? "text-white/70" : "text-slate-400"}`}>
                             {m.timestamp}
                           </Text>
                           {m.isSelf && (
-                            <CheckCheck size={11} color="#34B7F1" />
+                            <CheckCheck size={12} color="#A5B4FC" />
                           )}
                         </View>
                       </View>
@@ -812,9 +843,9 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
                 )}
               </ScrollView>
 
-              {/* Mention Autocomplete List */}
+              {/* Mention Suggestion List */}
               {showMentionSuggestions && (
-                <View className="bg-white border border-slate-200 rounded-xl p-2 mb-2 shadow-lg max-h-28 shrink-0">
+                <View className="bg-white border border-[#E7E4F5] rounded-2xl p-2 mb-2 shadow-lg max-h-28 shrink-0">
                   <ScrollView keyboardShouldPersistTaps="handled">
                     {activeChannelMembers
                       .filter((m) => m.name.toLowerCase().includes(mentionQuery))
@@ -822,56 +853,56 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
                         <TouchableOpacity
                           key={member.id}
                           onPress={() => handleSelectMention(member)}
-                          className="flex-row items-center justify-between p-1.5 rounded-lg hover:bg-slate-50"
+                          className="flex-row items-center justify-between p-2 rounded-xl hover:bg-slate-50"
                         >
-                          <Text className="text-xs font-bold text-slate-800">@{member.name}</Text>
-                          <Text className="text-[9px] text-slate-400">{member.role}</Text>
+                          <Text className="text-xs font-bold text-[#1F1B3D]">@{member.name}</Text>
+                          <Text className="text-[9px] font-medium text-[#7A76A6]">{member.role}</Text>
                         </TouchableOpacity>
                       ))}
                   </ScrollView>
                 </View>
               )}
 
-              {/* Pending File Preview Chip */}
+              {/* Attachment Preview Strip */}
               {pendingAttachment && (
-                <View className="bg-white border border-teal-200 rounded-xl p-2 mb-2 flex-row items-center justify-between shrink-0">
+                <View className="bg-white border border-[#5B4FD1]/30 rounded-2xl p-2.5 mb-2 flex-row items-center justify-between shrink-0 shadow-xs">
                   <View className="flex-row items-center flex-1 mr-2 min-w-0">
-                    <FileText size={15} color="#0D9488" />
-                    <Text className="text-xs font-bold text-slate-800 ml-1.5 flex-1" numberOfLines={1}>
+                    <FileText size={16} color="#5B4FD1" />
+                    <Text className="text-xs font-bold text-[#1F1B3D] ml-2 flex-1" numberOfLines={1}>
                       {pendingAttachment.name} ({pendingAttachment.sizeMb} MB)
                     </Text>
                   </View>
                   <TouchableOpacity onPress={() => setPendingAttachment(null)}>
-                    <X size={15} color="#5C4D41" />
+                    <X size={16} color="#E4453C" />
                   </TouchableOpacity>
                 </View>
               )}
 
-              {/* Bottom WhatsApp Input Bar */}
+              {/* Floating Pill Input Bar */}
               <View className="flex-row items-center pt-2 shrink-0">
                 <TouchableOpacity 
                   onPress={handlePickDeviceDocument}
-                  className={`w-9 h-9 border rounded-full items-center justify-center mr-1.5 active:opacity-80 bg-white ${
-                    pendingAttachment ? "border-teal-500" : "border-slate-300"
+                  className={`w-10 h-10 border rounded-2xl items-center justify-center mr-2 active:opacity-80 bg-white shadow-xs ${
+                    pendingAttachment ? "border-[#5B4FD1] bg-[#EEECFA]" : "border-[#E7E4F5]"
                   }`}
                 >
-                  <Paperclip size={16} color="#075E54" />
+                  <Paperclip size={18} color="#5B4FD1" />
                 </TouchableOpacity>
 
                 <TextInput
                   value={inputText}
                   onChangeText={handleInputChange}
                   placeholder={`Message ${chatType === "direct" ? activeDirectUser?.name?.split(" ")[0] : "#" + currentChannelObj?.name}...`}
-                  placeholderTextColor="#8C7A6B"
-                  className="flex-1 bg-white border border-slate-300 rounded-full px-4 py-2 text-xs font-semibold text-slate-900 mr-1.5"
+                  placeholderTextColor="#A6A2CE"
+                  className="flex-1 bg-white border border-[#E7E4F5] rounded-2xl px-4 py-2.5 text-xs font-semibold text-[#1F1B3D] mr-2 shadow-xs"
                   onSubmitEditing={handleSendMessage}
                 />
 
                 <TouchableOpacity 
                   onPress={handleSendMessage}
-                  className="w-9 h-9 bg-[#005C4B] rounded-full items-center justify-center active:opacity-90 shadow-xs"
+                  className="w-10 h-10 bg-[#5B4FD1] rounded-2xl items-center justify-center active:opacity-90 shadow-md shadow-purple-600/20"
                 >
-                  <Send size={14} color="#FFFFFF" />
+                  <Send size={16} color="#FFFFFF" />
                 </TouchableOpacity>
               </View>
 
@@ -879,17 +910,24 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
           </KeyboardAvoidingView>
         )}
 
-        {/* ANNOUNCEMENTS TAB */}
+        {/* ========================================================================= */}
+        {/* TAB 2: ANNOUNCEMENTS / BROADCASTS                                         */}
+        {/* ========================================================================= */}
         {activeTab === "announcements" && (
-          <ScrollView showsVerticalScrollIndicator={false} className="flex-1 min-h-0 space-y-3">
+          <ScrollView 
+            showsVerticalScrollIndicator={true} 
+            className="flex-1 min-h-0"
+            contentContainerStyle={{ paddingBottom: 20 }}
+          >
+            {/* Admin Notice Composer */}
             {showNewAnnouncementModal && isAdmin && (
-              <View className="bg-brand-card border-2 border-brand-primary rounded-3xl p-4 mb-2 shadow-md space-y-2.5">
-                <View className="flex-row items-center justify-between pb-1 border-b border-slate-100">
-                  <Text className="text-xs font-black text-brand-dark uppercase tracking-wider">
+              <View className="bg-white border border-[#5B4FD1]/30 rounded-3xl p-4 mb-3 shadow-xs space-y-3">
+                <View className="flex-row items-center justify-between pb-2 border-b border-slate-100">
+                  <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">
                     Create Corporate Notice
                   </Text>
                   <TouchableOpacity onPress={() => setShowNewAnnouncementModal(false)}>
-                    <X size={16} color="#5C4D41" />
+                    <X size={18} color="#7A76A6" />
                   </TouchableOpacity>
                 </View>
 
@@ -897,8 +935,8 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
                   value={newTitle}
                   onChangeText={setNewTitle}
                   placeholder="Notice Title"
-                  placeholderTextColor="#8C7A6B"
-                  className="bg-brand-cardTint border border-brand-border rounded-xl p-2.5 text-xs font-bold text-brand-dark"
+                  placeholderTextColor="#A6A2CE"
+                  className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-xs font-bold text-[#1F1B3D]"
                 />
 
                 <TextInput
@@ -907,22 +945,24 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
                   multiline
                   numberOfLines={3}
                   placeholder="Detailed announcement content..."
-                  placeholderTextColor="#8C7A6B"
-                  className="bg-brand-cardTint border border-brand-border rounded-xl p-2.5 text-xs font-medium text-brand-dark"
+                  placeholderTextColor="#A6A2CE"
+                  className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-xs font-medium text-[#1F1B3D] min-h-[75px]"
                 />
 
                 <View className="flex-row items-center justify-between">
-                  <Text className="text-[10px] font-bold text-brand-muted uppercase">Priority</Text>
-                  <View className="flex-row space-x-1">
+                  <Text className="text-[10px] font-bold text-[#7A76A6] uppercase">Priority Level</Text>
+                  <View className="flex-row space-x-1.5 gap-1.5">
                     {(["Normal", "High", "Urgent"] as const).map((p) => (
                       <TouchableOpacity
                         key={p}
                         onPress={() => setNewPriority(p)}
-                        className={`px-2.5 py-1 rounded-lg border ${
-                          newPriority === p ? "bg-brand-hero border-brand-hero" : "bg-brand-cardTint border-brand-border"
+                        className={`px-3 py-1 rounded-lg border ${
+                          newPriority === p 
+                            ? "bg-[#5B4FD1] border-[#5B4FD1]" 
+                            : "bg-[#F6F5FC] border-[#E7E4F5]"
                         }`}
                       >
-                        <Text className={`text-[9px] font-black ${newPriority === p ? "text-white" : "text-brand-dark"}`}>
+                        <Text className={`text-[10px] font-black ${newPriority === p ? "text-white" : "text-[#1F1B3D]"}`}>
                           {p}
                         </Text>
                       </TouchableOpacity>
@@ -932,7 +972,7 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
 
                 <TouchableOpacity
                   onPress={handleCreateAnnouncement}
-                  className="bg-brand-hero py-2.5 rounded-xl items-center shadow-xs"
+                  className="bg-[#5B4FD1] py-3 rounded-2xl items-center shadow-md active:opacity-90"
                 >
                   <Text className="text-white font-black text-xs uppercase tracking-wider">
                     Broadcast to All Employees
@@ -942,38 +982,53 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
             )}
 
             {announcements.length === 0 ? (
-              <View className="py-14 items-center justify-center bg-brand-card border border-brand-border rounded-3xl p-6">
-                <Megaphone size={32} color="#8C7A6B" />
-                <Text className="text-xs font-bold text-brand-muted mt-2">No corporate broadcasts found.</Text>
+              <View className="py-16 items-center justify-center bg-white border border-[#E7E4F5] rounded-3xl p-6 shadow-xs">
+                <Megaphone size={34} color="#A6A2CE" />
+                <Text className="text-xs font-black text-[#1F1B3D] mt-2">No corporate broadcasts yet</Text>
+                <Text className="text-[10px] text-[#7A76A6] mt-0.5">Notices posted by Admins will appear here.</Text>
               </View>
             ) : (
               announcements.map((item) => (
                 <View 
-                  key={item.id}
-                  className={`bg-brand-card border rounded-2xl p-4 shadow-xs mb-2.5 ${
-                    item.pinned ? "border-amber-400 bg-amber-50/20" : "border-brand-border"
+                  key={item.id} 
+                  className={`bg-white border rounded-2xl p-4 shadow-xs mb-3 ${
+                    item.pinned ? "border-amber-300 bg-amber-50/20" : "border-[#E7E4F5]"
                   }`}
                 >
-                  <View className="flex-row items-center justify-between mb-1.5">
-                    <View className="flex-row items-center">
-                      <View className="bg-teal-100 px-2 py-0.5 rounded-full mr-2">
-                        <Text className="text-[8px] font-black text-teal-800">{item.priority.toUpperCase()}</Text>
+                  <View className="flex-row items-center justify-between mb-2">
+                    <View className="flex-row items-center gap-1.5">
+                      <View className={`px-2.5 py-0.5 rounded-full ${
+                        item.priority === "Urgent" 
+                          ? "bg-rose-100" 
+                          : item.priority === "High" 
+                          ? "bg-amber-100" 
+                          : "bg-purple-100"
+                      }`}>
+                        <Text className={`text-[9px] font-black uppercase ${
+                          item.priority === "Urgent" 
+                            ? "text-rose-700" 
+                            : item.priority === "High" 
+                            ? "text-amber-700" 
+                            : "text-[#5B4FD1]"
+                        }`}>
+                          {item.priority}
+                        </Text>
                       </View>
                       {item.pinned && (
-                        <View className="flex-row items-center bg-amber-100 px-1.5 py-0.5 rounded-md">
-                          <Pin size={9} color="#B45309" />
-                          <Text className="text-[8px] font-black text-amber-900 ml-1">PINNED</Text>
+                        <View className="flex-row items-center bg-amber-100 px-2 py-0.5 rounded-md">
+                          <Pin size={10} color="#B45309" />
+                          <Text className="text-[9px] font-black text-amber-900 ml-1">PINNED</Text>
                         </View>
                       )}
                     </View>
-                    <Text className="text-[9px] font-bold text-brand-muted">{item.date}</Text>
+                    <Text className="text-[10px] font-semibold text-[#7A76A6]">{item.date}</Text>
                   </View>
 
-                  <Text className="text-xs font-black text-brand-dark mb-1">{item.title}</Text>
-                  <Text className="text-[11px] font-medium text-brand-muted leading-relaxed mb-2">
+                  <Text className="text-sm font-black text-[#1F1B3D] mb-1">{item.title}</Text>
+                  <Text className="text-xs font-medium text-[#7A76A6] leading-relaxed mb-2.5">
                     {item.content}
                   </Text>
-                  <Text className="text-[9px] font-bold text-brand-dark border-t border-slate-100 pt-1.5">
+                  <Text className="text-[10px] font-bold text-[#1F1B3D] border-t border-slate-100 pt-2">
                     Posted by: {item.postedBy}
                   </Text>
                 </View>
@@ -984,16 +1039,18 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
 
       </View>
 
-      {/* CREATE CHANNEL MODAL */}
+      {/* ========================================================================= */}
+      {/* MODAL: CREATE CHANNEL / GROUP                                             */}
+      {/* ========================================================================= */}
       <Modal visible={showNewChannelModal} transparent animationType="slide">
-        <View className="flex-1 bg-black/60 justify-center items-center p-4">
-          <View className="w-full max-w-md bg-brand-card border border-brand-border rounded-3xl p-5 shadow-xl space-y-3">
-            <View className="flex-row items-center justify-between pb-1 border-b border-slate-100">
-              <Text className="text-xs font-black text-brand-dark uppercase tracking-wider">
+        <View className="flex-1 bg-black/50 justify-center items-center p-4">
+          <View className="w-full max-w-md bg-white border border-[#E7E4F5] rounded-3xl p-5 shadow-2xl space-y-3">
+            <View className="flex-row items-center justify-between pb-2 border-b border-slate-100">
+              <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">
                 Create Team Group
               </Text>
               <TouchableOpacity onPress={() => setShowNewChannelModal(false)}>
-                <X size={16} color="#5C4D41" />
+                <X size={18} color="#7A76A6" />
               </TouchableOpacity>
             </View>
 
@@ -1001,45 +1058,45 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
               value={newChannelName}
               onChangeText={setNewChannelName}
               placeholder="Group name (e.g. mobile-sprint)"
-              placeholderTextColor="#8C7A6B"
+              placeholderTextColor="#A6A2CE"
               autoCapitalize="none"
-              className="bg-brand-cardTint border border-brand-border rounded-xl p-2.5 text-xs font-bold text-brand-dark"
+              className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-xs font-bold text-[#1F1B3D]"
             />
 
-            <Text className="text-[10px] font-bold text-brand-muted uppercase">Assign Members</Text>
-            <ScrollView className="max-h-32 bg-brand-cardTint border border-brand-border rounded-xl p-2">
+            <Text className="text-[10px] font-bold text-[#7A76A6] uppercase">Assign Members</Text>
+            <ScrollView className="max-h-36 bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-2 space-y-1">
               {allTeamMembers.map((member) => {
                 const isChecked = selectedUserIdsForNewChannel.includes(member.id);
                 return (
                   <TouchableOpacity
                     key={member.id}
                     onPress={() => toggleUserSelection(member.id)}
-                    className="flex-row items-center justify-between p-1.5 rounded-lg"
+                    className="flex-row items-center justify-between p-2 rounded-lg"
                   >
                     <View className="flex-row items-center">
-                      <View className={`w-3.5 h-3.5 rounded border mr-2 items-center justify-center ${
-                        isChecked ? "bg-brand-hero border-brand-hero" : "border-slate-400 bg-white"
+                      <View className={`w-4 h-4 rounded border mr-2 items-center justify-center ${
+                        isChecked ? "bg-[#5B4FD1] border-[#5B4FD1]" : "border-slate-300 bg-white"
                       }`}>
-                        {isChecked && <Check size={8} color="#FFFFFF" />}
+                        {isChecked && <Check size={10} color="#FFFFFF" />}
                       </View>
-                      <Text className="text-xs font-bold text-brand-dark">{member.name}</Text>
+                      <Text className="text-xs font-bold text-[#1F1B3D]">{member.name}</Text>
                     </View>
-                    <Text className="text-[9px] text-brand-muted">{member.role}</Text>
+                    <Text className="text-[10px] font-medium text-[#7A76A6]">{member.role}</Text>
                   </TouchableOpacity>
                 );
               })}
             </ScrollView>
 
-            <View className="flex-row space-x-2 pt-1">
+            <View className="flex-row space-x-2 gap-2 pt-2">
               <TouchableOpacity
                 onPress={() => setShowNewChannelModal(false)}
-                className="flex-1 bg-brand-cardTint border border-brand-border py-2.5 rounded-xl items-center"
+                className="flex-1 bg-[#F6F5FC] border border-[#E7E4F5] py-3 rounded-xl items-center"
               >
-                <Text className="text-xs font-black text-brand-dark">Cancel</Text>
+                <Text className="text-xs font-black text-[#1F1B3D]">Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={handleCreateChannel}
-                className="flex-1 bg-brand-hero py-2.5 rounded-xl items-center shadow-xs"
+                className="flex-1 bg-[#5B4FD1] py-3 rounded-xl items-center shadow-md active:opacity-90"
               >
                 <Text className="text-xs font-black text-white">Create Group</Text>
               </TouchableOpacity>

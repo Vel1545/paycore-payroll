@@ -22,6 +22,7 @@ import {
   CheckCircle,
   Key,
 } from "lucide-react-native";
+import { useAuth, UserDetails } from "../context/AuthContext"; // Import global auth hook
 
 interface LoginScreenProps {
   onLoginSuccess: (userData: { empId: string; isAdmin: boolean }) => void;
@@ -30,7 +31,7 @@ interface LoginScreenProps {
 const API_BASE_URL =
   Platform.OS === "android"
     ? "http://192.168.31.133:8080/api/auth"
-    : "http://localhost:8080/api/auth";
+    : "http://192.168.31.133:8080/api/auth";
 
 type UserStatus =
   | "NO_RECORD"
@@ -39,7 +40,6 @@ type UserStatus =
   | "ACCOUNT_LOCKED"
   | "ERROR";
 
-// Universal alert function for Web, iOS, and Android
 const showUniversalAlert = (title: string, message: string) => {
   if (Platform.OS === "web") {
     try {
@@ -56,6 +56,9 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const { width } = useWindowDimensions();
   const isDesktop = width >= 860;
 
+  // Access the global save function from AuthContext
+  const { saveUserSession } = useAuth();
+
   const [empId, setEmpId] = useState("");
   const [status, setStatus] = useState<UserStatus>("NO_RECORD");
   const [isFirstTime, setIsFirstTime] = useState(false);
@@ -68,7 +71,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const otpInputs = useRef<Array<TextInput | null>>([]);
   const debounceTimer = useRef<any>(null);
 
-  // Check user_otps table in DB when Employee ID is typed
   const handleEmpIdChange = (text: string) => {
     const cleanId = text.trim().toUpperCase();
     setEmpId(cleanId);
@@ -88,7 +90,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     }
   };
 
-  // 1. Check ID status in DB
   const checkUserStatusInDb = async (id: string) => {
     try {
       const res = await fetch(`${API_BASE_URL}/check-status`, {
@@ -130,7 +131,29 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     }
   };
 
-  // 2. Direct 1-Click Login (For ALREADY_VERIFIED status)
+  // Helper to structure and save user payload to AuthContext globally
+  const handleSuccessfulAuthentication = async (backendUser: any, token?: string) => {
+    const formattedUser: UserDetails = {
+      userId: backendUser.empId,
+      empId: backendUser.empId,
+      name: backendUser.fullName || backendUser.name, // maps your backend fullName response
+      email: backendUser.email,
+      isAdmin: !!backendUser.isAdmin,
+      token: token,
+      role:backendUser.role,
+    };
+
+    // Save globally into state and AsyncStorage
+    await saveUserSession(formattedUser);
+
+    // Trigger success callback to navigate screens
+    onLoginSuccess({
+      empId: formattedUser.empId,
+      isAdmin: formattedUser.isAdmin,
+    });
+  };
+
+  // 2. Direct 1-Click Login
   const handleDirectLogin = async () => {
     setLoading(true);
     try {
@@ -141,13 +164,9 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       });
 
       const data = await res.json();
-      if (data.success) {
-        onLoginSuccess({
-          empId: data.user.empId,
-          isAdmin: data.user.isAdmin,
-        });
+      if (data.success && data.user) {
+        await handleSuccessfulAuthentication(data.user, data.token);
       } else {
-        // If row was deleted in MySQL, resets back to initial OTP flow
         showUniversalAlert(
           "Verification Required",
           data.message || "No verification record found. Please verify with OTP."
@@ -164,7 +183,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     }
   };
 
-  // 3. Request OTP (Dispatches alert popup with the OTP)
   const handleRequestOtp = async () => {
     const cleanId = empId.trim().toUpperCase();
     if (!cleanId) {
@@ -201,7 +219,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     }
   };
 
-  // 4. Verify OTP (Validates match, 3 attempts limit, updates status=true)
+  // 4. Verify OTP
   const handleVerifyOtp = async () => {
     const fullOtp = otp.join("");
     if (fullOtp.length !== 6) {
@@ -221,15 +239,11 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       });
 
       const data = await res.json();
-      if (data.success) {
-        onLoginSuccess({
-          empId: data.user.empId,
-          isAdmin: data.user.isAdmin,
-        });
+      if (data.success && data.user) {
+        await handleSuccessfulAuthentication(data.user, data.token);
       } else {
         showUniversalAlert("Invalid OTP", data.message || "OTP is wrong. Enter the correct OTP.");
 
-        // Clear OTP inputs so user can retry easily
         setOtp(["", "", "", "", "", ""]);
         otpInputs.current[0]?.focus();
 
@@ -283,7 +297,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   return (
     <SafeAreaView className="flex-1 bg-brand-canvas">
       <View className="flex-1 flex-row">
-        {/* Left Desktop Showcase */}
         {isDesktop && (
           <View className="w-[45%] h-full bg-brand-hero relative overflow-hidden">
             <ImageBackground
@@ -317,7 +330,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
           </View>
         )}
 
-        {/* Right Form */}
         <View
           className={`${
             isDesktop ? "w-[55%]" : "w-full"
@@ -345,7 +357,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                     : "Enter your Employee ID to continue"}
                 </Text>
 
-                {/* Server Status Notice */}
                 {serverNotice ? (
                   <View className="bg-brand-cardTint border border-brand-border rounded-xl p-3 mb-4">
                     <Text className="text-[11px] font-bold text-brand-dark">
@@ -354,7 +365,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   </View>
                 ) : null}
 
-                {/* Live Screen Alert Card for Dev Testing */}
                 {activeDevOtp && (
                   <View className="bg-amber-50 border-2 border-amber-400 rounded-2xl p-4 mb-5 shadow-xs flex-row items-center justify-between">
                     <View className="flex-row items-center">
@@ -374,7 +384,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   </View>
                 )}
 
-                {/* EMPLOYEE ID INPUT */}
                 {!otpSent && status !== "OTP_PENDING" && (
                   <View className="mb-5">
                     <Text className="text-xs font-black text-brand-dark uppercase tracking-wider mb-2">
@@ -394,7 +403,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   </View>
                 )}
 
-                {/* Checkbox: First-time verify */}
                 {status === "NO_RECORD" && !otpSent && (
                   <TouchableOpacity
                     onPress={() => setIsFirstTime(!isFirstTime)}
@@ -418,7 +426,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   </TouchableOpacity>
                 )}
 
-                {/* OTP INPUTS */}
                 {(otpSent || status === "OTP_PENDING") && (
                   <View className="mb-7">
                     <View className="flex-row justify-between mb-5">
@@ -469,7 +476,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   </View>
                 )}
 
-                {/* SUBMIT BUTTON */}
                 <TouchableOpacity
                   onPress={handleSubmit}
                   disabled={loading || status === "ACCOUNT_LOCKED"}

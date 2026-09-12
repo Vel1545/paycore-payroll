@@ -1,9 +1,21 @@
 import React, { useState, useMemo } from "react";
-import { View, Text, TextInput, TouchableOpacity, ScrollView } from "react-native";
 import { 
-  ArrowLeft, Search, Filter, ArrowUpDown, ChevronDown, 
-  UserCheck, Download, SlidersHorizontal
+  View, 
+  Text, 
+  TextInput, 
+  TouchableOpacity, 
+  ScrollView, 
+  Platform, 
+  Alert, 
+  ActivityIndicator,
+  Modal 
+} from "react-native";
+import { 
+  ChevronLeft, Search, Download, SlidersHorizontal,
+  ShieldCheck, CheckSquare, Square, X, Calendar, DollarSign, Building 
 } from "lucide-react-native";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
 import ScreenContainer from "../components/ScreenContainer";
 
 interface EmployeeRecord {
@@ -15,6 +27,17 @@ interface EmployeeRecord {
   ctc: number;
   status: "Active" | "On Leave" | "Probation";
 }
+
+interface ExportColumn {
+  key: keyof EmployeeRecord | "role";
+  label: string;
+  selected: boolean;
+}
+
+const LOCAL_IP = "192.168.31.133";
+const REPORT_API_URL = Platform.OS === "web"
+  ? "http://192.168.31.133:8080/api/admin/reports/employees/excel"
+  : `http://${LOCAL_IP}:8080/api/admin/reports/employees/excel`;
 
 const INITIAL_EMPLOYEES: EmployeeRecord[] = [
   { id: "EMP-1042", name: "Marcus Sterling", role: "Principal Tech Lead", dept: "Engineering", joinDate: "2024-03-15", ctc: 6500, status: "Active" },
@@ -34,15 +57,87 @@ export default function UserDirectoryScreen({ navigation }: any) {
   const [selectedYear, setSelectedYear] = useState("All");
   const [sortBy, setSortBy] = useState<"name" | "ctc" | "joinDate">("name");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+  const [isExporting, setIsExporting] = useState(false);
+
+  // Column Selector Modal State for Custom Specific Column Exports
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportColumns, setExportColumns] = useState<ExportColumn[]>([
+    { key: "id", label: "Employee ID", selected: true },
+    { key: "name", label: "Employee Name", selected: true },
+    { key: "dept", label: "Department", selected: true },
+    { key: "role", label: "Designation / Role", selected: true },
+    { key: "joinDate", label: "Joining Date (DOJ)", selected: true },
+    { key: "ctc", label: "Salary (CTC)", selected: true },
+    { key: "status", label: "Employment Status", selected: false },
+  ]);
 
   const departments = ["All", "Engineering", "Product", "Design", "HR", "DevOps"];
   const salaryRanges = [
     { label: "All Salaries", value: "All" },
     { label: "< $5,000", value: "low" },
-    { label: "$5,000 - $7,000", value: "mid" },
+    { label: "$5k - $7k", value: "mid" },
     { label: "> $7,000", value: "high" },
   ];
   const joinYears = ["All", "2026", "2025", "2024"];
+
+  const toggleColumnSelection = (key: string) => {
+    setExportColumns(prev =>
+      prev.map(col => col.key === key ? { ...col, selected: !col.selected } : col)
+    );
+  };
+
+  // Trigger Custom Column Export
+  const handleConfirmCustomExport = async () => {
+    const selectedKeys = exportColumns.filter(c => c.selected).map(c => c.key);
+    if (selectedKeys.length === 0) {
+      Alert.alert("Selection Required", "Please select at least one data column to export.");
+      return;
+    }
+
+    setShowExportModal(false);
+    try {
+      setIsExporting(true);
+      const queryParams = `?columns=${selectedKeys.join(",")}&dept=${selectedDept}&year=${selectedYear}&salary=${selectedSalRange}`;
+      const targetUrl = `${REPORT_API_URL}${queryParams}`;
+
+      if (Platform.OS === "web") {
+        const response = await fetch(targetUrl);
+        if (!response.ok) throw new Error("Failed to generate report");
+
+        const blob = await response.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = downloadUrl;
+        link.setAttribute("download", `Tailored_Employee_Directory_${Date.now()}.xlsx`);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(downloadUrl);
+      } else {
+        const fileUri = `${FileSystem.documentDirectory}Tailored_Employee_Directory.xlsx`;
+        const downloadRes = await FileSystem.downloadAsync(targetUrl, fileUri);
+
+        if (downloadRes.status === 200) {
+          const canShare = await Sharing.isAvailableAsync();
+          if (canShare) {
+            await Sharing.shareAsync(downloadRes.uri, {
+              mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              dialogTitle: "Download Tailored Report",
+              UTI: "com.microsoft.excel.xlsx",
+            });
+          } else {
+            Alert.alert("Saved", `Report downloaded to: ${downloadRes.uri}`);
+          }
+        } else {
+          Alert.alert("Error", "Could not generate report from backend.");
+        }
+      }
+    } catch (error) {
+      Alert.alert("Export Failed", "Unable to download the tailored Excel report.");
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const handleSortToggle = (field: "name" | "ctc" | "joinDate") => {
     if (sortBy === field) {
@@ -55,20 +150,15 @@ export default function UserDirectoryScreen({ navigation }: any) {
 
   const filteredEmployees = useMemo(() => {
     return INITIAL_EMPLOYEES.filter((emp) => {
-      // Search match
       const query = searchQuery.toLowerCase();
       const matchesSearch =
         emp.name.toLowerCase().includes(query) ||
         emp.id.toLowerCase().includes(query) ||
         emp.role.toLowerCase().includes(query);
 
-      // Dept filter
       const matchesDept = selectedDept === "All" || emp.dept === selectedDept;
-
-      // Year filter
       const matchesYear = selectedYear === "All" || emp.joinDate.startsWith(selectedYear);
 
-      // Salary filter
       let matchesSal = true;
       if (selectedSalRange === "low") matchesSal = emp.ctc < 5000;
       else if (selectedSalRange === "mid") matchesSal = emp.ctc >= 5000 && emp.ctc <= 7000;
@@ -90,56 +180,92 @@ export default function UserDirectoryScreen({ navigation }: any) {
 
   return (
     <ScreenContainer>
-      {/* Header */}
-      <View className="flex-row items-center justify-between mb-4">
-        <View className="flex-row items-center">
+      
+      {/* ========================================================================= */}
+      {/* 1. TOP PURPLE BANNER HEADER (Matched Design Pattern)                      */}
+      {/* ========================================================================= */}
+      <View className="bg-[#5B4FD1] rounded-3xl pt-4 pb-6 px-5 mb-4 shadow-xs relative overflow-hidden">
+        <View 
+          className="absolute -top-3 -right-4 w-20 h-20 rounded-3xl border-2 border-white/20 pointer-events-none"
+          style={{ transform: [{ rotate: "20deg" }] }}
+        />
+        <View 
+          className="absolute top-12 -left-6 w-16 h-16 rounded-2xl border-2 border-white/10 pointer-events-none"
+          style={{ transform: [{ rotate: "-15deg" }] }}
+        />
+
+        <View className="flex-row items-center justify-between mb-3">
           <TouchableOpacity 
-            onPress={() => navigation.goBack()}
-            className="w-10 h-10 bg-brand-card border border-brand-border rounded-xl items-center justify-center mr-3 shadow-xs"
+            onPress={() => (navigation?.canGoBack?.() ? navigation.goBack() : navigation?.navigate("Home"))}
+            className="w-9 h-9 rounded-xl bg-white/20 items-center justify-center active:opacity-80"
           >
-            <ArrowLeft size={18} color="#0F172A" />
+            <ChevronLeft size={20} color="#FFFFFF" />
           </TouchableOpacity>
-          <View>
-            <Text className="text-2xl font-black text-brand-dark tracking-tight">Employee Directory</Text>
-            <Text className="text-xs font-bold text-brand-muted">
-              {filteredEmployees.length} of {INITIAL_EMPLOYEES.length} Records Found
+
+          <View className="bg-white/20 px-3 py-1 rounded-full border border-white/25 flex-row items-center">
+            <ShieldCheck size={12} color="#FFFFFF" />
+            <Text className="text-[10px] font-black text-white ml-1 uppercase tracking-wider">
+              MNC Corporate Directory
             </Text>
           </View>
         </View>
 
-        <TouchableOpacity 
-          onPress={() => {}}
-          className="bg-brand-hero px-3.5 py-2 rounded-xl flex-row items-center active:opacity-90 shadow-xs"
-        >
-          <Download size={14} color="#FFFFFF" />
-          <Text className="text-white text-xs font-black ml-1.5">Export</Text>
-        </TouchableOpacity>
+        <View className="flex-row items-center justify-between">
+          <View>
+            <Text className="text-xl md:text-2xl font-black text-white tracking-tight">
+              Employee Directory
+            </Text>
+            <Text className="text-xs font-semibold text-white/80 mt-0.5">
+              {filteredEmployees.length} of {INITIAL_EMPLOYEES.length} Active Records
+            </Text>
+          </View>
+
+          <TouchableOpacity 
+            onPress={() => setShowExportModal(true)}
+            disabled={isExporting}
+            className="bg-white px-4 py-2.5 rounded-xl flex-row items-center shadow-xs active:opacity-90"
+          >
+            {isExporting ? (
+              <ActivityIndicator size="small" color="#5B4FD1" />
+            ) : (
+              <>
+                <Download size={14} color="#5B4FD1" />
+                <Text className="text-[#5B4FD1] text-xs font-black ml-1.5 uppercase">Export</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
 
-      {/* Search Bar */}
-      <View className="bg-brand-card border border-brand-border rounded-2xl px-4 py-3 flex-row items-center mb-4 shadow-xs">
-        <Search size={18} color="#5C4D41" />
+      {/* ========================================================================= */}
+      {/* 2. SEARCH BAR                                                             */}
+      {/* ========================================================================= */}
+      <View className="bg-white border border-[#E7E4F5] rounded-2xl px-4 py-3 flex-row items-center mb-4 shadow-xs">
+        <Search size={18} color="#7A76A6" />
         <TextInput
           value={searchQuery}
           onChangeText={setSearchQuery}
-          placeholder="Search by Employee ID, Name or Role..."
-          placeholderTextColor="#8C7A6B"
-          className="flex-1 ml-2.5 text-xs font-bold text-brand-dark"
+          placeholder="Search by Employee ID, Name or Designation..."
+          placeholderTextColor="#A6A2CE"
+          className="flex-1 ml-2.5 text-xs font-bold text-[#1F1B3D]"
         />
         {searchQuery.length > 0 && (
           <TouchableOpacity onPress={() => setSearchQuery("")}>
-            <Text className="text-xs font-black text-brand-muted">Clear</Text>
+            <X size={16} color="#7A76A6" />
           </TouchableOpacity>
         )}
       </View>
 
-      {/* Filter Section */}
-      <View className="bg-brand-card border border-brand-border rounded-3xl p-4 mb-5 shadow-xs space-y-3">
-        <View className="flex-row items-center justify-between">
-          <View className="flex-row items-center">
-            <SlidersHorizontal size={14} color="#0D9488" />
-            <Text className="text-xs font-black text-brand-dark ml-1.5 uppercase tracking-wider">
-              Directory Filters
+      {/* ========================================================================= */}
+      {/* 3. STRUCTURED MNC FILTER HUBS (Group by Dept, DOJ, Salary)                 */}
+      {/* ========================================================================= */}
+      <View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 mb-4 shadow-xs gap-4">
+        
+        <View className="flex-row items-center justify-between pb-2 border-b border-slate-100">
+          <View className="flex-row items-center gap-2">
+            <SlidersHorizontal size={15} color="#5B4FD1" />
+            <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">
+              Advanced Filter & Grouping Hub
             </Text>
           </View>
           {(selectedDept !== "All" || selectedSalRange !== "All" || selectedYear !== "All") && (
@@ -150,32 +276,27 @@ export default function UserDirectoryScreen({ navigation }: any) {
                 setSelectedYear("All");
               }}
             >
-              <Text className="text-[11px] font-bold text-rose-600">Reset All</Text>
+              <Text className="text-[11px] font-black text-[#E4453C]">Reset All Filters</Text>
             </TouchableOpacity>
           )}
         </View>
 
-        {/* 1. Department Filter Pills */}
-        <View>
-          <Text className="text-[10px] font-black text-brand-muted uppercase tracking-wider mb-1.5">
-            Department
-          </Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row space-x-1.5">
+        {/* Filter Group 1: Group by Department */}
+        <View className="gap-1.5">
+          <View className="flex-row items-center gap-1.5">
+            <Building size={12} color="#7A76A6" />
+            <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider">Group by Department</Text>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
             {departments.map((dept) => (
               <TouchableOpacity
                 key={dept}
                 onPress={() => setSelectedDept(dept)}
-                className={`px-3 py-1.5 rounded-xl border ${
-                  selectedDept === dept
-                    ? "bg-brand-hero border-brand-hero"
-                    : "bg-brand-cardTint border-brand-border"
+                className={`px-3.5 py-2 rounded-xl border ${
+                  selectedDept === dept ? "bg-[#5B4FD1] border-[#5B4FD1] shadow-xs" : "bg-[#F6F5FC] border-[#E7E4F5]"
                 }`}
               >
-                <Text
-                  className={`text-[11px] font-bold ${
-                    selectedDept === dept ? "text-white" : "text-brand-dark"
-                  }`}
-                >
+                <Text className={`text-xs font-bold ${selectedDept === dept ? "text-white" : "text-[#1F1B3D]"}`}>
                   {dept}
                 </Text>
               </TouchableOpacity>
@@ -183,111 +304,89 @@ export default function UserDirectoryScreen({ navigation }: any) {
           </ScrollView>
         </View>
 
-        {/* 2. Salary & Joining Year Row */}
-        <View className="flex-row space-x-3 pt-1">
-          {/* Salary Filter */}
-          <View className="flex-1">
-            <Text className="text-[10px] font-black text-brand-muted uppercase tracking-wider mb-1.5">
-              Salary (CTC)
-            </Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row space-x-1.5">
-              {salaryRanges.map((sal) => (
-                <TouchableOpacity
-                  key={sal.value}
-                  onPress={() => setSelectedSalRange(sal.value)}
-                  className={`px-2.5 py-1.5 rounded-xl border ${
-                    selectedSalRange === sal.value
-                      ? "bg-brand-primary border-brand-primary"
-                      : "bg-brand-cardTint border-brand-border"
-                  }`}
-                >
-                  <Text
-                    className={`text-[10px] font-bold ${
-                      selectedSalRange === sal.value ? "text-white" : "text-brand-dark"
-                    }`}
-                  >
-                    {sal.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+        {/* Filter Group 2: Joining Date (DOJ Year) */}
+        <View className="gap-1.5">
+          <View className="flex-row items-center gap-1.5">
+            <Calendar size={12} color="#7A76A6" />
+            <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider">Group by Joining Year (DOJ)</Text>
           </View>
-
-          {/* Join Year Filter */}
-          <View className="w-36">
-            <Text className="text-[10px] font-black text-brand-muted uppercase tracking-wider mb-1.5">
-              Joining Year
-            </Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row space-x-1.5">
-              {joinYears.map((yr) => (
-                <TouchableOpacity
-                  key={yr}
-                  onPress={() => setSelectedYear(yr)}
-                  className={`px-2.5 py-1.5 rounded-xl border ${
-                    selectedYear === yr
-                      ? "bg-brand-primary border-brand-primary"
-                      : "bg-brand-cardTint border-brand-border"
-                  }`}
-                >
-                  <Text
-                    className={`text-[10px] font-bold ${
-                      selectedYear === yr ? "text-white" : "text-brand-dark"
-                    }`}
-                  >
-                    {yr}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+            {joinYears.map((yr) => (
+              <TouchableOpacity
+                key={yr}
+                onPress={() => setSelectedYear(yr)}
+                className={`px-3.5 py-2 rounded-xl border ${
+                  selectedYear === yr ? "bg-[#5B4FD1] border-[#5B4FD1] shadow-xs" : "bg-[#F6F5FC] border-[#E7E4F5]"
+                }`}
+              >
+                <Text className={`text-xs font-bold ${selectedYear === yr ? "text-white" : "text-[#1F1B3D]"}`}>
+                  {yr}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
         </View>
+
+        {/* Filter Group 3: Salary Tier (CTC) */}
+        <View className="gap-1.5">
+          <View className="flex-row items-center gap-1.5">
+            <DollarSign size={12} color="#7A76A6" />
+            <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider">Filter by Salary Tier (CTC)</Text>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+            {salaryRanges.map((sal) => (
+              <TouchableOpacity
+                key={sal.value}
+                onPress={() => setSelectedSalRange(sal.value)}
+                className={`px-3.5 py-2 rounded-xl border ${
+                  selectedSalRange === sal.value ? "bg-[#5B4FD1] border-[#5B4FD1] shadow-xs" : "bg-[#F6F5FC] border-[#E7E4F5]"
+                }`}
+              >
+                <Text className={`text-xs font-bold ${selectedSalRange === sal.value ? "text-white" : "text-[#1F1B3D]"}`}>
+                  {sal.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+
       </View>
 
-      {/* Interactive Sort Chips */}
+      {/* ========================================================================= */}
+      {/* 4. SORT TOGGLE CHIPS BAR                                                  */}
+      {/* ========================================================================= */}
       <View className="flex-row items-center justify-between mb-3 px-1">
-        <Text className="text-[11px] font-black text-brand-dark uppercase tracking-wider">
-          Sort Column ({sortOrder.toUpperCase()}):
+        <Text className="text-[11px] font-black text-[#1F1B3D] uppercase tracking-wider">
+          Sort Directory ({sortOrder.toUpperCase()}):
         </Text>
-        <View className="flex-row space-x-2">
-          <TouchableOpacity
-            onPress={() => handleSortToggle("name")}
-            className={`px-2.5 py-1 rounded-lg border ${
-              sortBy === "name" ? "bg-brand-hero border-brand-hero" : "bg-brand-card border-brand-border"
-            }`}
-          >
-            <Text className={`text-[10px] font-bold ${sortBy === "name" ? "text-white" : "text-brand-dark"}`}>
-              Name {sortBy === "name" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => handleSortToggle("ctc")}
-            className={`px-2.5 py-1 rounded-lg border ${
-              sortBy === "ctc" ? "bg-brand-hero border-brand-hero" : "bg-brand-card border-brand-border"
-            }`}
-          >
-            <Text className={`text-[10px] font-bold ${sortBy === "ctc" ? "text-white" : "text-brand-dark"}`}>
-              Salary {sortBy === "ctc" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => handleSortToggle("joinDate")}
-            className={`px-2.5 py-1 rounded-lg border ${
-              sortBy === "joinDate" ? "bg-brand-hero border-brand-hero" : "bg-brand-card border-brand-border"
-            }`}
-          >
-            <Text className={`text-[10px] font-bold ${sortBy === "joinDate" ? "text-white" : "text-brand-dark"}`}>
-              Date {sortBy === "joinDate" ? (sortOrder === "asc" ? "↑" : "↓") : ""}
-            </Text>
-          </TouchableOpacity>
+        <View className="flex-row gap-2">
+          {[
+            { key: "name", label: "Name" },
+            { key: "ctc", label: "Salary" },
+            { key: "joinDate", label: "Joining Date" },
+          ].map((s) => (
+            <TouchableOpacity
+              key={s.key}
+              onPress={() => handleSortToggle(s.key as any)}
+              className={`px-3 py-1 rounded-lg border ${
+                sortBy === s.key ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-white border-[#E7E4F5]"
+              }`}
+            >
+              <Text className={`text-[10px] font-black ${sortBy === s.key ? "text-white" : "text-[#1F1B3D]"}`}>
+                {s.label} {sortBy === s.key ? (sortOrder === "asc" ? "↑" : "↓") : ""}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
       </View>
 
-      {/* Master Data Table */}
-      <View className="bg-brand-card border border-brand-border rounded-3xl overflow-hidden shadow-xs mb-8">
+      {/* ========================================================================= */}
+      {/* 5. MNC EMPLOYEE DATA TABLE                                                */}
+      {/* ========================================================================= */}
+      <View className="bg-white border border-[#E7E4F5] rounded-3xl overflow-hidden shadow-xs mb-8">
         <ScrollView horizontal showsHorizontalScrollIndicator={true}>
           <View>
-            {/* Table Header Row */}
-            <View className="flex-row bg-brand-hero px-4 py-3.5 items-center">
+            <View className="flex-row bg-[#150F38] px-4 py-3.5 items-center">
               <Text className="text-white text-[11px] font-black uppercase tracking-wider w-24">Emp ID</Text>
               <Text className="text-white text-[11px] font-black uppercase tracking-wider w-40">Employee Name</Text>
               <Text className="text-white text-[11px] font-black uppercase tracking-wider w-28">Department</Text>
@@ -296,57 +395,50 @@ export default function UserDirectoryScreen({ navigation }: any) {
               <Text className="text-white text-[11px] font-black uppercase tracking-wider w-24 text-center ml-4">Status</Text>
             </View>
 
-            {/* Table Body Rows */}
             {filteredEmployees.length > 0 ? (
               filteredEmployees.map((emp, idx) => (
                 <View 
                   key={emp.id} 
-                  className={`flex-row px-4 py-3.5 items-center border-b border-brand-border ${
-                    idx % 2 === 1 ? "bg-brand-cardTint/50" : "bg-brand-card"
+                  className={`flex-row px-4 py-3.5 items-center border-b border-[#E7E4F5] ${
+                    idx % 2 === 1 ? "bg-[#F6F5FC]" : "bg-white"
                   }`}
                 >
-                  {/* Emp ID */}
-                  <Text className="text-xs font-black text-brand-primary w-24">{emp.id}</Text>
+                  <Text className="text-xs font-black text-[#5B4FD1] w-24">{emp.id}</Text>
 
-                  {/* Name & Role */}
                   <View className="w-40 pr-2">
-                    <Text className="text-xs font-black text-brand-dark" numberOfLines={1}>{emp.name}</Text>
-                    <Text className="text-[10px] font-semibold text-brand-muted" numberOfLines={1}>{emp.role}</Text>
+                    <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>{emp.name}</Text>
+                    <Text className="text-[10px] font-semibold text-[#7A76A6]" numberOfLines={1}>{emp.role}</Text>
                   </View>
 
-                  {/* Department */}
                   <View className="w-28">
-                    <View className="bg-brand-cardTint border border-brand-border self-start px-2 py-0.5 rounded-md">
-                      <Text className="text-[10px] font-bold text-brand-dark">{emp.dept}</Text>
+                    <View className="bg-[#EEECFA] border border-[#5B4FD1]/20 self-start px-2.5 py-0.5 rounded-md">
+                      <Text className="text-[10px] font-bold text-[#5B4FD1]">{emp.dept}</Text>
                     </View>
                   </View>
 
-                  {/* Joining Date */}
-                  <Text className="text-xs font-semibold text-brand-muted w-28">{emp.joinDate}</Text>
+                  <Text className="text-xs font-semibold text-[#7A76A6] w-28">{emp.joinDate}</Text>
 
-                  {/* Monthly CTC */}
-                  <Text className="text-xs font-black text-brand-dark w-28 text-right">
+                  <Text className="text-xs font-black text-[#1F1B3D] w-28 text-right">
                     ${emp.ctc.toLocaleString()}.00
                   </Text>
 
-                  {/* Status Badge */}
                   <View className="w-24 items-center ml-4">
                     <View 
-                      className={`px-2.5 py-0.5 rounded-full ${
+                      className={`px-2.5 py-0.5 rounded-full border ${
                         emp.status === "Active" 
-                          ? "bg-emerald-100 border border-emerald-300" 
+                          ? "bg-[#E7FAEE] border-[#1FAE5C]/20" 
                           : emp.status === "On Leave" 
-                          ? "bg-amber-100 border border-amber-300"
-                          : "bg-blue-100 border border-blue-300"
+                          ? "bg-[#FEF2D9] border-[#D08A0C]/20" 
+                          : "bg-[#EEECFA] border-[#5B4FD1]/20"
                       }`}
                     >
                       <Text 
-                        className={`text-[9px] font-black ${
+                        className={`text-[9.5px] font-black ${
                           emp.status === "Active" 
-                            ? "text-emerald-800" 
+                            ? "text-[#1FAE5C]" 
                             : emp.status === "On Leave" 
-                            ? "text-amber-800"
-                            : "text-blue-800"
+                            ? "text-[#D08A0C]" 
+                            : "text-[#5B4FD1]"
                         }`}
                       >
                         {emp.status}
@@ -356,13 +448,68 @@ export default function UserDirectoryScreen({ navigation }: any) {
                 </View>
               ))
             ) : (
-              <View className="py-10 items-center justify-center w-[600px]">
-                <Text className="text-xs font-bold text-brand-muted">No employees match your filter criteria.</Text>
+              <View className="py-12 items-center justify-center w-[600px]">
+                <Text className="text-xs font-bold text-[#7A76A6]">No employees match your filter criteria.</Text>
               </View>
             )}
           </View>
         </ScrollView>
       </View>
+
+      {/* ========================================================================= */}
+      {/* 6. SPECIFIC COLUMN DATA SELECTOR EXPORT MODAL WITH SCROLLVIEW             */}
+      {/* ========================================================================= */}
+      <Modal visible={showExportModal} transparent animationType="fade">
+        <TouchableOpacity 
+          activeOpacity={1} 
+          onPress={() => setShowExportModal(false)}
+          className="flex-1 bg-black/40 justify-center items-center p-4"
+        >
+          <View className="w-full max-w-md bg-white border border-[#E7E4F5] rounded-3xl p-6 shadow-xl gap-4 max-h-[85%]">
+            
+            {/* Modal Header */}
+            <View className="flex-row items-center justify-between pb-3 border-b border-slate-100">
+              <View>
+                <Text className="text-base font-black text-[#1F1B3D]">Select Specific Data Columns</Text>
+                <Text className="text-[11px] font-semibold text-[#7A76A6]">Check columns to write into the Excel file</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowExportModal(false)}>
+                <X size={18} color="#7A76A6" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Checklist items wrapped in a ScrollView to prevent content cutoffs */}
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingVertical: 4 }}>
+              {exportColumns.map((col) => (
+                <TouchableOpacity
+                  key={col.key}
+                  onPress={() => toggleColumnSelection(col.key)}
+                  className="flex-row items-center justify-between bg-[#F6F5FC] border border-[#E7E4F5] p-3.5 rounded-xl active:bg-slate-100"
+                >
+                  <Text className="text-xs font-black text-[#1F1B3D]">{col.label}</Text>
+                  {col.selected ? (
+                    <CheckSquare size={18} color="#5B4FD1" />
+                  ) : (
+                    <Square size={18} color="#CBD5E1" />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            {/* Confirm Export Button */}
+            <TouchableOpacity
+              onPress={handleConfirmCustomExport}
+              className="bg-[#5B4FD1] py-4 rounded-xl items-center shadow-xs active:opacity-90 mt-1"
+            >
+              <Text className="text-white text-xs font-black uppercase tracking-wider">
+                Download Tailored Excel File
+              </Text>
+            </TouchableOpacity>
+
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
     </ScreenContainer>
   );
 }

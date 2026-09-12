@@ -32,6 +32,13 @@
       "eas": {
         "projectId": "e322810c-4279-4793-81f4-2a48e9114765"
       }
-    }
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker",
+      "expo-image",
+      "expo-sharing",
+      "expo-splash-screen",
+      "expo-web-browser"
+    ]
   }
 }
