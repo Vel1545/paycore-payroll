@@ -616,103 +616,105 @@ const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
   <View className="w-full gap-4">
     
     {/* COMPACT ENTERPRISE DROPDOWN FILTER BAR */}
-    <View className="bg-white border border-[#E7E4F5] rounded-3xl p-5 shadow-xs gap-4">
-      <View className="flex-row items-center justify-between pb-3 border-b border-slate-100">
-        <View>
-          <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">
-            Dashboard Filter Controls
-          </Text>
-          <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5">
-            Select parameters to filter workforce analytics in real-time
-          </Text>
-        </View>
-        <View className="bg-[#EEECFA] px-3 py-1 rounded-full border border-[#5B4FD1]/20">
-          <Text className="text-[10px] font-black text-[#5B4FD1] uppercase">Parametric Engine</Text>
-        </View>
-      </View>
+<View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 md:p-5 shadow-xs gap-4">
+  
+  {/* FIXED HEADER ROW: Responsive wrapping for mobile view */}
+  <View className="flex-col sm:flex-row sm:items-center sm:justify-between pb-3 border-b border-slate-100 gap-2">
+    <View className="flex-1 pr-1">
+      <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">
+        Dashboard Filter Controls
+      </Text>
+      <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5 leading-tight">
+        Select parameters to filter workforce analytics in real-time
+      </Text>
+    </View>
+    
+    {/* Badge aligned safely to avoid overflow */}
+    <View className="self-start sm:self-auto bg-[#EEECFA] px-2.5 py-1 rounded-full border border-[#5B4FD1]/20 shrink-0">
+      <Text className="text-[9px] font-black text-[#5B4FD1] uppercase">Parametric Engine</Text>
+    </View>
+  </View>
 
-      {/* Row 1: CrossPlatform Date Pickers */}
-      <View className="flex-col md:flex-row gap-3">
-        <CrossPlatformDatePicker
-          label="From Date"
-          value={dashboardStartDate}
-          onChange={setDashboardStartDate}
-        />
-        <CrossPlatformDatePicker
-          label="To Date"
-          value={dashboardEndDate}
-          onChange={setDashboardEndDate}
-        />
-      </View>
+  {/* Row 1: CrossPlatform Date Pickers */}
+  <View className="flex-col md:flex-row gap-3">
+    <CrossPlatformDatePicker
+      label="From Date"
+      value={dashboardStartDate}
+      onChange={setDashboardStartDate}
+    />
+    <CrossPlatformDatePicker
+      label="To Date"
+      value={dashboardEndDate}
+      onChange={setDashboardEndDate}
+    />
+  </View>
 
-      {/* Row 2: Scalable Dropdown Selectors for Department & Leave Type */}
-      <View className="flex-col md:flex-row gap-3 pt-1">
-        
-        {/* Department Dropdown Filter */}
-        <View className="flex-1">
-          <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
-            Department Filter
-          </Text>
-          <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 py-3">
-            <select
-              value={selectedDashboardDept}
-              onChange={(e) => setSelectedDashboardDept(e.target.value)}
-              style={{
-                backgroundColor: "transparent",
-                border: "none",
-                outline: "none",
-                fontFamily: "inherit",
-                fontSize: "12px",
-                fontWeight: "700",
-                color: "#1F1B3D",
-                width: "100%",
-                cursor: "pointer",
-              }}
-            >
-              <option value="All Departments">All Departments</option>
-              <option value="Engineering">Engineering</option>
-              <option value="HR & Operations">HR & Operations</option>
-              <option value="Finance">Finance</option>
-              <option value="Sales">Sales</option>
-              {/* Easily add future departments here without breaking UI layout */}
-            </select>
-          </View>
-        </View>
-
-        {/* Leave / Status Type Dropdown Filter */}
-        <View className="flex-1">
-          <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
-            Leave / Status Type Filter
-          </Text>
-          <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 py-3">
-            <select
-              value={selectedStatusFilter}
-              onChange={(e) => setSelectedStatusFilter(e.target.value)}
-              style={{
-                backgroundColor: "transparent",
-                border: "none",
-                outline: "none",
-                fontFamily: "inherit",
-                fontSize: "12px",
-                fontWeight: "700",
-                color: "#1F1B3D",
-                width: "100%",
-                cursor: "pointer",
-              }}
-            >
-              <option value="ALL">All Status Types</option>
-              <option value="PRESENT">Present</option>
-              <option value="LEAVE">Leave</option>
-              <option value="PERMISSION">Permission</option>
-              <option value="OD">On Duty (OD)</option>
-              <option value="ABSENT">Absent / Unpaid</option>
-              {/* Easily add future leave or attendance tracking metrics here */}
-            </select>
-          </View>
-        </View>
-
+  {/* Row 2: Scalable Dropdown Selectors for Department & Leave Type */}
+  <View className="flex-col md:flex-row gap-3 pt-1">
+    
+    {/* Department Dropdown Filter */}
+    <View className="flex-1">
+      <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
+        Department Filter
+      </Text>
+      <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 py-3">
+        <select
+          value={selectedDashboardDept}
+          onChange={(e) => setSelectedDashboardDept(e.target.value)}
+          style={{
+            backgroundColor: "transparent",
+            border: "none",
+            outline: "none",
+            fontFamily: "inherit",
+            fontSize: "12px",
+            fontWeight: "700",
+            color: "#1F1B3D",
+            width: "100%",
+            cursor: "pointer",
+          }}
+        >
+          <option value="All Departments">All Departments</option>
+          <option value="Engineering">Engineering</option>
+          <option value="HR & Operations">HR & Operations</option>
+          <option value="Finance">Finance</option>
+          <option value="Sales">Sales</option>
+        </select>
       </View>
     </View>
+
+    {/* Leave / Status Type Dropdown Filter */}
+    <View className="flex-1">
+      <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
+        Leave / Status Type Filter
+      </Text>
+      <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 py-3">
+        <select
+          value={selectedStatusFilter}
+          onChange={(e) => setSelectedStatusFilter(e.target.value)}
+          style={{
+            backgroundColor: "transparent",
+            border: "none",
+            outline: "none",
+            fontFamily: "inherit",
+            fontSize: "12px",
+            fontWeight: "700",
+            color: "#1F1B3D",
+            width: "100%",
+            cursor: "pointer",
+          }}
+        >
+          <option value="ALL">All Status Types</option>
+          <option value="PRESENT">Present</option>
+          <option value="LEAVE">Leave</option>
+          <option value="PERMISSION">Permission</option>
+          <option value="OD">On Duty (OD)</option>
+          <option value="ABSENT">Absent / Unpaid</option>
+        </select>
+      </View>
+    </View>
+
+  </View>
+</View>
 
     {/* EXACT ORIGINAL CARD 1: Real-Time Workforce Attendance */}
     <View className="bg-white border border-[#E7E4F5] rounded-3xl p-5 md:p-6 shadow-xs gap-4">
