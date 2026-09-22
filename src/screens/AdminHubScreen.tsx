@@ -6,19 +6,19 @@ import {
   TextInput, 
   ScrollView, 
   Alert, 
-  Platform,
-  Modal,
-  Switch,
-  ActivityIndicator,
-  useWindowDimensions
+  Platform, 
+  Modal, 
+  Switch, 
+  ActivityIndicator, 
+  useWindowDimensions 
 } from "react-native";
 import CrossPlatformDatePicker from "../components/CrossPlatformDatePicker";
 import { LinearGradient } from "expo-linear-gradient";
 import { 
   Users, ArrowRight, Clock, XCircle, ChevronLeft,
-  Search, ShieldAlert, ChevronRight, Filter, 
+  Search, Navigation, ChevronRight, Filter, 
   DollarSign, Landmark, UserCheck, CalendarCheck, Edit3,
-  UserPlus, X, Check, Trash2, Shield, BarChart3, FileSpreadsheet, ShieldCheck
+  UserPlus, X, ClipboardList, Trash2, Shield, BarChart3, FileSpreadsheet, ShieldCheck
 } from "lucide-react-native";
 
 interface AdminHubScreenProps {
@@ -37,10 +37,26 @@ export interface UserItem {
   active: boolean;
 }
 
-const LOCAL_IP = "192.168.31.133";
+export interface WorkforceMetrics {
+  total: number;
+  present: number;
+  presentPercentage: number;
+  od: number;
+  odPercentage: number;
+  absent: number;
+  absentPercentage: number;
+  permissionCount: number;
+  permissionPercentage: number;
+}
+
+const LOCAL_IP = "192.168.31.228";
 const API_BASE_URL = Platform.OS === "web"
-  ? "http://192.168.31.133:8080/api/admin"
+  ? "http://192.168.31.228:8080/api/admin"
   : `http://${LOCAL_IP}:8080/api/admin`;
+
+const ATTENDANCE_API_URL = Platform.OS === "web"
+  ? "http://192.168.31.228:8080/api/attendance"
+  : `http://${LOCAL_IP}:8080/api/attendance`;
 
 export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
   const { width } = useWindowDimensions();
@@ -70,10 +86,75 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
   const [formActive, setFormActive] = useState(true);
   const [savingUser, setSavingUser] = useState(false);
 
-  const [dashboardStartDate, setDashboardStartDate] = useState(new Date(2026, 0, 1)); // Jan 1, 2026
-const [dashboardEndDate, setDashboardEndDate] = useState(new Date(2026, 0, 31));   // Jan 31, 2026
-const [selectedDashboardDept, setSelectedDashboardDept] = useState("All Departments");
-const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
+  // Dashboard Filters & State
+  const [dashboardStartDate, setDashboardStartDate] = useState<any>(new Date());
+  const [dashboardEndDate, setDashboardEndDate] = useState<any>(new Date());
+  const [selectedDashboardDept, setSelectedDashboardDept] = useState("All Departments");
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
+  const [loadingMetrics, setLoadingMetrics] = useState(false);
+
+  const [workforce, setWorkforce] = useState<WorkforceMetrics>({
+    total: 0,
+    present: 0,
+    presentPercentage: 0,
+    od: 0,
+    odPercentage: 0,
+    absent: 0,
+    absentPercentage: 0,
+    permissionCount: 0,
+    permissionPercentage: 0,
+  });
+
+  // Date Formatter Helper (YYYY-MM-DD)
+  const formatDateToIso = (d: any) => {
+    if (!d) return new Date().toISOString().split("T")[0];
+    if (typeof d === "string") return d.split("T")[0];
+    if (d instanceof Date) {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+    return new Date().toISOString().split("T")[0];
+  };
+
+  // Fetch Live Workforce Metrics from Spring Boot
+  const fetchWorkforceMetrics = async () => {
+    try {
+      setLoadingMetrics(true);
+      const formattedDate = formatDateToIso(dashboardStartDate);
+      const queryParams = new URLSearchParams({
+        targetDate: formattedDate,
+        department: selectedDashboardDept,
+        statusFilter: selectedStatusFilter,
+      });
+
+      const res = await fetch(`${ATTENDANCE_API_URL}/workforce-summary?${queryParams.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setWorkforce({
+          total: data.total || 0,
+          present: data.present || 0,
+          presentPercentage: data.presentPercentage || 0,
+          od: data.od || 0,
+          odPercentage: data.odPercentage || 0,
+          absent: data.absent || 0,
+          absentPercentage: data.absentPercentage || 0,
+          permissionCount: data.permissionCount || 0,
+          permissionPercentage: data.permissionPercentage || 0,
+        });
+      }
+    } catch (e) {
+      console.warn("Could not fetch workforce dashboard metrics:", e);
+    } finally {
+      setLoadingMetrics(false);
+    }
+  };
+  useEffect(() => {
+    if (adminView === "dashboard") {
+      fetchWorkforceMetrics();
+    }
+  }, [adminView, dashboardStartDate, dashboardEndDate, selectedDashboardDept, selectedStatusFilter]);
 
   const fetchUsersFromDb = async () => {
     try {
@@ -173,15 +254,6 @@ const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
       u.role.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const workforce = {
-    total: 248,
-    present: 210,
-    absent: 14,
-    od: 24,
-    permissionCount: 18,
-    permissionPercentage: 7.2,
-  };
-
   const permissionList = [
     { id: "1", name: "Sarah Jenkins", role: "Software Engineer", slot: "02:00 PM - 04:00 PM", reason: "Medical Checkup" },
     { id: "2", name: "David Miller", role: "Senior Analyst", slot: "09:30 AM - 11:30 AM", reason: "Bank Documentation" },
@@ -196,9 +268,7 @@ const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
         contentContainerStyle={{ flexGrow: 1, paddingBottom: 120 }}
         className="flex-1"
       >
-        {/* ========================================================================= */}
-        {/* 1. PREMIUM HEADER / HERO SECTION (Proper Spaced & Aligned Gradient)      */}
-        {/* ========================================================================= */}
+        {/* 1. HERO HEADER */}
         <LinearGradient
           colors={["#4F46E5", "#6366F1", "#818CF8"]}
           start={{ x: 0, y: 0 }}
@@ -206,12 +276,10 @@ const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
           style={{ paddingTop: 44, paddingBottom: 36, paddingHorizontal: 24 }}
           className="relative overflow-hidden shadow-xl shadow-indigo-950/25 rounded-b-[36px] mb-6"
         >
-          {/* Decorative Background Glows */}
           <View className="absolute -top-12 -right-12 w-56 h-56 rounded-full bg-white/10 blur-2xl pointer-events-none" />
           <View className="absolute bottom-0 left-10 w-44 h-44 rounded-full bg-indigo-900/20 blur-2xl pointer-events-none" />
 
           <View className="max-w-6xl mx-auto w-full">
-            {/* Header Navigation & Status Badge */}
             <View className="flex-row items-center justify-between mb-6">
               <TouchableOpacity 
                 onPress={() => {
@@ -233,7 +301,6 @@ const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
               </View>
             </View>
 
-            {/* Title & Subtitle with guaranteed safe clearance */}
             <View className="mt-1">
               <Text className="text-2xl md:text-3xl font-black text-white tracking-tight">
                 {adminView === "menu" ? "Team Hub" : `Admin • ${adminView.toUpperCase()}`}
@@ -245,7 +312,6 @@ const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
           </View>
         </LinearGradient>
 
-        {/* Sub-page Back Navigation Bar (Visible when inside any module) */}
         {adminView !== "menu" && (
           <View className="max-w-6xl mt-1 mx-auto w-full px-5 md:px-10 mb-4">
             <TouchableOpacity 
@@ -263,572 +329,437 @@ const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
         {/* ========================================================================= */}
         <View className="max-w-6xl mx-auto w-full px-5 md:px-10">
 
-          {/* ========================================================================= */}
-          {/* MENU VIEW (Landing Grid of Options)                                       */}
-          {/* ========================================================================= */}
-         {adminView === "menu" && (
+          {/* MENU VIEW */}
+          {adminView === "menu" && (
             <View className="gap-4">
               <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#1F1B3D] mb-1 mt-5">
                 Select an Administration Module
               </Text>
 
-              {/* Grid of 5 Command Options */}
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 16 }}>
-
-                {/* Option 1: Onboarding Card */}
+                {/* Onboarding */}
                 <TouchableOpacity 
                   onPress={() => navigation.navigate("AdminOnboardingSubmissions")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-indigo-200/80"
-                  style={{ 
-                    width: isDesktop ? "48%" : "100%", 
-                    minHeight: 140,
-                    shadowColor: "#5B4FD1",
-                    shadowOffset: { width: 0, height: 6 },
-                    shadowOpacity: 0.12,
-                    shadowRadius: 10,
-                    elevation: 4,
-                  }}
+                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
                 >
-                  <LinearGradient
-                    colors={["#F8F7FF", "#EEEDFE", "#E2E0FD"]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    className="relative justify-between"
-                    style={{ minHeight: 140, padding: 20 }}
-                  >
-                    <View className="absolute -bottom-4 -right-4 opacity-[0.15] pointer-events-none">
-                      <UserPlus size={80} color="#5B4FD1" />
-                    </View>
-
+                  <LinearGradient colors={["#F8F7FF", "#EEEDFE", "#E2E0FD"]} style={{ minHeight: 140, padding: 20 }}>
                     <View className="flex-row items-center justify-between">
                       <View className="flex-row items-center gap-3.5 flex-1 pr-3">
-                        <View 
-                          className="items-center justify-center shrink-0 shadow-xs"
-                          style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#EEEDFE", borderWidth: 1, borderColor: "#D4D2FC" }}
-                        >
+                        <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#EEEDFE", borderWidth: 1, borderColor: "#D4D2FC" }} className="items-center justify-center">
                           <UserPlus size={22} color="#5B4FD1" />
                         </View>
-                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#1F1B3D] tracking-tight flex-1">
-                          Onboarding
-                        </Text>
+                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#1F1B3D] tracking-tight">Onboarding</Text>
                       </View>
-
-                      <LinearGradient
-                        colors={["#818CF8", "#6366F1", "#4F46E5"]}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 0, y: 1 }}
-                        className="shadow-md shrink-0"
-                        style={{ 
-                          width: 54, 
-                          height: 34, 
-                          borderRadius: 17, 
-                          borderWidth: 1, 
-                          borderColor: "#C7D2FE",
-                          alignItems: "center",
-                          justifyContent: "center"
-                        }}
-                      >
+                      <View style={{ width: 54, height: 34, borderRadius: 17, backgroundColor: "#4F46E5", alignItems: "center", justifyContent: "center" }}>
                         <ArrowRight size={20} color="#FFFFFF" strokeWidth={3} />
-                      </LinearGradient>
+                      </View>
                     </View>
-
-                    <View style={{ marginTop: 12, paddingRight: 40 }}>
-                      <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#7A76A6] leading-snug">
-                        Generate secure links & review submissions
-                      </Text>
-                    </View>
+                    <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#7A76A6] mt-3">Generate secure links & review submissions</Text>
                   </LinearGradient>
                 </TouchableOpacity>
 
-                {/* Option 2: Add / Edit User */}
+                {/* Users */}
                 <TouchableOpacity 
                   onPress={() => setAdminView("users")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-emerald-200/80"
-                  style={{ 
-                    width: isDesktop ? "48%" : "100%", 
-                    minHeight: 140,
-                    shadowColor: "#059669",
-                    shadowOffset: { width: 0, height: 6 },
-                    shadowOpacity: 0.12,
-                    shadowRadius: 10,
-                    elevation: 4,
-                  }}
+                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
                 >
-                  <LinearGradient
-                    colors={["#ECFDF5", "#D1FAE5", "#A7F3D0"]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    className="relative justify-between"
-                    style={{ minHeight: 140, padding: 20 }}
-                  >
-                    <View className="absolute -bottom-4 -right-4 opacity-[0.15] pointer-events-none">
-                      <Users size={80} color="#059669" />
-                    </View>
-
+                  <LinearGradient colors={["#ECFDF5", "#D1FAE5", "#A7F3D0"]} style={{ minHeight: 140, padding: 20 }}>
                     <View className="flex-row items-center justify-between">
                       <View className="flex-row items-center gap-3.5 flex-1 pr-3">
-                        <View 
-                          className="items-center justify-center shrink-0 shadow-xs"
-                          style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#D1FAE5", borderWidth: 1, borderColor: "#A7F3D0" }}
-                        >
+                        <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#D1FAE5", borderWidth: 1, borderColor: "#A7F3D0" }} className="items-center justify-center">
                           <Users size={22} color="#059669" />
                         </View>
-                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#064E3B] tracking-tight flex-1">
-                          Add / Edit User
-                        </Text>
+                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#064E3B] tracking-tight">Add / Edit User</Text>
                       </View>
-
-                      <LinearGradient
-                        colors={["#34D399", "#10B981", "#059669"]}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 0, y: 1 }}
-                        className="shadow-md shrink-0"
-                        style={{ 
-                          width: 54, 
-                          height: 34, 
-                          borderRadius: 17, 
-                          borderWidth: 1, 
-                          borderColor: "#A7F3D0",
-                          alignItems: "center",
-                          justifyContent: "center"
-                        }}
-                      >
+                      <View style={{ width: 54, height: 34, borderRadius: 17, backgroundColor: "#059669", alignItems: "center", justifyContent: "center" }}>
                         <ArrowRight size={20} color="#FFFFFF" strokeWidth={3} />
-                      </LinearGradient>
+                      </View>
                     </View>
-
-                    <View style={{ marginTop: 12, paddingRight: 40 }}>
-                      <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#047857] leading-snug">
-                        Manage directory, salaries & roles
-                      </Text>
-                    </View>
+                    <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#047857] mt-3">Manage directory, salaries & roles</Text>
                   </LinearGradient>
                 </TouchableOpacity>
 
-                {/* Option 3: Download Reports */}
+                {/* Reports */}
                 <TouchableOpacity 
                   onPress={() => navigation.navigate("AdminReports", { initialTab: "reports" })}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-amber-200/80"
-                  style={{ 
-                    width: isDesktop ? "48%" : "100%", 
-                    minHeight: 140,
-                    shadowColor: "#D97706",
-                    shadowOffset: { width: 0, height: 6 },
-                    shadowOpacity: 0.12,
-                    shadowRadius: 10,
-                    elevation: 4,
-                  }}
+                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
                 >
-                  <LinearGradient
-                    colors={["#FFFBEB", "#FEF3C7", "#FDE68A"]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    className="relative justify-between"
-                    style={{ minHeight: 140, padding: 20 }}
-                  >
-                    <View className="absolute -bottom-4 -right-4 opacity-[0.15] pointer-events-none">
-                      <Landmark size={80} color="#D97706" />
-                    </View>
-
+                  <LinearGradient colors={["#FFFBEB", "#FEF3C7", "#FDE68A"]} style={{ minHeight: 140, padding: 20 }}>
                     <View className="flex-row items-center justify-between">
                       <View className="flex-row items-center gap-3.5 flex-1 pr-3">
-                        <View 
-                          className="items-center justify-center shrink-0 shadow-xs"
-                          style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#FEF3C7", borderWidth: 1, borderColor: "#FCD34D" }}
-                        >
+                        <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#FEF3C7", borderWidth: 1, borderColor: "#FCD34D" }} className="items-center justify-center">
                           <Landmark size={22} color="#D97706" />
                         </View>
-                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#78350F] tracking-tight flex-1">
-                          Download Reports
-                        </Text>
+                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#78350F] tracking-tight">Download Reports</Text>
                       </View>
-
-                      <LinearGradient
-                        colors={["#FBBF24", "#F59E0B", "#D97706"]}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 0, y: 1 }}
-                        className="shadow-md shrink-0"
-                        style={{ 
-                          width: 54, 
-                          height: 34, 
-                          borderRadius: 17, 
-                          borderWidth: 1, 
-                          borderColor: "#FDE68A",
-                          alignItems: "center",
-                          justifyContent: "center"
-                        }}
-                      >
+                      <View style={{ width: 54, height: 34, borderRadius: 17, backgroundColor: "#D97706", alignItems: "center", justifyContent: "center" }}>
                         <ArrowRight size={20} color="#FFFFFF" strokeWidth={3} />
-                      </LinearGradient>
+                      </View>
                     </View>
-
-                    <View style={{ marginTop: 12, paddingRight: 40 }}>
-                      <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#92400E] leading-snug">
-                        Export employee master records, statutory tables, and audit spreadsheets
-                      </Text>
-                    </View>
+                    <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#92400E] mt-3">Export employee master records & audit sheets</Text>
                   </LinearGradient>
                 </TouchableOpacity>
 
-                {/* Option 4: Overall Dashboard */}
+                {/* Dashboard */}
                 <TouchableOpacity 
                   onPress={() => setAdminView("dashboard")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-blue-200/80"
-                  style={{ 
-                    width: isDesktop ? "48%" : "100%", 
-                    minHeight: 140,
-                    shadowColor: "#2563EB",
-                    shadowOffset: { width: 0, height: 6 },
-                    shadowOpacity: 0.12,
-                    shadowRadius: 10,
-                    elevation: 4,
-                  }}
+                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
                 >
-                  <LinearGradient
-                    colors={["#EFF6FF", "#DBEAFE", "#BFDBFE"]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    className="relative justify-between"
-                    style={{ minHeight: 140, padding: 20 }}
-                  >
-                    <View className="absolute -bottom-4 -right-4 opacity-[0.15] pointer-events-none">
-                      <BarChart3 size={80} color="#2563EB" />
-                    </View>
-
+                  <LinearGradient colors={["#EFF6FF", "#DBEAFE", "#BFDBFE"]} style={{ minHeight: 140, padding: 20 }}>
                     <View className="flex-row items-center justify-between">
                       <View className="flex-row items-center gap-3.5 flex-1 pr-3">
-                        <View 
-                          className="items-center justify-center shrink-0 shadow-xs"
-                          style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#DBEAFE", borderWidth: 1, borderColor: "#BFDBFE" }}
-                        >
+                        <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#DBEAFE", borderWidth: 1, borderColor: "#BFDBFE" }} className="items-center justify-center">
                           <BarChart3 size={22} color="#2563EB" />
                         </View>
-                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#1E3A8A] tracking-tight flex-1">
-                          Overall Dashboard
-                        </Text>
+                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#1E3A8A] tracking-tight">Overall Dashboard</Text>
                       </View>
-
-                      <LinearGradient
-                        colors={["#60A5FA", "#3B82F6", "#2563EB"]}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 0, y: 1 }}
-                        className="shadow-md shrink-0"
-                        style={{ 
-                          width: 54, 
-                          height: 34, 
-                          borderRadius: 17, 
-                          borderWidth: 1, 
-                          borderColor: "#93C5FD",
-                          alignItems: "center",
-                          justifyContent: "center"
-                        }}
-                      >
+                      <View style={{ width: 54, height: 34, borderRadius: 17, backgroundColor: "#2563EB", alignItems: "center", justifyContent: "center" }}>
                         <ArrowRight size={20} color="#FFFFFF" strokeWidth={3} />
-                      </LinearGradient>
+                      </View>
                     </View>
-
-                    <View style={{ marginTop: 12, paddingRight: 40 }}>
-                      <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#1E40AF] leading-snug">
-                        Real-time workforce attendance metrics, active permissions, and pulse
-                      </Text>
-                    </View>
+                    <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#1E40AF] mt-3">Real-time attendance metrics & pulse</Text>
                   </LinearGradient>
                 </TouchableOpacity>
 
-                {/* Option 5: User Reports */}
+                {/* Attendance Audit */}
+                <TouchableOpacity 
+                  onPress={() => navigation.navigate("AttendanceAuditTabs")}
+                  activeOpacity={0.85}
+                  className="overflow-hidden rounded-[24px] border border-teal-200/80"
+                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
+                >
+                  <LinearGradient colors={["#F0FDFA", "#CCFBF1", "#99F6E4"]} style={{ minHeight: 140, padding: 20 }}>
+                    <View className="flex-row items-center justify-between">
+                      <View className="flex-row items-center gap-3.5 flex-1 pr-3">
+                        <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#CCFBF1", borderWidth: 1, borderColor: "#99F6E4" }} className="items-center justify-center">
+                          <ClipboardList size={22} color="#0D9488" />
+                        </View>
+                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#134E4A] tracking-tight">Overall Attendance</Text>
+                      </View>
+                      <View style={{ width: 54, height: 34, borderRadius: 17, backgroundColor: "#0D9488", alignItems: "center", justifyContent: "center" }}>
+                        <ArrowRight size={20} color="#FFFFFF" strokeWidth={3} />
+                      </View>
+                    </View>
+                    <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#115E59] mt-3">Check-in logs, leaves, and permissions</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                {/* User Directory */}
                 <TouchableOpacity 
                   onPress={() => navigation.navigate("UserDirectory")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-purple-200/80"
-                  style={{ 
-                    width: isDesktop ? "48%" : "100%", 
-                    minHeight: 140,
-                    shadowColor: "#7E22CE",
-                    shadowOffset: { width: 0, height: 6 },
-                    shadowOpacity: 0.12,
-                    shadowRadius: 10,
-                    elevation: 4,
-                  }}
+                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
                 >
-                  <LinearGradient
-                    colors={["#FAF5FF", "#F3E8FF", "#E9D5FF"]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    className="relative justify-between"
-                    style={{ minHeight: 140, padding: 20 }}
-                  >
-                    <View className="absolute -bottom-4 -right-4 opacity-[0.15] pointer-events-none">
-                      <FileSpreadsheet size={80} color="#7E22CE" />
-                    </View>
-
+                  <LinearGradient colors={["#FAF5FF", "#F3E8FF", "#E9D5FF"]} style={{ minHeight: 140, padding: 20 }}>
                     <View className="flex-row items-center justify-between">
                       <View className="flex-row items-center gap-3.5 flex-1 pr-3">
-                        <View 
-                          className="items-center justify-center shrink-0 shadow-xs"
-                          style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#F3E8FF", borderWidth: 1, borderColor: "#E9D5FF" }}
-                        >
+                        <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#F3E8FF", borderWidth: 1, borderColor: "#E9D5FF" }} className="items-center justify-center">
                           <FileSpreadsheet size={22} color="#7E22CE" />
                         </View>
-                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#581C87] tracking-tight flex-1">
-                          User Reports
-                        </Text>
+                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#581C87] tracking-tight">User Reports</Text>
                       </View>
-
-                      <LinearGradient
-                        colors={["#C084FC", "#A855F7", "#7E22CE"]}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 0, y: 1 }}
-                        className="shadow-md shrink-0"
-                        style={{ 
-                          width: 54, 
-                          height: 34, 
-                          borderRadius: 17, 
-                          borderWidth: 1, 
-                          borderColor: "#D8B4FE",
-                          alignItems: "center",
-                          justifyContent: "center"
-                        }}
-                      >
+                      <View style={{ width: 54, height: 34, borderRadius: 17, backgroundColor: "#7E22CE", alignItems: "center", justifyContent: "center" }}>
                         <ArrowRight size={20} color="#FFFFFF" strokeWidth={3} />
-                      </LinearGradient>
+                      </View>
                     </View>
-
-                    <View style={{ marginTop: 12, paddingRight: 40 }}>
-                      <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#6B21A8] leading-snug">
-                        Access shift management rosters, payroll deductions, and tax configurations
-                      </Text>
-                    </View>
+                    <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#6B21A8] mt-3">Access shift rosters & statutory configs</Text>
                   </LinearGradient>
                 </TouchableOpacity>
-
               </View>
             </View>
           )}
 
           {/* ========================================================================= */}
-{/* DASHBOARD VIEW (DROPDOWN FILTER ENGINE)                                   */}
-{/* ========================================================================= */}
-{adminView === "dashboard" && (
-  <View className="w-full gap-4">
-    
-    {/* COMPACT ENTERPRISE DROPDOWN FILTER BAR */}
-<View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 md:p-5 shadow-xs gap-4">
-  
-  {/* FIXED HEADER ROW: Responsive wrapping for mobile view */}
-  <View className="flex-col sm:flex-row sm:items-center sm:justify-between pb-3 border-b border-slate-100 gap-2">
-    <View className="flex-1 pr-1">
-      <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">
-        Dashboard Filter Controls
-      </Text>
-      <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5 leading-tight">
-        Select parameters to filter workforce analytics in real-time
-      </Text>
-    </View>
-    
-    {/* Badge aligned safely to avoid overflow */}
-    <View className="self-start sm:self-auto bg-[#EEECFA] px-2.5 py-1 rounded-full border border-[#5B4FD1]/20 shrink-0">
-      <Text className="text-[9px] font-black text-[#5B4FD1] uppercase">Parametric Engine</Text>
-    </View>
-  </View>
-
-  {/* Row 1: CrossPlatform Date Pickers */}
-  <View className="flex-col md:flex-row gap-3">
-    <CrossPlatformDatePicker
-      label="From Date"
-      value={dashboardStartDate}
-      onChange={setDashboardStartDate}
-    />
-    <CrossPlatformDatePicker
-      label="To Date"
-      value={dashboardEndDate}
-      onChange={setDashboardEndDate}
-    />
-  </View>
-
-  {/* Row 2: Scalable Dropdown Selectors for Department & Leave Type */}
-  <View className="flex-col md:flex-row gap-3 pt-1">
-    
-    {/* Department Dropdown Filter */}
-    <View className="flex-1">
-      <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
-        Department Filter
-      </Text>
-      <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 py-3">
-        <select
-          value={selectedDashboardDept}
-          onChange={(e) => setSelectedDashboardDept(e.target.value)}
-          style={{
-            backgroundColor: "transparent",
-            border: "none",
-            outline: "none",
-            fontFamily: "inherit",
-            fontSize: "12px",
-            fontWeight: "700",
-            color: "#1F1B3D",
-            width: "100%",
-            cursor: "pointer",
-          }}
-        >
-          <option value="All Departments">All Departments</option>
-          <option value="Engineering">Engineering</option>
-          <option value="HR & Operations">HR & Operations</option>
-          <option value="Finance">Finance</option>
-          <option value="Sales">Sales</option>
-        </select>
-      </View>
-    </View>
-
-    {/* Leave / Status Type Dropdown Filter */}
-    <View className="flex-1">
-      <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
-        Leave / Status Type Filter
-      </Text>
-      <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 py-3">
-        <select
-          value={selectedStatusFilter}
-          onChange={(e) => setSelectedStatusFilter(e.target.value)}
-          style={{
-            backgroundColor: "transparent",
-            border: "none",
-            outline: "none",
-            fontFamily: "inherit",
-            fontSize: "12px",
-            fontWeight: "700",
-            color: "#1F1B3D",
-            width: "100%",
-            cursor: "pointer",
-          }}
-        >
-          <option value="ALL">All Status Types</option>
-          <option value="PRESENT">Present</option>
-          <option value="LEAVE">Leave</option>
-          <option value="PERMISSION">Permission</option>
-          <option value="OD">On Duty (OD)</option>
-          <option value="ABSENT">Absent / Unpaid</option>
-        </select>
-      </View>
-    </View>
-
-  </View>
-</View>
-
-    {/* EXACT ORIGINAL CARD 1: Real-Time Workforce Attendance */}
-    <View className="bg-white border border-[#E7E4F5] rounded-3xl p-5 md:p-6 shadow-xs gap-4">
-      <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-black text-[#1F1B3D] uppercase tracking-wider">
-        Real-Time Workforce Attendance ({selectedDashboardDept} • {selectedStatusFilter})
-      </Text>
-
-      <View className="flex-col sm:flex-row items-center justify-between gap-5">
-        <View className="w-32 h-32 rounded-full border-[10px] border-[#5B4FD1] border-t-amber-500 border-r-rose-500 items-center justify-center bg-[#F6F5FC] shadow-inner shrink-0">
-          <Text style={{ fontSize: isDesktop ? 26 : 22 }} className="font-black text-[#1F1B3D]">{workforce.total}</Text>
-          <Text style={{ fontSize: isDesktop ? 11 : 9 }} className="font-bold text-[#7A76A6] uppercase">Total Staff</Text>
-        </View>
-
-        <View className="flex-1 w-full gap-2.5">
-          <View className="flex-row items-center justify-between p-3 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5]">
-            <View className="flex-row items-center gap-2">
-              <View className="w-3.5 h-3.5 rounded-md bg-[#5B4FD1]" />
-              <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-bold text-[#1F1B3D]">Present</Text>
-            </View>
-            <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-black text-[#5B4FD1]">210 (84.6%)</Text>
-          </View>
-
-          <View className="flex-row items-center justify-between p-3 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5]">
-            <View className="flex-row items-center gap-2">
-              <View className="w-3.5 h-3.5 rounded-md bg-amber-500" />
-              <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-bold text-[#1F1B3D]">On Duty (OD)</Text>
-            </View>
-            <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-black text-amber-600">24 (9.6%)</Text>
-          </View>
-
-          <View className="flex-row items-center justify-between p-3 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5]">
-            <View className="flex-row items-center gap-2">
-              <View className="w-3.5 h-3.5 rounded-md bg-[#E4453C]" />
-              <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-bold text-[#1F1B3D]">Absent / Unpaid</Text>
-            </View>
-            <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-black text-[#E4453C]">14 (5.8%)</Text>
-          </View>
-        </View>
-      </View>
-    </View>
-
-    {/* EXACT ORIGINAL CARD 2: Active Permissions */}
-    <View className="bg-white border border-[#E7E4F5] rounded-3xl p-5 shadow-xs gap-3">
-      <View className="flex-row items-center justify-between">
-        <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-black text-[#1F1B3D] uppercase tracking-wider">
-          Active Permissions
-        </Text>
-        <View className="bg-[#FEF2D9] border border-amber-300 px-3 py-0.5 rounded-full">
-          <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-black text-amber-800">{workforce.permissionCount} Staff</Text>
-        </View>
-      </View>
-
-      <View className="bg-white rounded-[24px] p-5 shadow-sm border border-slate-100 mb-4">
-        {/* Top Category Header Row */}
-        <View className="flex-row items-center justify-between mb-3">
-          <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">
-            Active Permissions
-          </Text>
-          <View className="bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
-            <Text className="text-[10px] font-black text-amber-700">10 Staff</Text>
-          </View>
-        </View>
-
-        {/* Bottom Row: Metric Text & Cleanly Contained Button */}
-        <View className="flex-row items-center justify-between">
-          <View className="flex-1 pr-3">
-            <Text style={{ fontSize: isDesktop ? 26 : 22 }} className="font-black text-[#1F1B3D]">
-              {workforce.permissionPercentage}%
-            </Text>
-            <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#7A76A6] mt-0.5 leading-snug">
-              Of total workforce currently on permission
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            onPress={() => setShowPermissionModal(!showPermissionModal)}
-            activeOpacity={0.85}
-            className="bg-[#5B4FD1] px-4 py-3 rounded-2xl flex-row items-center justify-center shrink-0 shadow-xs"
-          >
-            <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="text-white font-bold mr-1.5">
-              {showPermissionModal ? "Hide List" : "View Staff List"}
-            </Text>
-            <ChevronRight size={isDesktop ? 16 : 14} color="#FFFFFF" strokeWidth={2.5} />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {showPermissionModal && (
-        <View className="mt-2 pt-3 border-t border-slate-100 gap-2.5">
-          {permissionList.map((emp) => (
-            <View key={emp.id} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl p-3.5 flex-row items-center justify-between">
-              <View className="flex-1 pr-2">
-                <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-black text-[#1F1B3D]">{emp.name}</Text>
-                <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-semibold text-[#7A76A6]">{emp.role} • {emp.reason}</Text>
-              </View>
-              <View className="bg-white border border-[#E7E4F5] px-3 py-1 rounded-lg">
-                <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-black text-[#5B4FD1]">{emp.slot}</Text>
-              </View>
-            </View>
-          ))}
-        </View>
-      )}
-    </View>
-
-  </View>
-)}
-
+          {/* DASHBOARD VIEW (CONNECTED DYNAMICALLY TO MYSQL BACKEND)                   */}
           {/* ========================================================================= */}
-          {/* USERS VIEW (Staff Directory & Management)                                 */}
-          {/* ========================================================================= */}
+          {adminView === "dashboard" && (
+            <View className="w-full gap-4">
+              
+              {/* COMPACT ENTERPRISE DROPDOWN FILTER BAR */}
+              <View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 md:p-5 shadow-xs gap-4">
+                <View className="flex-col sm:flex-row sm:items-center sm:justify-between pb-3 border-b border-slate-100 gap-2">
+                  <View className="flex-1 pr-1">
+                    <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">
+                      Dashboard Filter Controls
+                    </Text>
+                    <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5 leading-tight">
+                      Select parameters to filter workforce analytics in real-time
+                    </Text>
+                  </View>
+                  
+                  <View className="self-start sm:self-auto bg-[#EEECFA] px-2.5 py-1 rounded-full border border-[#5B4FD1]/20 shrink-0">
+                    <Text className="text-[9px] font-black text-[#5B4FD1] uppercase">Parametric Engine</Text>
+                  </View>
+                </View>
+
+                {/* Row 1: CrossPlatform Date Pickers */}
+                <View className="flex-col md:flex-row gap-3">
+                  <CrossPlatformDatePicker
+                    label="From Date"
+                    value={dashboardStartDate}
+                    onChange={setDashboardStartDate}
+                  />
+                  <CrossPlatformDatePicker
+                    label="To Date"
+                    value={dashboardEndDate}
+                    onChange={setDashboardEndDate}
+                  />
+                </View>
+
+                {/* Row 2: Dropdowns */}
+                <View className="flex-col md:flex-row gap-3 pt-1">
+                  {/* Department Filter */}
+                  <View className="flex-1">
+                    <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
+                      Department Filter
+                    </Text>
+                    <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 py-3">
+                      <select
+                        value={selectedDashboardDept}
+                        onChange={(e) => setSelectedDashboardDept(e.target.value)}
+                        style={{
+                          backgroundColor: "transparent",
+                          border: "none",
+                          outline: "none",
+                          fontFamily: "inherit",
+                          fontSize: "12px",
+                          fontWeight: "700",
+                          color: "#1F1B3D",
+                          width: "100%",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <option value="All Departments">All Departments</option>
+                        <option value="Degital Team">Degital Team</option>
+                        <option value="HR">HR</option>
+                        <option value="Finance">Finance</option>
+                        <option value="Sales">Sales</option>
+                      </select>
+                    </View>
+                  </View>
+
+                  {/* Status Type Filter */}
+                  <View className="flex-1">
+                    <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
+                      Leave / Status Type Filter
+                    </Text>
+                    <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 py-3">
+                      <select
+                        value={selectedStatusFilter}
+                        onChange={(e) => setSelectedStatusFilter(e.target.value)}
+                        style={{
+                          backgroundColor: "transparent",
+                          border: "none",
+                          outline: "none",
+                          fontFamily: "inherit",
+                          fontSize: "12px",
+                          fontWeight: "700",
+                          color: "#1F1B3D",
+                          width: "100%",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <option value="ALL">All Status Types</option>
+                        <option value="PRESENT">Present</option>
+                        <option value="LEAVE">Leave</option>
+                        <option value="PERMISSION">Permission</option>
+                        <option value="OD">On Duty (OD)</option>
+                        <option value="ABSENT">Absent / Unpaid</option>
+                      </select>
+                    </View>
+                  </View>
+                </View>
+              </View>
+
+              {/* DYNAMIC CARD 1: Real-Time Workforce Attendance */}
+              <View className="bg-white border border-[#E7E4F5] rounded-3xl p-5 md:p-6 shadow-xs gap-4">
+                <View className="flex-row items-center justify-between">
+                  <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-black text-[#1F1B3D] uppercase tracking-wider">
+                    Real-Time Workforce Attendance ({selectedDashboardDept} • {selectedStatusFilter})
+                  </Text>
+                  {loadingMetrics && <ActivityIndicator size="small" color="#5B4FD1" />}
+                </View>
+
+                <View className="flex-col sm:flex-row items-center justify-between gap-5">
+                  {/* Circular Donut Badge */}
+                  <View className="w-32 h-32 rounded-full border-[10px] border-[#5B4FD1] border-t-amber-500 border-r-rose-500 items-center justify-center bg-[#F6F5FC] shadow-inner shrink-0">
+                    <Text style={{ fontSize: isDesktop ? 26 : 22 }} className="font-black text-[#1F1B3D]">
+                      {workforce.total}
+                    </Text>
+                    <Text style={{ fontSize: isDesktop ? 11 : 9 }} className="font-bold text-[#7A76A6] uppercase">
+                      Total Staff
+                    </Text>
+                  </View>
+
+                  {/* Metrics Rows */}
+                  <View className="flex-1 w-full gap-2.5">
+                    {/* Present */}
+                    <View className="flex-row items-center justify-between p-3 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5]">
+                      <View className="flex-row items-center gap-2">
+                        <View className="w-3.5 h-3.5 rounded-md bg-[#5B4FD1]" />
+                        <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-bold text-[#1F1B3D]">Present</Text>
+                      </View>
+                      <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-black text-[#5B4FD1]">
+                        {workforce.present} ({workforce.presentPercentage}%)
+                      </Text>
+                    </View>
+
+                    {/* OD */}
+                    <View className="flex-row items-center justify-between p-3 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5]">
+                      <View className="flex-row items-center gap-2">
+                        <View className="w-3.5 h-3.5 rounded-md bg-amber-500" />
+                        <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-bold text-[#1F1B3D]">On Duty (OD)</Text>
+                      </View>
+                      <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-black text-amber-600">
+                        {workforce.od} ({workforce.odPercentage}%)
+                      </Text>
+                    </View>
+
+                    {/* Absent */}
+                    <View className="flex-row items-center justify-between p-3 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5]">
+                      <View className="flex-row items-center gap-2">
+                        <View className="w-3.5 h-3.5 rounded-md bg-[#E4453C]" />
+                        <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-bold text-[#1F1B3D]">Absent / Unpaid</Text>
+                      </View>
+                      <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-black text-[#E4453C]">
+                        {workforce.absent} ({workforce.absentPercentage}%)
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              </View>
+
+              {/* LIVE FLEET TRACKING ACTION CARD */}
+              <View className="bg-white border border-[#E7E4F5] rounded-3xl p-5 shadow-xs gap-4">
+                <View className="flex-row items-center justify-between">
+                  <View className="flex-1 pr-2">
+                    <View className="flex-row items-center gap-2">
+                      <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-black text-[#1F1B3D] uppercase tracking-wider">
+                        Live Fleet & Remote Tracker
+                      </Text>
+                      <View className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                    </View>
+                    <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-semibold text-[#7A76A6] mt-0.5">
+                      Live GPS breadcrumbs for on-shift Sales & WFH staff
+                    </Text>
+                  </View>
+
+                  <View className="bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-full">
+                    <Text style={{ fontSize: isDesktop ? 11 : 9 }} className="font-black text-emerald-700 uppercase">
+                      Live GPS Active
+                    </Text>
+                  </View>
+                </View>
+
+                <View className="flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-2xl bg-[#F6F5FC] border border-[#E7E4F5]">
+                  <View className="flex-row items-center gap-3">
+                    <View className="w-12 h-12 rounded-2xl bg-[#5B4FD1] items-center justify-center shadow-xs">
+                      <Navigation size={22} color="#FFFFFF" />
+                    </View>
+                    <View>
+                      <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#1F1B3D]">
+                        Field & Remote Workforce
+                      </Text>
+                      <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-semibold text-[#7A76A6]">
+                        Real-time location stream & travel paths
+                      </Text>
+                    </View>
+                  </View>
+
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => navigation.navigate("LiveTracking")}
+                    className="w-full sm:w-auto bg-[#5B4FD1] px-5 py-3 rounded-2xl flex-row items-center justify-center gap-2 shadow-xs"
+                  >
+                    <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="text-white font-black">
+                      Open Live Tracking Fleet
+                    </Text>
+                    <ChevronRight size={16} color="#FFFFFF" strokeWidth={2.5} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* CARD 2: Active Permissions */}
+              <View className="bg-white border border-[#E7E4F5] rounded-3xl p-5 shadow-xs gap-3">
+                <View className="flex-row items-center justify-between">
+                  <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-black text-[#1F1B3D] uppercase tracking-wider">
+                    Active Permissions
+                  </Text>
+                  <View className="bg-[#FEF2D9] border border-amber-300 px-3 py-0.5 rounded-full">
+                    <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-black text-amber-800">
+                      {workforce.permissionCount} Staff
+                    </Text>
+                  </View>
+                </View>
+
+                <View className="bg-white rounded-[24px] p-5 shadow-sm border border-slate-100 mb-4">
+                  <View className="flex-row items-center justify-between mb-3">
+                    <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">
+                      Active Permissions
+                    </Text>
+                    <View className="bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+                      <Text className="text-[10px] font-black text-amber-700">
+                        {workforce.permissionCount} Staff
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View className="flex-row items-center justify-between">
+                    <View className="flex-1 pr-3">
+                      <Text style={{ fontSize: isDesktop ? 26 : 22 }} className="font-black text-[#1F1B3D]">
+                        {workforce.permissionPercentage}%
+                      </Text>
+                      <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#7A76A6] mt-0.5 leading-snug">
+                        Of total workforce currently on permission
+                      </Text>
+                    </View>
+
+                    <TouchableOpacity
+                      onPress={() => navigation.navigate("AttendanceAuditTabs")}
+                      activeOpacity={0.85}
+                      className="bg-[#5B4FD1] px-4 py-3 rounded-2xl flex-row items-center justify-center shrink-0 shadow-xs"
+                    >
+                      <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="text-white font-bold mr-1.5">
+                        View Staff List
+                      </Text>
+                      <ChevronRight size={isDesktop ? 16 : 14} color="#FFFFFF" strokeWidth={2.5} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {showPermissionModal && (
+                  <View className="mt-2 pt-3 border-t border-slate-100 gap-2.5">
+                    {permissionList.map((emp) => (
+                      <View key={emp.id} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl p-3.5 flex-row items-center justify-between">
+                        <View className="flex-1 pr-2">
+                          <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-black text-[#1F1B3D]">{emp.name}</Text>
+                          <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-semibold text-[#7A76A6]">{emp.role} • {emp.reason}</Text>
+                        </View>
+                        <View className="bg-white border border-[#E7E4F5] px-3 py-1 rounded-lg">
+                          <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-black text-[#5B4FD1]">{emp.slot}</Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+
+            </View>
+          )}
+
+          {/* USERS VIEW */}
           {adminView === "users" && (
             <View style={{ flexDirection: isDesktop ? "row" : "column", gap: 24, alignItems: "flex-start", width: "100%" }}>
-              
-              {/* LEFT COLUMN: Search & Directory List */}
+              {/* Directory Left Column */}
               <View style={{ width: isDesktop ? 380 : "100%", gap: 14 }}>
                 <View className="flex-row items-center gap-2">
                   <View className="flex-1 bg-white border border-[#E7E4F5] rounded-2xl px-3.5 py-3 shadow-xs flex-row items-center">
@@ -931,9 +862,8 @@ const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
                 </View>
               </View>
 
-              {/* RIGHT COLUMN: User Detail Views */}
+              {/* User Detail Right Column */}
               <View style={{ flex: 1, width: "100%", gap: 16 }}>
-                
                 <View className="flex-row bg-[#EEECFA]/70 border border-[#E7E4F5] p-1.5 rounded-2xl justify-between gap-2">
                   {[
                     { key: "personal", label: "Personal" },
@@ -1078,13 +1008,10 @@ const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
                   </View>
                 )}
               </View>
-
             </View>
           )}
 
-          {/* ========================================================================= */}
-          {/* REPORTS VIEW                                                              */}
-          {/* ========================================================================= */}
+          {/* REPORTS VIEW */}
           {adminView === "reports" && (
             <View style={{ width: isDesktop ? 600 : "100%", alignSelf: "center" }} className="gap-4">
               <View className="bg-white border border-[#E7E4F5] rounded-3xl p-6 md:p-8 shadow-xs gap-5">
@@ -1124,9 +1051,7 @@ const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
         </View>
       </ScrollView>
 
-      {/* ========================================================================= */}
-      {/* 5. ADD / EDIT EMPLOYEE MODAL                                              */}
-      {/* ========================================================================= */}
+      {/* 5. ADD / EDIT EMPLOYEE MODAL */}
       <Modal visible={showUserModal} transparent animationType="fade">
         <TouchableOpacity 
           activeOpacity={1} 

@@ -13,6 +13,7 @@ import {
   Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { UserSession } from "../services/UserSession";
 import {
   User,
   ShieldCheck,
@@ -22,7 +23,7 @@ import {
   CheckCircle,
   Key,
 } from "lucide-react-native";
-import { useAuth, UserDetails } from "../context/AuthContext"; // Import global auth hook
+import { useAuth, UserDetails } from "../context/AuthContext";
 
 interface LoginScreenProps {
   onLoginSuccess: (userData: { empId: string; isAdmin: boolean }) => void;
@@ -30,8 +31,8 @@ interface LoginScreenProps {
 
 const API_BASE_URL =
   Platform.OS === "android"
-    ? "http://192.168.31.133:8080/api/auth"
-    : "http://192.168.31.133:8080/api/auth";
+    ? "http://192.168.31.228:8080/api/auth"
+    : "http://192.168.31.228:8080/api/auth";
 
 type UserStatus =
   | "NO_RECORD"
@@ -56,7 +57,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const { width } = useWindowDimensions();
   const isDesktop = width >= 860;
 
-  // Access the global save function from AuthContext
   const { saveUserSession } = useAuth();
 
   const [empId, setEmpId] = useState("");
@@ -131,29 +131,43 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     }
   };
 
-  // Helper to structure and save user payload to AuthContext globally
+  // Helper to structure and save user payload to both Context and UserSession
   const handleSuccessfulAuthentication = async (backendUser: any, token?: string) => {
+    const resolvedEmpId = backendUser.empId || empId.trim().toUpperCase();
+    const resolvedName = backendUser.fullName || backendUser.name || "";
+    const resolvedEmail = backendUser.email || "";
+    const resolvedRole = backendUser.role || "EMPLOYEE";
+
+    // 1. Store in the UserSession singleton for direct constant access
+    UserSession.setUser({
+      empId: resolvedEmpId,
+      name: resolvedName,
+      email: resolvedEmail,
+      role: resolvedRole,
+    });
+
+
+    // 2. Save globally into AuthContext
     const formattedUser: UserDetails = {
-      userId: backendUser.empId,
-      empId: backendUser.empId,
-      name: backendUser.fullName || backendUser.name, // maps your backend fullName response
-      email: backendUser.email,
+      userId: resolvedEmpId,
+      empId: resolvedEmpId,
+      name: resolvedName,
+      email: resolvedEmail,
       isAdmin: !!backendUser.isAdmin,
       token: token,
-      role:backendUser.role,
+      role: resolvedRole,
     };
 
-    // Save globally into state and AsyncStorage
     await saveUserSession(formattedUser);
 
-    // Trigger success callback to navigate screens
+    // 3. Trigger success callback to route screens
     onLoginSuccess({
       empId: formattedUser.empId,
       isAdmin: formattedUser.isAdmin,
     });
   };
 
-  // 2. Direct 1-Click Login
+  // Direct 1-Click Login
   const handleDirectLogin = async () => {
     setLoading(true);
     try {
@@ -219,7 +233,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     }
   };
 
-  // 4. Verify OTP
+  // Verify OTP
   const handleVerifyOtp = async () => {
     const fullOtp = otp.join("");
     if (fullOtp.length !== 6) {
@@ -293,7 +307,6 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       handleRequestOtp();
     }
   };
-
   return (
     <SafeAreaView className="flex-1 bg-brand-canvas">
       <View className="flex-1 flex-row">
@@ -312,6 +325,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   <ShieldCheck size={24} color="#FFFFFF" />
                 </View>
                 <Text className="text-2xl font-black text-white">PayCore Global</Text>
+              
               </View>
               <View className="relative z-10 my-auto">
                 <Text className="text-3xl lg:text-4xl font-black text-white leading-tight mb-5">

@@ -3,26 +3,19 @@ import React, { useState, useEffect } from "react";
 import { View, Platform, ActivityIndicator, TouchableOpacity } from "react-native";
 import { configureReanimatedLogger, ReanimatedLogLevel } from "react-native-reanimated";
 import * as Linking from "expo-linking";
-import { 
-  HouseLineIcon, 
-  HouseIcon,
-  ChatsIcon, 
-  CalendarIcon, 
-  FingerprintIcon,
-  ScanIcon,
-  UserIcon
-} from "phosphor-react-native";
-
-configureReanimatedLogger({
-  level: ReanimatedLogLevel.warn,
-  strict: false,
-});
-
+import { registerRootComponent } from "expo";
 import { NavigationContainer } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
-import { CheckSquare, User, House, UserRoundCog, MessagesSquare, CalendarCog, CalendarClock } from "lucide-react-native";
 
+// 1. Mandatory Headless Background Task Import (Top-Level Execution)
+import "./src/services/locationTrackingTask";
+
+// Icons
+import { FingerprintIcon } from "phosphor-react-native";
+import { House, MessagesSquare, CalendarClock, UserRoundCog } from "lucide-react-native";
+
+// Screens
 import LoginScreen from "./src/screens/LoginScreen";
 import HomeScreen from "./src/screens/HomeScreen";
 import ApplyScreen from "./src/screens/ApplyScreen";
@@ -37,10 +30,19 @@ import UserDirectoryScreen from "./src/screens/UserDirectoryScreen";
 import HrPolicyScreen from "./src/screens/HrPolicyScreen";
 import PunchClockScreen from "./src/screens/PunchClockScreen";
 import ChatScreen from "./src/screens/ChatScreen";
-import CandidateFormRoute from "./src/screens/CandidateOnboardingScreen"; 
+import CandidateFormRoute from "./src/screens/CandidateOnboardingScreen";
 import AdminOnboardingSubmissionsScreen from "./src/screens/AdminOnboardingSubmissionsScreen";
-import { getSavedSession, clearActiveSessionOnly } from "./src/utils/authStorage";
+import LiveTrackingScreen from "./src/screens/LiveTrackingScreen";
+import AttendanceAuditTabsScreen from "./src/screens/AttendanceAuditTabsScreen";
+
+// Context & Storage
 import { AuthProvider } from "./src/context/AuthContext";
+import { getSavedSession, clearActiveSessionOnly } from "./src/utils/authStorage";
+
+configureReanimatedLogger({
+  level: ReanimatedLogLevel.warn,
+  strict: false,
+});
 
 const Tab = createBottomTabNavigator();
 
@@ -80,7 +82,7 @@ const linking = {
   prefixes: [
     Linking.createURL("/"),
     "paycore://",
-    "http://192.168.31.133:8080",
+    "http://192.168.31.228:8080",
   ],
   config: {
     screens: {
@@ -98,6 +100,8 @@ const linking = {
       AdminReports: "admin-reports",
       MyHub: "my-hub",
       UserDirectory: "user-directory",
+      LiveTracking: "live-tracking",
+      AttendanceAuditTabs: "attendance-audit",
     },
   },
 };
@@ -146,13 +150,13 @@ function MainNavigator({ userSession, onLogout }: { userSession: any; onLogout: 
         }}
       >
         {/* TAB 1: HOME */}
-        <Tab.Screen 
-          name="Home" 
-          options={{ 
+        <Tab.Screen
+          name="Home"
+          options={{
             tabBarLabel: "Home",
             tabBarIcon: ({ color, focused }) => (
               <House color={focused ? "#5B4FD1" : color} size={20} />
-            ) 
+            ),
           }}
         >
           {(props) => (
@@ -165,56 +169,54 @@ function MainNavigator({ userSession, onLogout }: { userSession: any; onLogout: 
         </Tab.Screen>
 
         {/* TAB 2: CHATS */}
-        <Tab.Screen 
-          name="Chat" 
-          options={{ 
+        <Tab.Screen
+          name="Chat"
+          options={{
             tabBarLabel: "Chats",
             tabBarIcon: ({ color, focused }) => (
               <MessagesSquare color={focused ? "#5B4FD1" : color} size={20} />
-            ) 
+            ),
           }}
         >
           {(props) => <ChatScreen {...props} userSession={userSession} />}
         </Tab.Screen>
 
         {/* TAB 3: CENTER NOTCHED SCANNER */}
-        <Tab.Screen 
-          name="PunchClock" 
-          component={PunchClockScreen} 
-          options={{ 
+        <Tab.Screen
+          name="PunchClock"
+          component={PunchClockScreen}
+          options={{
             tabBarLabel: () => null,
             tabBarIcon: () => null,
-            tabBarButton: (props) => (
-              <NotchedCenterButton {...props} />
-            )
-          }} 
+            tabBarButton: (props) => <NotchedCenterButton {...props} />,
+          }}
         />
 
         {/* TAB 4: ATTENDANCE */}
-        <Tab.Screen 
-          name="Attendance" 
-          component={AttendanceScreen} 
-          options={{ 
+        <Tab.Screen
+          name="Attendance"
+          component={AttendanceScreen}
+          options={{
             tabBarLabel: "Attendance",
             tabBarIcon: ({ color, focused }) => (
               <CalendarClock color={focused ? "#5B4FD1" : color} size={20} />
-            ) 
-          }} 
+            ),
+          }}
         />
 
-        {/* TAB 5: PROFILE */}
-        <Tab.Screen 
-          name="Profile" 
-          component={ProfileScreen} 
-          options={{ 
+        {/* TAB 5: PROFILE / SETTINGS */}
+        <Tab.Screen
+          name="Profile"
+          component={ProfileScreen}
+          options={{
             tabBarLabel: "Settings",
             tabBarIcon: ({ color, focused }) => (
               <UserRoundCog color={focused ? "#5B4FD1" : color} size={20} />
-            ) 
-          }} 
+            ),
+          }}
         />
 
-        {/* Hidden Sub-screens & Onboarding Route */}
+        {/* Hidden Operational Routes */}
         <Tab.Screen name="Apply" component={ApplyScreen} options={{ tabBarItemStyle: { display: "none" } }} />
         <Tab.Screen name="Approvals" component={ApprovalsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
         <Tab.Screen name="CandidateForm" component={CandidateFormRoute} options={{ tabBarItemStyle: { display: "none" } }} />
@@ -225,6 +227,10 @@ function MainNavigator({ userSession, onLogout }: { userSession: any; onLogout: 
         <Tab.Screen name="MyHub" component={MyHubScreen} options={{ tabBarItemStyle: { display: "none" } }} />
         <Tab.Screen name="UserDirectory" component={UserDirectoryScreen} options={{ tabBarItemStyle: { display: "none" } }} />
         <Tab.Screen name="HrPolicy" component={HrPolicyScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+
+        {/* Live Fleet Tracking & Route Polyline Maps */}
+        <Tab.Screen name="LiveTracking" component={LiveTrackingScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+        <Tab.Screen name="AttendanceAuditTabs" component={AttendanceAuditTabsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
       </Tab.Navigator>
     </NavigationContainer>
   );
@@ -262,7 +268,7 @@ export default function App() {
           });
         }
       } catch (err) {
-        console.log("Session restore check failed.");
+        console.log("Session restore check failed:", err);
       } finally {
         setInitialLoading(false);
       }
