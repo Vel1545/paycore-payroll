@@ -10,7 +10,8 @@ import {
   Modal, 
   Switch, 
   ActivityIndicator, 
-  useWindowDimensions 
+  useWindowDimensions,
+  FlatList
 } from "react-native";
 import CrossPlatformDatePicker from "../components/CrossPlatformDatePicker";
 import { LinearGradient } from "expo-linear-gradient";
@@ -18,8 +19,10 @@ import {
   Users, ArrowRight, Clock, XCircle, ChevronLeft,
   Search, Navigation, ChevronRight, Filter, 
   DollarSign, Landmark, UserCheck, CalendarCheck, Edit3,
-  UserPlus, X, ClipboardList, Trash2, Shield, BarChart3, FileSpreadsheet, ShieldCheck
+  UserPlus, X, ClipboardList, Trash2, Shield, BarChart3, FileSpreadsheet, ShieldCheck,
+  ChevronDown
 } from "lucide-react-native";
+import { BASE_HOST } from "../constants/config";
 
 interface AdminHubScreenProps {
   navigation: any;
@@ -49,14 +52,91 @@ export interface WorkforceMetrics {
   permissionPercentage: number;
 }
 
-const LOCAL_IP = "192.168.31.228";
-const API_BASE_URL = Platform.OS === "web"
-  ? "http://192.168.31.228:8080/api/admin"
-  : `http://${LOCAL_IP}:8080/api/admin`;
+// Fallback to ngrok/env if available, otherwise local LAN
+const API_BASE_URL = `${BASE_HOST}/api/admin`;
+const ATTENDANCE_API_URL = `${BASE_HOST}/api/attendance`;
 
-const ATTENDANCE_API_URL = Platform.OS === "web"
-  ? "http://192.168.31.228:8080/api/attendance"
-  : `http://${LOCAL_IP}:8080/api/attendance`;
+// Standard headers for ngrok + JSON
+const DEFAULT_HEADERS = {
+  "Content-Type": "application/json",
+  "ngrok-skip-browser-warning": "true",
+};
+
+// ==========================================
+// NATIVE-COMPATIBLE DROPDOWN SELECTOR (REPLACES <select> & <option>)
+// ==========================================
+interface DropdownProps {
+  label: string;
+  selectedValue: string;
+  options: { label: string; value: string }[];
+  onSelect: (val: string) => void;
+  isDesktop: boolean;
+}
+
+const NativeDropdown = ({ label, selectedValue, options, onSelect, isDesktop }: DropdownProps) => {
+  const [modalVisible, setModalVisible] = useState(false);
+  const selectedLabel = options.find((o) => o.value === selectedValue)?.label || selectedValue;
+
+  return (
+    <View className="flex-1">
+      <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
+        {label}
+      </Text>
+      <TouchableOpacity
+        activeOpacity={0.8}
+        onPress={() => setModalVisible(true)}
+        className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 py-3 flex-row items-center justify-between"
+      >
+        <Text style={{ fontSize: 12 }} className="font-bold text-[#1F1B3D]" numberOfLines={1}>
+          {selectedLabel}
+        </Text>
+        <ChevronDown size={14} color="#7A76A6" />
+      </TouchableOpacity>
+
+      <Modal visible={modalVisible} transparent animationType="fade">
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setModalVisible(false)}
+          className="flex-1 bg-black/40 justify-center items-center p-5"
+        >
+          <View className="w-full max-w-sm bg-white rounded-3xl p-4 shadow-xl border border-[#E7E4F5]">
+            <View className="flex-row justify-between items-center pb-2 mb-2 border-b border-slate-100">
+              <Text className="font-black text-sm text-[#1F1B3D] uppercase tracking-wider">
+                Select {label}
+              </Text>
+              <TouchableOpacity onPress={() => setModalVisible(false)}>
+                <X size={16} color="#7A76A6" />
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={options}
+              keyExtractor={(item) => item.value}
+              renderItem={({ item }) => {
+                const isSelected = item.value === selectedValue;
+                return (
+                  <TouchableOpacity
+                    onPress={() => {
+                      onSelect(item.value);
+                      setModalVisible(false);
+                    }}
+                    className={`p-3 rounded-xl mb-1 flex-row items-center justify-between ${
+                      isSelected ? "bg-[#EEECFA]" : "bg-transparent active:bg-slate-50"
+                    }`}
+                  >
+                    <Text className={`font-bold text-sm ${isSelected ? "text-[#5B4FD1]" : "text-[#1F1B3D]"}`}>
+                      {item.label}
+                    </Text>
+                    {isSelected ? <View className="w-2 h-2 rounded-full bg-[#5B4FD1]" /> : null}
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
+    </View>
+  );
+};
 
 export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
   const { width } = useWindowDimensions();
@@ -105,7 +185,23 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
     permissionPercentage: 0,
   });
 
-  // Date Formatter Helper (YYYY-MM-DD)
+  const departmentOptions = [
+    { label: "All Departments", value: "All Departments" },
+    { label: "Digital Team", value: "Digital Team" },
+    { label: "HR", value: "HR" },
+    { label: "Finance", value: "Finance" },
+    { label: "Sales", value: "Sales" },
+  ];
+
+  const statusOptions = [
+    { label: "All Status Types", value: "ALL" },
+    { label: "Present", value: "PRESENT" },
+    { label: "Leave", value: "LEAVE" },
+    { label: "Permission", value: "PERMISSION" },
+    { label: "On Duty (OD)", value: "OD" },
+    { label: "Absent / Unpaid", value: "ABSENT" },
+  ];
+
   const formatDateToIso = (d: any) => {
     if (!d) return new Date().toISOString().split("T")[0];
     if (typeof d === "string") return d.split("T")[0];
@@ -118,7 +214,6 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
     return new Date().toISOString().split("T")[0];
   };
 
-  // Fetch Live Workforce Metrics from Spring Boot
   const fetchWorkforceMetrics = async () => {
     try {
       setLoadingMetrics(true);
@@ -129,7 +224,9 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
         statusFilter: selectedStatusFilter,
       });
 
-      const res = await fetch(`${ATTENDANCE_API_URL}/workforce-summary?${queryParams.toString()}`);
+      const res = await fetch(`${ATTENDANCE_API_URL}/workforce-summary?${queryParams.toString()}`, {
+        headers: DEFAULT_HEADERS,
+      });
       if (res.ok) {
         const data = await res.json();
         setWorkforce({
@@ -150,6 +247,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
       setLoadingMetrics(false);
     }
   };
+
   useEffect(() => {
     if (adminView === "dashboard") {
       fetchWorkforceMetrics();
@@ -159,7 +257,9 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
   const fetchUsersFromDb = async () => {
     try {
       setLoadingUsers(true);
-      const res = await fetch(`${API_BASE_URL}/users`);
+      const res = await fetch(`${API_BASE_URL}/users`, {
+        headers: DEFAULT_HEADERS,
+      });
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
         setUsersList(data);
@@ -225,7 +325,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
 
       const res = await fetch(url, {
         method,
-        headers: { "Content-Type": "application/json" },
+        headers: DEFAULT_HEADERS,
         body: JSON.stringify(payload),
       });
 
@@ -249,9 +349,9 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
 
   const filteredUsers = usersList.filter(
     (u) =>
-      u.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      u.empId.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      u.role.toLowerCase().includes(searchQuery.toLowerCase())
+      u.fullName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      u.empId?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      u.role?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const permissionList = [
@@ -324,9 +424,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
           </View>
         )}
 
-        {/* ========================================================================= */}
-        {/* 2. MAIN CONTAINER BODY                                                    */}
-        {/* ========================================================================= */}
+        {/* 2. MAIN CONTAINER BODY */}
         <View className="max-w-6xl mx-auto w-full px-5 md:px-10">
 
           {/* MENU VIEW */}
@@ -478,13 +576,11 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
             </View>
           )}
 
-          {/* ========================================================================= */}
-          {/* DASHBOARD VIEW (CONNECTED DYNAMICALLY TO MYSQL BACKEND)                   */}
-          {/* ========================================================================= */}
+          {/* DASHBOARD VIEW */}
           {adminView === "dashboard" && (
             <View className="w-full gap-4">
               
-              {/* COMPACT ENTERPRISE DROPDOWN FILTER BAR */}
+              {/* FILTER BAR WITH NATIVE DROPDOWNS */}
               <View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 md:p-5 shadow-xs gap-4">
                 <View className="flex-col sm:flex-row sm:items-center sm:justify-between pb-3 border-b border-slate-100 gap-2">
                   <View className="flex-1 pr-1">
@@ -501,7 +597,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   </View>
                 </View>
 
-                {/* Row 1: CrossPlatform Date Pickers */}
+                {/* Row 1: Date Pickers */}
                 <View className="flex-col md:flex-row gap-3">
                   <CrossPlatformDatePicker
                     label="From Date"
@@ -515,82 +611,36 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   />
                 </View>
 
-                {/* Row 2: Dropdowns */}
+                {/* Row 2: Native Dropdowns (Zero <option> tags) */}
                 <View className="flex-col md:flex-row gap-3 pt-1">
-                  {/* Department Filter */}
-                  <View className="flex-1">
-                    <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
-                      Department Filter
-                    </Text>
-                    <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 py-3">
-                      <select
-                        value={selectedDashboardDept}
-                        onChange={(e) => setSelectedDashboardDept(e.target.value)}
-                        style={{
-                          backgroundColor: "transparent",
-                          border: "none",
-                          outline: "none",
-                          fontFamily: "inherit",
-                          fontSize: "12px",
-                          fontWeight: "700",
-                          color: "#1F1B3D",
-                          width: "100%",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <option value="All Departments">All Departments</option>
-                        <option value="Degital Team">Degital Team</option>
-                        <option value="HR">HR</option>
-                        <option value="Finance">Finance</option>
-                        <option value="Sales">Sales</option>
-                      </select>
-                    </View>
-                  </View>
+                  <NativeDropdown
+                    label="Department Filter"
+                    selectedValue={selectedDashboardDept}
+                    options={departmentOptions}
+                    onSelect={setSelectedDashboardDept}
+                    isDesktop={isDesktop}
+                  />
 
-                  {/* Status Type Filter */}
-                  <View className="flex-1">
-                    <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
-                      Leave / Status Type Filter
-                    </Text>
-                    <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 py-3">
-                      <select
-                        value={selectedStatusFilter}
-                        onChange={(e) => setSelectedStatusFilter(e.target.value)}
-                        style={{
-                          backgroundColor: "transparent",
-                          border: "none",
-                          outline: "none",
-                          fontFamily: "inherit",
-                          fontSize: "12px",
-                          fontWeight: "700",
-                          color: "#1F1B3D",
-                          width: "100%",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <option value="ALL">All Status Types</option>
-                        <option value="PRESENT">Present</option>
-                        <option value="LEAVE">Leave</option>
-                        <option value="PERMISSION">Permission</option>
-                        <option value="OD">On Duty (OD)</option>
-                        <option value="ABSENT">Absent / Unpaid</option>
-                      </select>
-                    </View>
-                  </View>
+                  <NativeDropdown
+                    label="Leave / Status Type Filter"
+                    selectedValue={selectedStatusFilter}
+                    options={statusOptions}
+                    onSelect={setSelectedStatusFilter}
+                    isDesktop={isDesktop}
+                  />
                 </View>
               </View>
 
-              {/* DYNAMIC CARD 1: Real-Time Workforce Attendance */}
+              {/* Real-Time Workforce Attendance */}
               <View className="bg-white border border-[#E7E4F5] rounded-3xl p-5 md:p-6 shadow-xs gap-4">
                 <View className="flex-row items-center justify-between">
                   <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-black text-[#1F1B3D] uppercase tracking-wider">
                     Real-Time Workforce Attendance ({selectedDashboardDept} • {selectedStatusFilter})
                   </Text>
-                  {loadingMetrics && <ActivityIndicator size="small" color="#5B4FD1" />}
+                  {loadingMetrics ? <ActivityIndicator size="small" color="#5B4FD1" /> : null}
                 </View>
 
                 <View className="flex-col sm:flex-row items-center justify-between gap-5">
-                  {/* Circular Donut Badge */}
                   <View className="w-32 h-32 rounded-full border-[10px] border-[#5B4FD1] border-t-amber-500 border-r-rose-500 items-center justify-center bg-[#F6F5FC] shadow-inner shrink-0">
                     <Text style={{ fontSize: isDesktop ? 26 : 22 }} className="font-black text-[#1F1B3D]">
                       {workforce.total}
@@ -600,9 +650,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                     </Text>
                   </View>
 
-                  {/* Metrics Rows */}
                   <View className="flex-1 w-full gap-2.5">
-                    {/* Present */}
                     <View className="flex-row items-center justify-between p-3 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5]">
                       <View className="flex-row items-center gap-2">
                         <View className="w-3.5 h-3.5 rounded-md bg-[#5B4FD1]" />
@@ -613,7 +661,6 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                       </Text>
                     </View>
 
-                    {/* OD */}
                     <View className="flex-row items-center justify-between p-3 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5]">
                       <View className="flex-row items-center gap-2">
                         <View className="w-3.5 h-3.5 rounded-md bg-amber-500" />
@@ -624,7 +671,6 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                       </Text>
                     </View>
 
-                    {/* Absent */}
                     <View className="flex-row items-center justify-between p-3 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5]">
                       <View className="flex-row items-center gap-2">
                         <View className="w-3.5 h-3.5 rounded-md bg-[#E4453C]" />
@@ -646,7 +692,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                       <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-black text-[#1F1B3D] uppercase tracking-wider">
                         Live Fleet & Remote Tracker
                       </Text>
-                      <View className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                      <View className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
                     </View>
                     <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-semibold text-[#7A76A6] mt-0.5">
                       Live GPS breadcrumbs for on-shift Sales & WFH staff
@@ -702,17 +748,6 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                 </View>
 
                 <View className="bg-white rounded-[24px] p-5 shadow-sm border border-slate-100 mb-4">
-                  <View className="flex-row items-center justify-between mb-3">
-                    <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">
-                      Active Permissions
-                    </Text>
-                    <View className="bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
-                      <Text className="text-[10px] font-black text-amber-700">
-                        {workforce.permissionCount} Staff
-                      </Text>
-                    </View>
-                  </View>
-
                   <View className="flex-row items-center justify-between">
                     <View className="flex-1 pr-3">
                       <Text style={{ fontSize: isDesktop ? 26 : 22 }} className="font-black text-[#1F1B3D]">
@@ -736,7 +771,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   </View>
                 </View>
 
-                {showPermissionModal && (
+                {showPermissionModal ? (
                   <View className="mt-2 pt-3 border-t border-slate-100 gap-2.5">
                     {permissionList.map((emp) => (
                       <View key={emp.id} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl p-3.5 flex-row items-center justify-between">
@@ -750,7 +785,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                       </View>
                     ))}
                   </View>
-                )}
+                ) : null}
               </View>
 
             </View>
@@ -808,7 +843,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                       <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="text-[#7A76A6] font-bold">No employees found.</Text>
                     </View>
                   ) : isDesktop ? (
-                    <View style={{ gap: 8, maxHeight: 600, overflow: "scroll" as any }} className="pr-1">
+                    <View style={{ gap: 8, maxHeight: 600 }} className="pr-1">
                       {filteredUsers.map((u) => {
                         const isSelected = selectedUserEmpId === u.empId;
                         return (
@@ -824,7 +859,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                             <View className="flex-row items-center gap-3.5 flex-1 pr-1">
                               <View className={`w-10 h-10 rounded-xl items-center justify-center ${isSelected ? "bg-[#5B4FD1]" : "bg-[#E7E4F5]"}`}>
                                 <Text style={{ fontSize: 14 }} className={`font-black ${isSelected ? "text-white" : "text-[#5B4FD1]"}`}>
-                                  {u.fullName.charAt(0).toUpperCase()}
+                                  {u.fullName?.charAt(0)?.toUpperCase() || "U"}
                                 </Text>
                               </View>
                               <View className="flex-1">
@@ -852,7 +887,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                             }`}
                           >
                             <Text style={{ fontSize: 12 }} className={`font-bold ${isSelected ? "text-white" : "text-[#1F1B3D]"}`}>
-                              {u.fullName.split(" ")[0]} ({u.role.substring(0, 3)})
+                              {u.fullName?.split(" ")?.[0] || "User"} ({u.role?.substring(0, 3)})
                             </Text>
                           </TouchableOpacity>
                         );
@@ -888,7 +923,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   })}
                 </View>
 
-                {userSubTab === "personal" && selectedUserObj && (
+                {userSubTab === "personal" && selectedUserObj ? (
                   <View className="bg-white border border-[#E7E4F5] rounded-3xl p-6 md:p-7 gap-5 shadow-xs">
                     <View className="flex-row justify-between items-center pb-3 border-b border-slate-100">
                       <View>
@@ -934,7 +969,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                       <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="text-white font-black uppercase tracking-wider">Edit & Save Personal Details</Text>
                     </TouchableOpacity>
                   </View>
-                )}
+                ) : null}
 
                 {userSubTab === "bank" && (
                   <View className="bg-white border border-[#E7E4F5] rounded-3xl p-6 md:p-7 gap-5 shadow-xs">

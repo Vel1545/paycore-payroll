@@ -14,6 +14,7 @@ import {
 } from "lucide-react-native";
 import ScreenContainer from "../components/ScreenContainer";
 import { UserSession } from "../services/UserSession";
+import { BASE_HOST } from "../constants/config";
 
 interface AttendanceScreenProps {
   navigation: {
@@ -33,11 +34,8 @@ interface AttendanceRecord {
   isApproved?: boolean;
 }
 
-const API_BASE_URL = Platform.select({
-  web: "http://localhost:8080/api/attendance",
-  android: "http://10.0.2.2:8080/api/attendance",
-  default: "http://192.168.31.228:8080/api/attendance"
-});
+const API_BASE_URL =`${BASE_HOST}/api/attendance`;
+
 
 export default function AttendanceScreen({ navigation }: AttendanceScreenProps) {
   type FilterTab = "All" | "Present" | "Leave" | "Permission" | "OD";
@@ -163,7 +161,7 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
           showsVerticalScrollIndicator={false}
           className="flex-1"
           contentContainerStyle={{
-            paddingBottom: Platform.OS === "web" ? 30 : 110,
+            paddingBottom: Platform.OS === "web" ? 50 : 110,
           }}
         >
           {/* Quick Biometric Punch Card */}

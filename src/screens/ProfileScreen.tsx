@@ -25,6 +25,7 @@ import {
   Phone
 } from "lucide-react-native";
 import { clearActiveSessionOnly } from "../utils/authStorage";
+import { UserSession } from "../services/UserSession";
 
 interface ProfileScreenProps {
   navigation: {
@@ -102,10 +103,10 @@ export default function ProfileScreen({ navigation, onLogout }: ProfileScreenPro
 
           <View>
             <Text className="text-xl font-black text-white tracking-tight">
-              {userProfile.name}
+              {UserSession.name}
             </Text>
             <Text className="text-xs font-semibold text-purple-200 mt-0.5">
-              {userProfile.role}
+              {UserSession.role}
             </Text>
           </View>
         </View>
@@ -186,15 +187,15 @@ export default function ProfileScreen({ navigation, onLogout }: ProfileScreenPro
               <View className="space-y-2.5">
                 <View className="flex-row justify-between py-1.5 border-b border-slate-50">
                   <Text className="text-xs font-bold text-[#7A76A6]">Employee ID</Text>
-                  <Text className="text-xs font-black text-[#1F1B3D]">{userProfile.empId}</Text>
+                  <Text className="text-xs font-black text-[#1F1B3D]">{UserSession.empId}</Text>
                 </View>
                 <View className="flex-row justify-between py-1.5 border-b border-slate-50">
                   <Text className="text-xs font-bold text-[#7A76A6]">Department</Text>
-                  <Text className="text-xs font-black text-[#1F1B3D]">{userProfile.department}</Text>
+                  <Text className="text-xs font-black text-[#1F1B3D]">{UserSession.designation}</Text>
                 </View>
                 <View className="flex-row justify-between py-1.5 border-b border-slate-50">
                   <Text className="text-xs font-bold text-[#7A76A6]">Official Email</Text>
-                  <Text className="text-xs font-black text-[#1F1B3D]">{userProfile.email}</Text>
+                  <Text className="text-xs font-black text-[#1F1B3D]">{UserSession.email}</Text>
                 </View>
                 <View className="flex-row justify-between py-1.5">
                   <Text className="text-xs font-bold text-[#7A76A6]">Phone</Text>

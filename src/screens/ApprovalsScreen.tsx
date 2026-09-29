@@ -31,6 +31,7 @@ import ScreenContainer from "../components/ScreenContainer";
 import CompactDatePicker from "../components/CrossPlatformDatePicker";
 import { useAuth } from "../context/AuthContext";
 import { UserSession } from "../services/UserSession";
+import { BASE_HOST } from "../constants/config";
 
 interface InboxRequest {
   id: string;
@@ -61,10 +62,7 @@ interface ApprovalsScreenProps {
   };
 }
 
-const LOCAL_IP = "192.168.31.228";
-const API_BASE_URL = Platform.OS === "web"
-  ? "http://192.168.31.228:8080/api/admin/workflow"
-  : `http://${LOCAL_IP}:8080/api/admin/workflow`;
+const API_BASE_URL= `${BASE_HOST}/api/admin/workflow`;
 
 export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
   const { user } = useAuth();
@@ -98,6 +96,8 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
     return d.toISOString().split("T")[0];
   });
   const [endDate, setEndDate] = useState(() => new Date().toISOString().split("T")[0]);
+
+
 
   // Fetch Requests based on Role & Active Filters
   const fetchInbox = async () => {

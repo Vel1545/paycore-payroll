@@ -24,15 +24,13 @@ import {
   Key,
 } from "lucide-react-native";
 import { useAuth, UserDetails } from "../context/AuthContext";
+import { BASE_HOST } from "../constants/config";
 
 interface LoginScreenProps {
   onLoginSuccess: (userData: { empId: string; isAdmin: boolean }) => void;
 }
 
-const API_BASE_URL =
-  Platform.OS === "android"
-    ? "http://192.168.31.228:8080/api/auth"
-    : "http://192.168.31.228:8080/api/auth";
+const API_BASE_URL = `${BASE_HOST}/api/auth`;
 
 type UserStatus =
   | "NO_RECORD"

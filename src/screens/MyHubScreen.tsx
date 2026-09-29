@@ -9,6 +9,8 @@ import {
   ChevronRight, UserCheck, CreditCard
 } from "lucide-react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { UserSession } from "../services/UserSession";
+import { BASE_HOST } from "../constants/config";
 
 interface MyHubScreenProps {
   navigation: {
@@ -28,7 +30,7 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
   );
 
   const { user } = useAuth();
-  const currentUserId = user?.empId || user?.userId || "EMP-1042";
+  const currentUserId = user?.empId || user?.userId || UserSession.empId;
 
   const userProfile = {
     name: "Marcus Vance Sterling",
@@ -47,7 +49,7 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
   const handleDownloadPdf = async (empId: string, monthYear: string = "January 2026") => {
   try {
     // Construct the endpoint URL matching your backend workflow API route
-    const downloadUrl = `http://192.168.31.133:8080/api/admin/workflow/users/${empId}/payslip/download?month=${encodeURIComponent(monthYear)}`;
+    const downloadUrl = `${BASE_HOST}/api/admin/workflow/users/${empId}/payslip/download?month=${encodeURIComponent(monthYear)}`;
 
     if (Platform.OS === "web") {
       // 🌐 Web Strategy: Open the download link directly in a new tab or trigger a blob download

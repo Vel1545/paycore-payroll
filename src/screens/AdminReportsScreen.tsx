@@ -30,6 +30,7 @@ import {
   Search
 } from "lucide-react-native";
 import ScreenContainer from "../components/ScreenContainer";
+import { BASE_HOST } from "../constants/config";
 
 interface AdminReportsScreenProps {
   navigation: any;
@@ -303,7 +304,7 @@ const [salaryFilter, setSalaryFilter] = useState("");
     salaryTier: salaryFilter || "ALL"
   });
 
-  const exportUrl = `http://192.168.31.133:8080/api/admin/reports/export?${queryParams.toString()}`;
+  const exportUrl = `${BASE_HOST}/api/admin/reports/export?${queryParams.toString()}`;
   
   console.log(`📥 Exporting [${reportName}] as ${format} with filters:`, exportUrl);
 

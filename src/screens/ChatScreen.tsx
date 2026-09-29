@@ -34,6 +34,7 @@ import {
 } from "lucide-react-native";
 import * as DocumentPicker from "expo-document-picker";
 import ScreenContainer from "../components/ScreenContainer";
+import { BASE_HOST } from "../constants/config";
 
 interface ChatScreenProps {
   navigation: {
@@ -90,10 +91,7 @@ interface Channel {
   allowedMemberIds: string[];
 }
 
-const LOCAL_IP = "192.168.31.133";
-const API_BASE_URL = Platform.OS === "web"
-  ? "http://192.168.31.133:8080/api/workspace"
-  : `http://${LOCAL_IP}:8080/api/workspace`;
+const API_BASE_URL =  `${BASE_HOST}/api/workspace`;
 
 const MAX_FILE_SIZE_MB = 10;
 
@@ -183,14 +181,14 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
     fetchAnnouncementsFromDb();
     const interval = setInterval(() => {
       fetchAnnouncementsFromDb();
-    }, 5000);
+    }, 90000000);
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
     if (activeTab === "channels") {
       fetchChannelMessages(activeConversation);
-      const interval = setInterval(() => fetchChannelMessages(activeConversation), 3000);
+      const interval = setInterval(() => fetchChannelMessages(activeConversation), 90000000);
       return () => clearInterval(interval);
     }
   }, [activeConversation, activeTab]);

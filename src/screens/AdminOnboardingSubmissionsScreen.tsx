@@ -16,6 +16,7 @@ import {
 } from "lucide-react-native";
 import * as Clipboard from 'expo-clipboard'; // <-- Added Expo Clipboard import
 import ScreenContainer from "../components/ScreenContainer";
+import { BASE_HOST } from "../constants/config";
 
 interface SubmittedCandidate {
   id: string;
@@ -33,10 +34,8 @@ interface SubmittedCandidate {
   };
 }
 
-const LOCAL_IP = "192.168.31.133";
-const API_BASE_URL = Platform.OS === "web"
-  ? "http://192.168.31.133:8080/api/admin"
-  : `http://${LOCAL_IP}:8080/api/admin`;
+
+const API_BASE_URL = `${BASE_HOST}/api/admin`;
 
 export default function AdminOnboardingSubmissions({ navigation }: { navigation: any }) {
   const { width } = useWindowDimensions();

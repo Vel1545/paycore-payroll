@@ -19,6 +19,7 @@ import {
   Users,
   Navigation,
 } from "lucide-react-native";
+import { BASE_HOST } from "../constants/config";
 
 let MapView: any = null;
 let Marker: any = null;
@@ -55,13 +56,11 @@ interface TracePoint {
   longitude: number;
   accuracyMeters?: number;
   batteryPercentage?: number;
+  locationName?:string;
 }
 
-const API_BASE_URL = Platform.select({
-  web: "http://localhost:8080/api/attendance",
-  android: "http://192.168.31.228:8080/api/attendance",
-  default: "http://192.168.31.228:8080/api/attendance",
-});
+const API_BASE_URL = `${BASE_HOST}/api/attendance`;
+ 
 
 export default function LiveTrackingScreen({ navigation, route }: any) {
   const mapRef = useRef<any>(null);
@@ -136,7 +135,7 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
       if (selectedEmp) {
         loadTraces(selectedEmp.empId);
       }
-    }, 30000);
+    }, 9000000);
     return () => clearInterval(interval);
   }, []);
 
@@ -285,7 +284,7 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
         />
       </View>
 
-      {/* 3. Map View */}
+{/* 3. Map View */}
       <View style={{ height: "42%" }} className="w-full relative bg-slate-200">
         {loadingFleet || loadingTraces ? (
           <View className="flex-1 items-center justify-center">
@@ -402,8 +401,8 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
                       )}
                     </View>
                     <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5">
-                      Lat: {Number(pt.latitude).toFixed(4)}, Lng: {Number(pt.longitude).toFixed(4)}
-                    </Text>
+                     Location: {pt.locationName}  Lat: {Number(pt.latitude).toFixed(4)}, Lng: {Number(pt.longitude).toFixed(4)}
+</Text>
                   </View>
                 </View>
 

@@ -19,6 +19,7 @@ import {
 import { clearActiveSessionOnly } from "../utils/authStorage";
 import { LinearGradient } from "expo-linear-gradient";
 import { UserSession } from "../services/UserSession";
+import { BASE_HOST } from "../constants/config";
 
 interface HomeScreenProps {
   navigation: any;
@@ -26,13 +27,9 @@ interface HomeScreenProps {
   onLogout?: () => void;
 }
 
-const API_BASE_URL = Platform.select({
-  web: "http://localhost:8080/api/attendance",
-  android: "http://10.0.2.2:8080/api/attendance",
-  default: "http://192.168.31.228:8080/api/attendance"
-});
+const API_BASE_URL = `${BASE_HOST}/api/attendance`;
 
-// Module-level in-memory cache to prevent duplicate fetches across tab switches
+// Module-level in-memory cache
 let cachedOverview: any = null;
 let lastFetchTimestamp = 0;
 let cachedKey = "";
@@ -45,7 +42,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
   const empId = userSession?.empId || UserSession.empId || "EMP1042";
 
   // Dynamic Date Initialization
-  const today = new Date();
+  const today = useMemo(() => new Date(), []);
   const [currentDate, setCurrentDate] = useState<Date>(new Date(today.getFullYear(), today.getMonth(), 1));
   const [selectedDayNumber, setSelectedDayNumber] = useState<number>(today.getDate());
 
@@ -66,23 +63,27 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
   ];
   const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-  // Fetch Combined Overview (Today + Month Matrix)
+  // Fetch Attendance Overview
   const fetchAttendanceOverview = async (force = false) => {
     const year = currentDate.getFullYear();
     const month = currentDate.getMonth() + 1;
     const requestKey = `${empId}-${year}-${month}`;
     const now = Date.now();
 
-    // 5-minute memory cache: Instant UI render with 0 API calls on screen returns
     if (!force && cachedKey === requestKey && now - lastFetchTimestamp < 300000 && cachedOverview) {
       setTodaySummary(cachedOverview.today);
-      setMonthCalendarData(cachedOverview.calendar);
+      setMonthCalendarData(cachedOverview.calendar || {});
       return;
     }
 
     try {
       setIsLoading(true);
-      const res = await fetch(`${API_BASE_URL}/overview?empId=${empId}&year=${year}&month=${month}`);
+      const res = await fetch(`${API_BASE_URL}/overview?empId=${empId}&year=${year}&month=${month}`, {
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "true"
+        }
+      });
       if (res.ok) {
         const data = await res.json();
         cachedOverview = data;
@@ -109,17 +110,21 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
     fetchAttendanceOverview();
   }, [currentDate, empId]);
 
-  // Navigate Months
+  // Month Navigation
   const handlePrevMonth = () => {
-    const prev = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
-    setCurrentDate(prev);
-    setSelectedDayNumber(1);
+    setCurrentDate((prev) => {
+      const nextDate = new Date(prev.getFullYear(), prev.getMonth() - 1, 1);
+      setSelectedDayNumber(1);
+      return nextDate;
+    });
   };
 
   const handleNextMonth = () => {
-    const next = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
-    setCurrentDate(next);
-    setSelectedDayNumber(1);
+    setCurrentDate((prev) => {
+      const nextDate = new Date(prev.getFullYear(), prev.getMonth() + 1, 1);
+      setSelectedDayNumber(1);
+      return nextDate;
+    });
   };
 
   // Generate 7-column calendar matrix
@@ -168,27 +173,24 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
     return cells;
   }, [currentDate]);
 
-  // Selected date key for bottom info strip
-  const selectedDateKey = useMemo(() => {
+  // Safe selected record calculation
+  const { selectedStatus, leaveBadgeText } = useMemo(() => {
     const y = currentDate.getFullYear();
     const m = String(currentDate.getMonth() + 1).padStart(2, "0");
-    const d = String(selectedDayNumber).padStart(2, "0");
-    return `${y}-${m}-${d}`;
-  }, [currentDate, selectedDayNumber]);
+    const d = String(selectedDayNumber ?? 1).padStart(2, "0");
+    const key = `${y}-${m}-${d}`;
 
-  {/* 1. Extract selected day record from monthCalendarData */}
-  const selectedRecord = monthCalendarData[selectedDateKey];
-  const selectedStatus = typeof selectedRecord === "string" ? selectedRecord : selectedRecord?.status;
-  const leaveNature = typeof selectedRecord === "object" ? selectedRecord?.nature : null;
+    const rec = monthCalendarData ? monthCalendarData[key] : undefined;
+    const status = typeof rec === "string" ? rec : rec?.status || rec?.attendance_status || "REGULAR";
+    const nature = typeof rec === "object" ? rec?.nature : null;
+    const badgeText = nature ? `APPROVED LEAVE • ${String(nature).toUpperCase()}` : "APPROVED LEAVE";
 
-  {/* 2. Format the Badge Label */}
-  const leaveBadgeText = leaveNature 
-    ? `APPROVED LEAVE • ${String(leaveNature).toUpperCase()}`
-    : "APPROVED LEAVE";
+    return { selectedStatus: status, leaveBadgeText: badgeText };
+  }, [currentDate, selectedDayNumber, monthCalendarData]);
 
   const handleLogoutPress = async () => {
     await clearActiveSessionOnly();
-    cachedOverview = null; // Clear local cache on logout
+    cachedOverview = null;
     if (onLogout) {
       onLogout();
     } else if (navigation?.replace) {
@@ -202,44 +204,39 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-[#F4F6F9]" edges={["top"]}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: "#F4F6F9" }} edges={["top"]}>
       <ScrollView 
         showsVerticalScrollIndicator={false} 
         contentContainerStyle={{ flexGrow: 1, paddingBottom: 120 }}
-        className="flex-1"
+        style={{ flex: 1 }}
       >
-        {/* ========================================================================= */}
-        {/* 1. PREMIUM HEADER / HERO SECTION                                          */}
-        {/* ========================================================================= */}
+        {/* 1. HERO HEADER */}
         <LinearGradient
           colors={["#4F46E5", "#6366F1", "#818CF8"]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          className="px-6 md:px-10 relative overflow-hidden shadow-xl shadow-indigo-950/20"
           style={{ 
             paddingTop: 16, 
             paddingBottom: 90, 
-            paddingLeft: 20, 
-            paddingRight: 20,
+            paddingHorizontal: 20,
             borderBottomLeftRadius: 22,
             borderBottomRightRadius: 22
           }}
+          className="relative overflow-hidden shadow-xl"
         >
-          {/* Background Decorative Shapes */}
           <View className="absolute -top-10 -right-10 w-52 h-52 rounded-full bg-white/10 blur-2xl pointer-events-none" />
           <View className="absolute bottom-0 left-10 w-44 h-44 rounded-full bg-indigo-900/20 blur-2xl pointer-events-none" />
 
           <View className="max-w-6xl mx-auto w-full">
-            {/* Top Action Icons Row */}
             <View className="flex-row items-center justify-between" style={{ marginBottom: 8 }}>
               <TouchableOpacity 
                 onPress={() => (isAdmin ? navigation.navigate("Approvals") : null)}
                 className="w-12 h-12 rounded-2xl bg-white/15 border border-white/25 items-center justify-center relative active:opacity-80 shadow-sm"
               >
                 <Bell size={20} color="#FFFFFF" />
-                {isAdmin && (
+                {isAdmin ? (
                   <View className="absolute top-3 right-3 w-2.5 h-2.5 rounded-full bg-rose-400 border border-[#5B4FD1]" />
-                )}
+                ) : null}
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -250,7 +247,6 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
               </TouchableOpacity>
             </View>
 
-            {/* Centered Profile Layout */}
             <View className="items-center justify-center" style={{ marginTop: 0, marginBottom: 16 }}>
               <View className="relative" style={{ marginBottom: 12 }}>
                 <View className="w-24 h-24 rounded-full bg-indigo-900/40 border-2 border-white/60 items-center justify-center shadow-xl">
@@ -262,23 +258,21 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
               </View>
 
               <Text className="text-xl md:text-2xl font-black text-white tracking-tight text-center">
-                {isAdmin ? "Command Center" : "Marcus Sterling"}
+                {UserSession.name? UserSession.name:"Employee"}
               </Text>
               <Text className="text-xs font-bold text-purple-200 uppercase tracking-widest text-center" style={{ marginTop: 5 }}>
-                {isAdmin ? "Admin Portal" : "Software Engineer"}
+                {UserSession.designation?UserSession.designation:"Employee"}
               </Text>
             </View>
           </View>
         </LinearGradient>
 
-        {/* ========================================================================= */}
-        {/* 2. MAIN CONTAINER BODY                                                    */}
-        {/* ========================================================================= */}
+        {/* 2. BODY CONTENT */}
         <View className="max-w-6xl mx-auto w-full px-5 md:px-10">
           
-          {/* Today Attendance Floating Card (Live Dynamic Database Values) */}
+          {/* Today Attendance Floating Card */}
           <View 
-            className="bg-white rounded-[18px] p-5 md:p-6 shadow-2xl shadow-slate-300/80 border border-slate-100/80 z-10"
+            className="bg-white rounded-[18px] p-5 md:p-6 shadow-2xl border border-slate-100 z-10"
             style={{ marginTop: -60, marginBottom: 40 }}
           >
             <View className="flex-row justify-between items-center mb-4">
@@ -325,21 +319,19 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
             </View>
           </View>
 
-          {/* ========================================================================= */}
-          {/* 3. UNIFORMED PREMIUM 4-CARD SERVICE GRID                                  */}
-          {/* ========================================================================= */}
+          {/* 3. 4-CARD SERVICE GRID */}
           <View className="mb-10">
             <View className="flex-row justify-between items-center mb-3 px-1">
               <Text className="text-xs md:text-sm font-black text-[#1F1B3D] uppercase tracking-wider">
                 Please Choose Services
               </Text>
-              <Text className="text-xs font-black text-[#5B4FD1] uppercase tracking-widest font-sans">
+              <Text className="text-xs font-black text-[#5B4FD1] uppercase tracking-widest">
                 Quick Actions
               </Text>
             </View>
 
             <View className="flex-row flex-wrap justify-between gap-3">
-              {/* Card 1: Requests */}
+              {/* Requests */}
               <TouchableOpacity 
                 onPress={() => navigation.navigate("Approvals")}
                 activeOpacity={0.85}
@@ -347,10 +339,6 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                 style={{ 
                   minHeight: 150, 
                   width: isDesktop ? "23.5%" : "48%",
-                  shadowColor: "#059669",
-                  shadowOffset: { width: 0, height: 6 },
-                  shadowOpacity: 0.15,
-                  shadowRadius: 10,
                   elevation: 3
                 }}
               >
@@ -358,8 +346,8 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                   colors={["#FFFFFF", "#ECFDF5", "#D1FAE5"]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
+                  style={{ minHeight: 150, padding: 16 }}
                   className="items-start justify-between relative rounded-[22px] overflow-hidden"
-                  style={{ minHeight: 150, paddingTop: 16, paddingBottom: 16, paddingLeft: 16, paddingRight: 14 }}
                 >
                   <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
                     <Mail size={100} color="#059669" />
@@ -378,7 +366,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                       {isAdmin ? "04 Active" : "100"}
                     </Text>
                   </View>
-                  <View className="z-10" style={{ marginTop: 20 }}>
+                  <View style={{ marginTop: 20 }}>
                     <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Requests</Text>
                     <Text className="text-[11px] font-semibold text-emerald-700/80" style={{ marginTop: 3 }}>
                       Manage requests
@@ -387,7 +375,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                 </LinearGradient>
               </TouchableOpacity>
 
-              {/* Card 2: Leaves */}
+              {/* Leaves */}
               <TouchableOpacity 
                 onPress={() => navigation.navigate("Apply", { tab: "leave" })}
                 activeOpacity={0.85}
@@ -395,10 +383,6 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                 style={{ 
                   minHeight: 150, 
                   width: isDesktop ? "23.5%" : "48%",
-                  shadowColor: "#E11D48",
-                  shadowOffset: { width: 0, height: 6 },
-                  shadowOpacity: 0.15,
-                  shadowRadius: 10,
                   elevation: 3
                 }}
               >
@@ -406,8 +390,8 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                   colors={["#FFFFFF", "#FFF1F2", "#FFE4E6"]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
+                  style={{ minHeight: 150, padding: 16 }}
                   className="items-start justify-between relative rounded-[22px] overflow-hidden"
-                  style={{ minHeight: 150, paddingTop: 16, paddingBottom: 16, paddingLeft: 16, paddingRight: 14 }}
                 >
                   <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
                     <CalendarIcon size={100} color="#E11D48" />
@@ -426,7 +410,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                       12 Left
                     </Text>
                   </View>
-                  <View className="z-10" style={{ marginTop: 20 }}>
+                  <View style={{ marginTop: 20 }}>
                     <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Leaves</Text>
                     <Text className="text-[11px] font-semibold text-rose-700/80" style={{ marginTop: 3 }}>
                       Apply & track
@@ -435,7 +419,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                 </LinearGradient>
               </TouchableOpacity>
 
-              {/* Card 3: Pay Slip */}
+              {/* Pay Slip */}
               <TouchableOpacity 
                 onPress={() => navigation.navigate("MyHub", { initialTab: "payslip" })}
                 activeOpacity={0.85}
@@ -443,10 +427,6 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                 style={{ 
                   minHeight: 150, 
                   width: isDesktop ? "23.5%" : "48%",
-                  shadowColor: "#D97706",
-                  shadowOffset: { width: 0, height: 6 },
-                  shadowOpacity: 0.15,
-                  shadowRadius: 10,
                   elevation: 3
                 }}
               >
@@ -454,8 +434,8 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                   colors={["#FFFFFF", "#FFF7E6", "#FEF0CC"]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
+                  style={{ minHeight: 150, padding: 16 }}
                   className="items-start justify-between relative rounded-[22px] overflow-hidden"
-                  style={{ minHeight: 150, paddingTop: 16, paddingBottom: 16, paddingLeft: 16, paddingRight: 14 }}
                 >
                   <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
                     <DollarSign size={100} color="#D97706" />
@@ -474,7 +454,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                       Available
                     </Text>
                   </View>
-                  <View className="z-10" style={{ marginTop: 20 }}>
+                  <View style={{ marginTop: 20 }}>
                     <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Pay Slip</Text>
                     <Text className="text-[11px] font-semibold text-amber-700/80" style={{ marginTop: 3 }}>
                       View & download
@@ -483,7 +463,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                 </LinearGradient>
               </TouchableOpacity>
 
-              {/* Card 4: Punch Entry */}
+              {/* Punch Entry */}
               <TouchableOpacity 
                 onPress={() => navigation.navigate("PunchClock")}
                 activeOpacity={0.85}
@@ -491,10 +471,6 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                 style={{ 
                   minHeight: 150, 
                   width: isDesktop ? "23.5%" : "48%",
-                  shadowColor: "#5B4FD1",
-                  shadowOffset: { width: 0, height: 6 },
-                  shadowOpacity: 0.15,
-                  shadowRadius: 10,
                   elevation: 3
                 }}
               >
@@ -502,8 +478,8 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                   colors={["#FFFFFF", "#F5F3FF", "#EDE9FE"]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
+                  style={{ minHeight: 150, padding: 16 }}
                   className="items-start justify-between relative rounded-[22px] overflow-hidden"
-                  style={{ minHeight: 150, paddingTop: 16, paddingBottom: 16, paddingLeft: 16, paddingRight: 14 }}
                 >
                   <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
                     <Fingerprint size={100} color="#5B4FD1" />
@@ -522,7 +498,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                       In-Office
                     </Text>
                   </View>
-                  <View className="z-10" style={{ marginTop: 20 }}>
+                  <View style={{ marginTop: 20 }}>
                     <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Punch Entry</Text>
                     <Text className="text-[11px] font-semibold text-indigo-700/80" style={{ marginTop: 3 }}>
                       Time & attendance
@@ -531,8 +507,8 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                 </LinearGradient>
               </TouchableOpacity>
 
-              {/* 🔒 ADMIN HUB CARD */}
-              {isAdmin && (
+              {/* Admin Hub */}
+              {isAdmin ? (
                 <TouchableOpacity 
                   onPress={() => navigation.navigate("AdminHub")}
                   activeOpacity={0.85}
@@ -540,10 +516,6 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                   style={{ 
                     minHeight: 150, 
                     width: isDesktop ? "23.5%" : "48%",
-                    shadowColor: "#5B4FD1",
-                    shadowOffset: { width: 0, height: 6 },
-                    shadowOpacity: 0.15,
-                    shadowRadius: 10,
                     elevation: 3
                   }}
                 >
@@ -551,8 +523,8 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                     colors={["#FFFFFF", "#F5F3FF", "#EDE9FE"]}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
+                    style={{ minHeight: 150, padding: 16 }}
                     className="items-start justify-between relative rounded-[22px] overflow-hidden"
-                    style={{ minHeight: 150, paddingTop: 16, paddingBottom: 16, paddingLeft: 16, paddingRight: 14 }}
                   >
                     <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
                       <ShieldUser size={100} color="#5B4FD1" />
@@ -571,7 +543,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                         Secure
                       </Text>
                     </View>
-                    <View className="z-10" style={{ marginTop: 20 }}>
+                    <View style={{ marginTop: 20 }}>
                       <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Admin Hub</Text>
                       <Text className="text-[11px] font-semibold text-indigo-700/80" style={{ marginTop: 3 }}>
                         Command Center
@@ -579,41 +551,23 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                     </View>
                   </LinearGradient>
                 </TouchableOpacity>
-              )}
+              ) : null}
             </View>
           </View>
 
-          {/* ========================================================================= */}
-          {/* 4. MODERN SAAS ATTENDANCE CALENDAR MATRIX (Live Database Driven)          */}
-          {/* ========================================================================= */}
-          <View className="flex-row items-center justify-between px-1 mb-3">
-            <View className="flex-row items-center gap-2">
-              <CalendarIcon size={16} color="#5B4FD1" />
-              <Text className="text-xs md:text-sm font-black text-[#1F1B3D] uppercase tracking-wider">
-                Attendance Calendar View
-              </Text>
-            </View>
-            <TouchableOpacity 
-              onPress={() => navigation.navigate("Attendance")}
-              className="flex-row items-center active:opacity-75"
-            >
-              <Text className="text-xs font-black text-[#5B4FD1] uppercase tracking-widest font-sans">Full Logs</Text>
-              <ChevronRight size={14} color="#5B4FD1" />
-            </TouchableOpacity>
-          </View>
-
-          <View className="bg-white rounded-[32px] border border-slate-100 shadow-xl shadow-slate-200/50 overflow-hidden mb-10">
+          {/* 4. CALENDAR MATRIX */}
+          <View className="bg-white rounded-[32px] border border-slate-100 shadow-xl overflow-hidden mb-10">
             {/* Header: Month Selector */}
             <View className="flex-row items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
               <View className="flex-row items-center gap-3">
                 <Text className="text-base md:text-lg font-black text-[#1F1B3D]">
                   {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()}
                 </Text>
-                {currentDate.getMonth() === today.getMonth() && currentDate.getFullYear() === today.getFullYear() && (
+                {currentDate.getMonth() === today.getMonth() && currentDate.getFullYear() === today.getFullYear() ? (
                   <View className="bg-emerald-100 px-3 py-0.5 rounded-full">
                     <Text className="text-[9px] font-black text-emerald-800 uppercase tracking-widest">Live</Text>
                   </View>
-                )}
+                ) : null}
               </View>
 
               <View className="flex-row items-center gap-1.5 bg-white border border-slate-200 rounded-2xl p-1 shadow-xs">
@@ -632,7 +586,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
               </View>
             </View>
 
-            {/* Day of the Week Header */}
+            {/* Day Labels */}
             <View className="flex-row border-b border-slate-100 bg-slate-50/30 py-3">
               {dayLabels.map((label, idx) => {
                 const isSun = idx === 0;
@@ -646,7 +600,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
               })}
             </View>
 
-            {/* Calendar Days Matrix */}
+            {/* Matrix */}
             {isLoading && Object.keys(monthCalendarData).length === 0 ? (
               <View className="h-56 items-center justify-center">
                 <ActivityIndicator size="small" color="#5B4FD1" />
@@ -664,7 +618,6 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
 
                   const isSelected = cell.isCurrentMonth && selectedDayNumber === cell.day;
                   
-                  // Extract cell status supporting both plain string and structured object
                   const cellRawRecord = cell.dateString ? monthCalendarData[cell.dateString] : undefined;
                   const cellStatus = typeof cellRawRecord === "string" 
                     ? cellRawRecord 
@@ -677,7 +630,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
 
                   return (
                     <TouchableOpacity
-                      key={index}
+                      key={cell.dateString || `cell-${index}`}
                       activeOpacity={0.8}
                       onPress={() => {
                         if (cell.isCurrentMonth) {
@@ -688,9 +641,10 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                       className="p-1 items-center justify-center relative"
                     >
                       <View 
-                        className={`w-10 h-10 rounded-2xl items-center justify-center transition-all ${
+                        style={isSelected ? { elevation: 3, shadowColor: "#5B4FD1", shadowOpacity: 0.25, shadowRadius: 5 } : undefined}
+                        className={`w-10 h-10 rounded-2xl items-center justify-center ${
                           isSelected
-                            ? "bg-[#5B4FD1] shadow-md shadow-purple-600/30"
+                            ? "bg-[#5B4FD1]"
                             : isAbsent
                             ? "bg-[#FDE9E8] border border-[#E4453C]/40"
                             : isLeave
@@ -718,15 +672,14 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                           {cell.day}
                         </Text>
 
-                        {/* Live Status Indicator Dots */}
-                        {cell.isCurrentMonth && !isSelected && (
+                        {cell.isCurrentMonth && !isSelected ? (
                           <View className="absolute bottom-1.5 flex-row gap-0.5 items-center">
-                            {isPresent && <View className="w-1.5 h-1.5 rounded-full bg-[#1FAE5C]" />}
-                            {isAbsent && <View className="w-1.5 h-1.5 rounded-full bg-[#E4453C]" />}
-                            {isLeave && <View className="w-1.5 h-1.5 rounded-full bg-[#D08A0C]" />}
-                            {isHalfDay && <View className="w-1.5 h-1.5 rounded-full bg-amber-500" />}
+                            {isPresent ? <View className="w-1.5 h-1.5 rounded-full bg-[#1FAE5C]" /> : null}
+                            {isAbsent ? <View className="w-1.5 h-1.5 rounded-full bg-[#E4453C]" /> : null}
+                            {isLeave ? <View className="w-1.5 h-1.5 rounded-full bg-[#D08A0C]" /> : null}
+                            {isHalfDay ? <View className="w-1.5 h-1.5 rounded-full bg-amber-500" /> : null}
                           </View>
-                        )}
+                        ) : null}
                       </View>
                     </TouchableOpacity>
                   );
@@ -734,7 +687,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
               </View>
             )}
 
-            {/* Attendance Legend Strip */}
+            {/* Attendance Legend */}
             <View className="flex-row items-center justify-around px-4 py-3 border-t border-slate-100 bg-slate-50/40">
               <View className="flex-row items-center gap-2">
                 <View className="w-2.5 h-2.5 rounded-full bg-[#1FAE5C]" />
@@ -763,11 +716,11 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
                 </Text>
                 {selectedDayNumber === today.getDate() && 
                  currentDate.getMonth() === today.getMonth() && 
-                 currentDate.getFullYear() === today.getFullYear() && (
+                 currentDate.getFullYear() === today.getFullYear() ? (
                   <View className="bg-purple-100 px-2 py-0.5 rounded-md">
                     <Text className="text-[9px] font-black text-[#5B4FD1]">TODAY</Text>
                   </View>
-                )}
+                ) : null}
               </View>
 
               {selectedStatus === "ABSENT" ? (
@@ -799,9 +752,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
             </View>
           </View>
 
-          {/* ========================================================================= */}
-          {/* 5. OTHER DETAILS & QUICK MODULES                                          */}
-          {/* ========================================================================= */}
+          {/* 5. QUICK MODULES */}
           <Text className="text-xs md:text-sm font-black text-[#1F1B3D] uppercase tracking-wider mb-3 px-1">
             Other Details & Quick Modules
           </Text>
@@ -823,7 +774,6 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
             <ChevronRight size={20} color="#7A76A6" />
           </TouchableOpacity>
 
-          {/* Quick Module Strip */}
           <View className="bg-white rounded-3xl p-4 md:p-5 shadow-sm border border-slate-100 flex-row justify-between items-center mb-8">
             <TouchableOpacity onPress={() => navigation.navigate("Profile")} className="items-center flex-1 py-1.5 active:opacity-75">
               <View className="w-11 h-11 rounded-2xl bg-[#EEECFA] items-center justify-center mb-1.5 mx-auto">

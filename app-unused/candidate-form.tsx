@@ -2,11 +2,9 @@ import React, { useEffect, useState } from "react";
 import { View, Text, ActivityIndicator, Platform } from "react-native";
 import * as Linking from "expo-linking";
 import CandidateOnboardingScreen from "../src/screens/CandidateOnboardingScreen";
+import { BASE_HOST } from "../src/constants/config";
 
-const LOCAL_IP = "192.168.31.133";
-const API_BASE_URL = Platform.OS === "web"
-  ? `http://${LOCAL_IP}:8080/api/onboarding`
-  : `http://${LOCAL_IP}:8080/api/onboarding`;
+const API_BASE_URL =  `${BASE_HOST}/api/onboarding`;
 
 export default function CandidateFormRoute() {
   const [token, setToken] = useState<string | undefined>(undefined);
@@ -41,7 +39,7 @@ export default function CandidateFormRoute() {
 
     const verifyAccess = async () => {
       try {
-        const res = await fetch(`http://${LOCAL_IP}:8080/api/admin/verify-access?token=${token}&mobile=${mobile}`);
+        const res = await fetch(`http://${LOCAL_IP}/api/admin/verify-access?token=${token}&mobile=${mobile}`);
         if (res.ok) {
           setIsAuthorized(true);
         } else {

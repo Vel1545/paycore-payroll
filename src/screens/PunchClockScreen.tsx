@@ -35,6 +35,7 @@ import {
 import ScreenContainer from "../components/ScreenContainer";
 import { UserSession } from "../services/UserSession";
 import { startHourlyTracking, stopHourlyTracking } from "../services/shiftTrackingManager";
+import { BASE_HOST } from "../constants/config";
 
 interface PunchClockScreenProps {
   navigation: {
@@ -45,6 +46,7 @@ interface PunchClockScreenProps {
 }
 
 type PunchState = "NOT_CHECKED_IN" | "WORKING" | "ON_BREAK" | "CHECKED_OUT";
+type AttendanceMode = "OFFICE" | "WFH" | "SALES";
 
 interface BreakSessionItem {
   id: string;
@@ -63,18 +65,45 @@ interface GeofenceConfig {
   radius_meters?: number;
 }
 
-const API_BASE_URL = Platform.select({
-  web: "http://localhost:8080/api/attendance",
-  android: "http://10.0.2.2:8080/api/attendance",
-  default: "http://192.168.31.228:8080/api/attendance"
-});
+interface PunchResponsePayload {
+  status: string;
+  statusCode?: number;
+  workMode?: string;
+  punchId?: string;
+  message?: string;
+  [key: string]: any;
+}
+
+const API_BASE_URL = `${BASE_HOST}/api/attendance`;
+const TOTAL_BREAK_LIMIT_MINS = 80;
+
+// Pure display formatter for IST
+const formatToIST = (dateInput?: number | string | Date | null) => {
+  if (!dateInput) return "--:--";
+  const date = typeof dateInput === "number" || typeof dateInput === "string" 
+    ? new Date(dateInput) 
+    : dateInput;
+
+  return isNaN(date.getTime())
+    ? "--:--"
+    : date.toLocaleTimeString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour12: true,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+};
 
 export default function PunchClockScreen({ navigation }: PunchClockScreenProps) {
   const cameraRef = useRef<any>(null);
   const [permission, requestPermission] = useCameraPermissions();
 
+  // Server Time Sync Ref (Difference in ms between Server Time and Device Time)
+  const serverOffsetMs = useRef<number>(0);
   const [currentTimeIST, setCurrentTimeIST] = useState("");
   const [currentDateIST, setCurrentDateIST] = useState("");
+
   const [userDistance, setUserDistance] = useState<number | null>(null);
   const [isWithinGeofence, setIsWithinGeofence] = useState(false);
   const [capturedPhotoUri, setCapturedPhotoUri] = useState<string | null>(null);
@@ -82,7 +111,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
   const [isVerifying, setIsVerifying] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Dynamic Geofence Configuration from user_configs
+  // Dynamic Geofence Configuration
   const [activeBranchName, setActiveBranchName] = useState<string>("Assigned Office");
   const [geofenceRules, setGeofenceRules] = useState<GeofenceConfig[]>([]);
   const [allowedRadiusMeters, setAllowedRadiusMeters] = useState<number>(200);
@@ -97,25 +126,38 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
   const [checkInTime, setCheckInTime] = useState<string | null>(null);
   const [checkOutTime, setCheckOutTime] = useState<string | null>(null);
 
-  // Live Working Hours Tracking
+  // Working Hours & Breaks
   const [workedSeconds, setWorkedSeconds] = useState(0);
-  const effectiveStartRef = useRef<Date | null>(null);
-  const breakSecondsRef = useRef<number>(0);
-  type AttendanceMode = "OFFICE" | "WFH" | "SALES";
-
-  // 80 Min Break Policy Pool
-  const TOTAL_BREAK_LIMIT_MINS = 80;
   const [usedBreakMinutes, setUsedBreakMinutes] = useState(0);
   const [activeBreakType, setActiveBreakType] = useState<string | null>(null);
   const [activeBreakStartTime, setActiveBreakStartTime] = useState<string | null>(null);
-  const [activeBreakRawStart, setActiveBreakRawStart] = useState<Date | null>(null);
   const [isBreakModalVisible, setIsBreakModalVisible] = useState(false);
   const [breakHistory, setBreakHistory] = useState<BreakSessionItem[]>([]);
 
   const EMP_ID = UserSession.empId || "EMP1042";
-  
 
-  // Haversine Distance Calculation (in Meters)
+  // Returns current timestamp synced with backend
+  const getSyncedServerDate = () => new Date(Date.now() + serverOffsetMs.current);
+
+  // 1. Sync Offset from Backend (Called once on load or foreground)
+  const syncServerTimeOffset = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/server-time`);
+      if (!response.ok) return;
+      const data = await response.json();
+      
+      const serverTimestamp = typeof data.serverTime === "number" 
+        ? data.serverTime 
+        : new Date(data.serverTime).getTime();
+
+      // Compute clock delta: Server Time - Client Clock
+      serverOffsetMs.current = serverTimestamp - Date.now();
+    } catch (error) {
+      console.warn("Could not sync server time offset; defaulting to local clock", error);
+    }
+  };
+
+  // Haversine Distance Calculation (Meters)
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
     const R = 6371e3;
     const phi1 = (lat1 * Math.PI) / 180;
@@ -130,8 +172,6 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
 
     return Math.round(R * c);
   };
-
-
 
   const evaluateGeofence = (lat: number, lng: number, branches: GeofenceConfig[]) => {
     if (activeMode === "WFH") {
@@ -170,55 +210,21 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
     }
   };
 
-  // ADD getFormattedIST HERE:
-  const getFormattedIST = () =>
-    new Date().toLocaleTimeString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      hour12: true,
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-
-  const syncServerTimeIST = () => {
-    const now = new Date();
-    setCurrentTimeIST(
-      now.toLocaleTimeString("en-IN", {
-        timeZone: "Asia/Kolkata",
-        hour12: true,
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      })
-    );
-    setCurrentDateIST(
-      now.toLocaleDateString("en-IN", {
-        timeZone: "Asia/Kolkata",
-        weekday: "short",
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      })
-    );
-  };
-
   const checkLiveLocation = async (rulesOverride?: GeofenceConfig[]) => {
     setIsVerifying(true);
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== "granted") {
         Alert.alert("Permission Required", "GPS Location access is mandatory to punch attendance.");
-        setIsVerifying(false);
         return;
       }
 
-      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const currentLat = location.coords.latitude;
       const currentLng = location.coords.longitude;
 
       setUserCoords({ latitude: currentLat, longitude: currentLng });
       setIsMockLocation(location.mocked || false);
-
       evaluateGeofence(currentLat, currentLng, rulesOverride || geofenceRules);
     } catch (error) {
       console.warn("GPS lock failed:", error);
@@ -227,7 +233,6 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
     }
   };
 
-  // Hydrate Initial Shift & Break State
   const fetchTodayAttendanceState = async () => {
     try {
       setIsSyncing(true);
@@ -252,107 +257,81 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
 
       await checkLiveLocation(parsedBranches);
 
-if (data.work_mode) {
-  if (data.work_mode === "SALES") {
-    setActiveMode("SALES");
-  } else if (data.work_mode === "WFH") {
-    setActiveMode("WFH");
-  } else {
-    setActiveMode("OFFICE");
-  }
-}
+      if (data.work_mode) {
+        setActiveMode(data.work_mode === "SALES" ? "SALES" : data.work_mode === "WFH" ? "WFH" : "OFFICE");
+      }
 
-      const totalBreakMins = data.break_minutes || 0;
-      setUsedBreakMinutes(totalBreakMins);
-      breakSecondsRef.current = totalBreakMins * 60;
+      setUsedBreakMinutes(data.break_minutes || 0);
 
       if (data.break_history_json) {
         const parsedHistory = typeof data.break_history_json === "string" 
           ? JSON.parse(data.break_history_json) 
           : data.break_history_json;
-        if (Array.isArray(parsedHistory)) {
-          setBreakHistory(parsedHistory);
-        }
+        if (Array.isArray(parsedHistory)) setBreakHistory(parsedHistory);
       }
 
-      // Check In State Restoration
       if (data.first_punch_in) {
-        const inDate = new Date(data.first_punch_in);
-        setCheckInTime(inDate.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }));
+        setCheckInTime(formatToIST(data.first_punch_in));
 
-        // Shift clamping logic: calculation starts at shift_start if arrived earlier
-        if (data.config?.shift_start) {
-          const [sH, sM] = data.config.shift_start.split(":").map(Number);
-          const shiftStartDate = new Date(inDate);
-          shiftStartDate.setHours(sH, sM, 0, 0);
-          effectiveStartRef.current = inDate < shiftStartDate ? shiftStartDate : inDate;
-        } else {
-          effectiveStartRef.current = inDate;
-        }
-
-        // Clean hierarchy: Checked Out > On Break > Working
         if (data.last_punch_out) {
-          const outDate = new Date(data.last_punch_out);
-          setCheckOutTime(outDate.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }));
+          setCheckOutTime(formatToIST(data.last_punch_out));
           setAttendanceState("CHECKED_OUT");
         } else if (data.is_on_break) {
-  setAttendanceState("ON_BREAK");
+          setAttendanceState("ON_BREAK");
+          const startVal = data.active_break_start_time || data.current_break?.startTime;
+          if (startVal) setActiveBreakStartTime(formatToIST(startVal));
+          if (data.active_break_title || data.current_break?.title) {
+            setActiveBreakType(data.active_break_title || data.current_break.title);
+          }
+        } else {
+          setAttendanceState("WORKING");
+        }
 
-  // RESTORE THE ACTIVE BREAK START TIME FROM BACKEND
-  if (data.active_break_start_time || data.current_break?.startTime) {
-    const rawStartStr = data.active_break_start_time || data.current_break.startTime;
-    setActiveBreakStartTime(rawStartStr);
-
-    // If backend returns a full ISO date or timestamp, parse it:
-    if (data.active_break_raw_start) {
-      setActiveBreakRawStart(new Date(data.active_break_raw_start));
-    } else {
-      // Fallback: parse standard 12-hour/24-hour time for today's date
-      const [timePart, modifier] = rawStartStr.split(" ");
-      let [hours, minutes] = timePart.split(":").map(Number);
-      if (modifier?.toLowerCase() === "pm" && hours < 12) hours += 12;
-      if (modifier?.toLowerCase() === "am" && hours === 12) hours = 0;
-      
-      const parsedStart = new Date();
-      parsedStart.setHours(hours, minutes, 0, 0);
-      setActiveBreakRawStart(parsedStart);
-    }
-  }
-
-  if (data.active_break_title || data.current_break?.title) {
-    setActiveBreakType(data.active_break_title || data.current_break.title);
-  }
-} else {
-  setAttendanceState("WORKING");
-}
-
-        // Calculate live worked time immediately upon reopening
-        const now = new Date();
-        const grossElapsedSec = Math.max(0, Math.floor((now.getTime() - effectiveStartRef.current.getTime()) / 1000));
-        setWorkedSeconds(Math.max(0, grossElapsedSec - breakSecondsRef.current));
+        setWorkedSeconds(data.worked_seconds || 0);
       } else {
         setAttendanceState("NOT_CHECKED_IN");
         setWorkedSeconds(0);
       }
     } catch (error) {
-      console.warn("Initial attendance fetch skipped/failed:", error);
+      console.warn("Initial attendance fetch failed:", error);
     } finally {
       setIsSyncing(false);
     }
   };
 
-  // Mount and AppState Foreground Watcher
+  // Lifecycle: Sync offset once & run the 1-second clock locally
   useEffect(() => {
-    syncServerTimeIST();
+    syncServerTimeOffset();
     fetchTodayAttendanceState();
 
     const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
       if (nextState === "active") {
+        syncServerTimeOffset();
         fetchTodayAttendanceState();
       }
     });
 
-    const clockTimer = setInterval(syncServerTimeIST, 1000);
+    // Pure local tick using the calculated serverOffsetMs
+    const clockTimer = setInterval(() => {
+      const nowSynced = getSyncedServerDate();
+      setCurrentTimeIST(
+        nowSynced.toLocaleTimeString("en-IN", {
+          timeZone: "Asia/Kolkata",
+          hour12: true,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        })
+      );
+      setCurrentDateIST(
+        nowSynced.toLocaleDateString("en-IN", {
+          timeZone: "Asia/Kolkata",
+          weekday: "short",
+          day: "numeric",
+          month: "short",
+        })
+      );
+    }, 1000);
 
     return () => {
       sub.remove();
@@ -360,35 +339,14 @@ if (data.work_mode) {
     };
   }, []);
 
-  useEffect(() => {
-  const restoreLocalBreakState = async () => {
-    const savedRawStart = await AsyncStorage.getItem("active_break_raw_start");
-    const savedTime = await AsyncStorage.getItem("active_break_start_time");
-    const savedType = await AsyncStorage.getItem("active_break_type");
-
-    if (savedRawStart && savedTime) {
-      setActiveBreakRawStart(new Date(savedRawStart));
-      setActiveBreakStartTime(savedTime);
-      if (savedType) setActiveBreakType(savedType);
-    }
-  };
-
-  restoreLocalBreakState();
-}, []);
-
-  // Single Accurate Working Hours Timer
+  // Increment worked seconds when working
   useEffect(() => {
     let timer: ReturnType<typeof setInterval>;
-
-    if (attendanceState === "WORKING" && effectiveStartRef.current) {
+    if (attendanceState === "WORKING") {
       timer = setInterval(() => {
-        const now = new Date();
-        const grossElapsedSec = Math.max(0, Math.floor((now.getTime() - effectiveStartRef.current!.getTime()) / 1000));
-        const net = Math.max(0, grossElapsedSec - breakSecondsRef.current);
-        setWorkedSeconds(net);
+        setWorkedSeconds((prev) => prev + 1);
       }, 1000);
     }
-
     return () => {
       if (timer) clearInterval(timer);
     };
@@ -400,7 +358,6 @@ if (data.work_mode) {
     }
   }, [activeMode]);
 
-  // Formats worked seconds into HH:MM:SS
   const formatWorkingHours = (totalSeconds: number) => {
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -408,7 +365,6 @@ if (data.work_mode) {
     return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   };
 
-  // Formats break durations to exact minutes and seconds
   const formatBreakDuration = (totalSeconds?: number, totalMinutes?: number) => {
     if (totalSeconds !== undefined) {
       const m = Math.floor(totalSeconds / 60);
@@ -422,82 +378,53 @@ if (data.work_mode) {
 
   const isPunchEligible = activeMode === "WFH" ? true : isWithinGeofence;
 
-// 1. Define the shape of your backend JSON response
-interface PunchResponsePayload {
-  status: string;
-  statusCode?: number;
-  workMode?: string;
-  punchId?: string;
-  message?: string;
-  [key: string]: any;
-}
+  const executePunchAPI = async (type: "CHECK_IN" | "CHECK_OUT"): Promise<PunchResponsePayload | null> => {
+    try {
+      setIsSyncing(true);
+      const ticketRes = await fetch(`${API_BASE_URL}/upload-ticket?empId=${EMP_ID}&punchType=${type}`);
+      const ticketData = await ticketRes.json();
+      const cloudKey = ticketData.cloudKey || `selfies/${Date.now()}-${type}.jpg`;
 
-// 2. Add the return type: Promise<PunchResponsePayload | null>
-const executePunchAPI = async (
-  type: "CHECK_IN" | "CHECK_OUT"
-): Promise<PunchResponsePayload | null> => {
-  try {
-    setIsSyncing(true);
+      const effectiveMode = activeMode === "SALES" ? "SALES" : activeMode === "WFH" ? "WFH" : "IN_OFFICE";
 
-    const ticketRes = await fetch(
-      `${API_BASE_URL}/upload-ticket?empId=${EMP_ID}&punchType=${type}`
-    );
-    const ticketData = await ticketRes.json();
-    const cloudKey = ticketData.cloudKey || `selfies/${Date.now()}-${type}.jpg`;
+      const payload = {
+        empId: EMP_ID,
+        punchType: type,
+        selectedMode: effectiveMode,
+        latitude: userCoords?.latitude || 0,
+        longitude: userCoords?.longitude || 0,
+        selfieCloudKey: cloudKey,
+        deviceId: `${Platform.OS}-${Platform.Version}`,
+        mockLocation: isMockLocation,
+      };
 
-    const effectiveMode =
-      activeMode === "SALES" ? "SALES" : activeMode === "WFH" ? "WFH" : "IN_OFFICE";
+      const punchRes = await fetch(`${API_BASE_URL}/punch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
-    const payload = {
-      empId: EMP_ID,
-      punchType: type,
-      selectedMode: effectiveMode,
-      latitude: userCoords?.latitude || 0,
-      longitude: userCoords?.longitude || 0,
-      selfieCloudKey: cloudKey,
-      deviceId: `${Platform.OS}-${Platform.Version}`,
-      mockLocation: isMockLocation,
-    };
+      const result: PunchResponsePayload = await punchRes.json();
+      if (!punchRes.ok) throw new Error(result.message || "Failed to record attendance punch.");
 
-    const punchRes = await fetch(`${API_BASE_URL}/punch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+      const modeTitle = effectiveMode === "WFH" ? "Work-From-Home" : effectiveMode === "SALES" ? "Sales Visit" : `${activeBranchName} Office`;
+      const msg = `Successfully ${type === "CHECK_IN" ? "Checked In" : "Checked Out"} at ${currentTimeIST} via ${modeTitle}.`;
+      Platform.OS === "web" ? window.alert(msg) : Alert.alert("Punch Recorded", msg);
 
-    const result: PunchResponsePayload = await punchRes.json();
-    if (!punchRes.ok) {
-      throw new Error(result.message || "Failed to record attendance punch.");
+      setCapturedPhotoUri(null);
+      await fetchTodayAttendanceState();
+      return result;
+    } catch (error: any) {
+      const errorMsg = error.message || "Attendance request failed. Verify connection.";
+      Platform.OS === "web" ? window.alert(errorMsg) : Alert.alert("Attendance Error", errorMsg);
+      return null;
+    } finally {
+      setIsSyncing(false);
     }
+  };
 
-    const modeTitle =
-      effectiveMode === "WFH"
-        ? "Work-From-Home"
-        : effectiveMode === "SALES"
-        ? "Sales Field Visit"
-        : `${activeBranchName} In-Premises`;
-
-    const msg = `Successfully ${type === "CHECK_IN" ? "Checked In" : "Checked Out"} at ${currentTimeIST} via ${modeTitle}.`;
-    Platform.OS === "web" ? window.alert(msg) : Alert.alert("Punch Recorded", msg);
-
-    setCapturedPhotoUri(null);
-    await fetchTodayAttendanceState();
-
-    // Make sure result is returned
-    return result;
-  } catch (error: any) {
-    const errorMsg = error.message || "Attendance request failed. Verify network connection.";
-    Platform.OS === "web" ? window.alert(errorMsg) : Alert.alert("Attendance Error", errorMsg);
-    return null;
-  } finally {
-    setIsSyncing(false);
-  }
-};
-
-  // Handle Selfie Camera Capture
   const handleTakeSelfie = async () => {
     if (!cameraRef.current) return;
-
     if (!isPunchEligible) {
       const msg = `Geofence violation: You are ${userDistance}m away from ${activeBranchName}. Must be within ${allowedRadiusMeters}m to clock in.`;
       Platform.OS === "web" ? window.alert(msg) : Alert.alert("Location Error", msg);
@@ -506,22 +433,15 @@ const executePunchAPI = async (
 
     try {
       setIsCapturing(true);
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.6,
-        skipProcessing: true,
-      });
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.6, skipProcessing: true });
       setCapturedPhotoUri(photo.uri);
 
-if (attendanceState === "NOT_CHECKED_IN") {
-  const response = await executePunchAPI("CHECK_IN");
-
-  if (response?.status === "SUCCESS") {
-    await startHourlyTracking(
-      EMP_ID,
-      response.workMode || activeMode
-    );
-  }
-}
+      if (attendanceState === "NOT_CHECKED_IN") {
+        const response = await executePunchAPI("CHECK_IN");
+        if (response?.status === "SUCCESS") {
+          await startHourlyTracking(EMP_ID, response.workMode || activeMode);
+        }
+      }
     } catch (err) {
       const msg = "Could not capture front photo. Please try again.";
       Platform.OS === "web" ? window.alert(msg) : Alert.alert("Camera Error", msg);
@@ -530,50 +450,44 @@ if (attendanceState === "NOT_CHECKED_IN") {
     }
   };
 
-  // Final Departure Check-Out Handler
-const handleCheckOut = async () => {
-  if (!capturedPhotoUri) {
-    const msg = "Please take a verification selfie before checking out.";
-    Platform.OS === "web" ? window.alert(msg) : Alert.alert("Selfie Required", msg);
-    return;
-  }
-
-  if (!isPunchEligible) {
-    const msg = `Geofence violation: You are ${userDistance}m away from ${activeBranchName}. Must be within ${allowedRadiusMeters}m.`;
-    Platform.OS === "web" ? window.alert(msg) : Alert.alert("Location Error", msg);
-    return;
-  }
-
-  try {
-    // Corrected from "CHECKED_IN" to "WORKING"
-    if (attendanceState === "WORKING") {
-      const response: any = await executePunchAPI("CHECK_OUT");
-      if (response?.status === "SUCCESS") {
-        await stopHourlyTracking();
-      }
+  const handleCheckOut = async () => {
+    if (!capturedPhotoUri) {
+      const msg = "Please take a verification selfie before checking out.";
+      Platform.OS === "web" ? window.alert(msg) : Alert.alert("Selfie Required", msg);
+      return;
     }
-  } catch (err) {
-    console.warn("Check-out failed:", err);
-  }
-};
 
-// Start Break
+    if (!isPunchEligible) {
+      const msg = `Geofence violation: You are ${userDistance}m away from ${activeBranchName}. Must be within ${allowedRadiusMeters}m.`;
+      Platform.OS === "web" ? window.alert(msg) : Alert.alert("Location Error", msg);
+      return;
+    }
+
+    try {
+      if (attendanceState === "WORKING") {
+        const response: any = await executePunchAPI("CHECK_OUT");
+        if (response?.status === "SUCCESS") {
+          await stopHourlyTracking();
+        }
+      }
+    } catch (err) {
+      console.warn("Check-out failed:", err);
+    }
+  };
+
+  // Start Break using Synced Server Time
   const handleStartBreak = async (breakName: string) => {
-    const startNow = new Date();
+    const syncedNow = getSyncedServerDate();
     const bType = breakName.toLowerCase().includes("lunch") ? "LUNCH" : "TEA";
-    
-    // Use fallback in case currentTimeIST has not populated yet
-    const timeStr = currentTimeIST || getFormattedIST();
+    const formattedDisplay = formatToIST(syncedNow);
 
     setActiveBreakType(breakName);
-    setActiveBreakStartTime(timeStr);
-    setActiveBreakRawStart(startNow);
+    setActiveBreakStartTime(formattedDisplay);
     setAttendanceState("ON_BREAK");
     setIsBreakModalVisible(false);
 
-    // Persist break start state locally
-    await AsyncStorage.setItem("active_break_raw_start", startNow.toISOString());
-    await AsyncStorage.setItem("active_break_start_time", timeStr);
+    // Save machine-readable timestamp for recovery
+    await AsyncStorage.setItem("active_break_timestamp", syncedNow.getTime().toString());
     await AsyncStorage.setItem("active_break_type", breakName);
 
     try {
@@ -584,8 +498,6 @@ const handleCheckOut = async () => {
           empId: EMP_ID,
           breakType: bType,
           breakTitle: breakName,
-          startTime: timeStr,
-          durationMinutes: 0,
         }),
       });
     } catch (error) {
@@ -593,28 +505,14 @@ const handleCheckOut = async () => {
     }
   };
 
-  // End Break (Tracks exact seconds and avoids stale-state race conditions)
+  // End Break (Authoritative Backend State)
   const handleEndBreak = async () => {
-    const endNow = new Date();
-    const startObj = activeBreakRawStart || endNow;
-    
-    const totalElapsedSec = Math.max(1, Math.floor((endNow.getTime() - startObj.getTime()) / 1000));
-    const exactMinutes = Math.floor(totalElapsedSec / 60);
-
-    const breakType = activeBreakType?.toLowerCase().includes("lunch") ? "LUNCH" : "TEA";
-    const breakTitle = activeBreakType || "Personal Break";
-    const startTimeStr = activeBreakStartTime || currentTimeIST;
-
     try {
       setIsSyncing(true);
       const payload = {
         empId: EMP_ID,
-        breakType,
-        breakTitle,
-        startTime: startTimeStr,
-        endTime: currentTimeIST,
-        durationMinutes: exactMinutes,
-        durationSeconds: totalElapsedSec
+        breakType: activeBreakType?.toLowerCase().includes("lunch") ? "LUNCH" : "TEA",
+        breakTitle: activeBreakType || "Personal Break",
       };
 
       const res = await fetch(`${API_BASE_URL}/break/end`, {
@@ -623,51 +521,34 @@ const handleCheckOut = async () => {
         body: JSON.stringify(payload),
       });
 
-      if (!res.ok) {
-        throw new Error("Could not sync break session with server.");
-      }
+      if (!res.ok) throw new Error("Could not sync break session with server.");
+      const resData = await res.json();
 
-     const resData = await res.json();
-
-      // 1. Immediately switch UI state to WORKING so the button toggles back
       setAttendanceState("WORKING");
       setActiveBreakType(null);
       setActiveBreakStartTime(null);
-      setActiveBreakRawStart(null);
 
-      // Clear local storage so stale timestamps don't persist on next break
-      await AsyncStorage.multiRemove([
-        "active_break_raw_start",
-        "active_break_start_time",
-        "active_break_type",
-      ]);
+      await AsyncStorage.multiRemove(["active_break_timestamp", "active_break_type"]);
 
-      // 2. Accumulate exact seconds and update minutes
-      breakSecondsRef.current += totalElapsedSec;
-      const totalBreaksFromBackend = resData.totalBreakMinutes !== undefined 
-        ? resData.totalBreakMinutes 
-        : Math.floor(breakSecondsRef.current / 60);
-      setUsedBreakMinutes(totalBreaksFromBackend);
+      const serverDurationSec = resData.durationSeconds ?? (resData.durationMinutes ? resData.durationMinutes * 60 : 0);
+      const serverDurationMin = resData.durationMinutes ?? Math.floor(serverDurationSec / 60);
 
-      // 3. Immediately recalculate net worked seconds
-      if (effectiveStartRef.current) {
-        const now = new Date();
-        const grossElapsedSec = Math.max(0, Math.floor((now.getTime() - effectiveStartRef.current.getTime()) / 1000));
-        setWorkedSeconds(Math.max(0, grossElapsedSec - breakSecondsRef.current));
+      if (resData.totalBreakMinutes !== undefined) {
+        setUsedBreakMinutes(resData.totalBreakMinutes);
       }
 
-      // 4. Update local history log with exact seconds
       const newSession: BreakSessionItem = {
         id: resData.breakId || Date.now().toString(),
-        title: breakTitle,
-        startTime: startTimeStr,
-        endTime: currentTimeIST || getFormattedIST(),
-        durationMinutes: exactMinutes,
-        durationSeconds: totalElapsedSec,
-        type: breakType,
+        title: activeBreakType || "Break",
+        startTime: activeBreakStartTime || formatToIST(resData.startTime),
+        endTime: formatToIST(resData.endTime || getSyncedServerDate()),
+        durationMinutes: serverDurationMin,
+        durationSeconds: serverDurationSec,
+        type: (activeBreakType?.toLowerCase().includes("lunch") ? "LUNCH" : "TEA") as "LUNCH" | "TEA",
       };
       setBreakHistory((prev) => [...prev, newSession]);
 
+      await fetchTodayAttendanceState();
     } catch (error: any) {
       Alert.alert("Break Sync Failed", error.message || "Network issue.");
     } finally {
@@ -679,23 +560,9 @@ const handleCheckOut = async () => {
 
   return (
     <ScreenContainer>
-      <ScrollView 
-        showsVerticalScrollIndicator={false} 
-        contentContainerStyle={{ paddingBottom: 120 }}
-      >
-        {/* ========================================================================= */}
-        {/* 1. TOP PURPLE BANNER HEADER                                               */}
-        {/* ========================================================================= */}
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 120 }}>
+        {/* TOP PURPLE BANNER */}
         <View className="bg-[#5B4FD1] rounded-3xl pt-3 pb-4 px-4 mb-4 shadow-xs relative overflow-hidden">
-          <View 
-            className="absolute -top-3 -right-4 w-20 h-20 rounded-3xl border-2 border-white/20 pointer-events-none"
-            style={{ transform: [{ rotate: "20deg" }] }}
-          />
-          <View 
-            className="absolute top-12 -left-6 w-16 h-16 rounded-2xl border-2 border-white/10 pointer-events-none"
-            style={{ transform: [{ rotate: "-15deg" }] }}
-          />
-
           <View className="flex-row items-center justify-between mb-3">
             <TouchableOpacity 
               onPress={() => (navigation.canGoBack?.() ? navigation.goBack() : navigation.navigate("Home"))}
@@ -704,13 +571,11 @@ const handleCheckOut = async () => {
               <ChevronLeft size={20} color="#FFFFFF" />
             </TouchableOpacity>
 
-            <View className="flex-row items-center gap-1.5">
-              <View className="bg-white/20 px-3 py-1 rounded-full border border-white/25 flex-row items-center">
-                <ShieldCheck size={12} color="#FFFFFF" />
-                <Text className="text-[10px] font-black text-white ml-1 uppercase tracking-wider">
-                  NTP Live Synced
-                </Text>
-              </View>
+            <View className="bg-white/20 px-3 py-1 rounded-full border border-white/25 flex-row items-center">
+              <ShieldCheck size={12} color="#FFFFFF" />
+              <Text className="text-[10px] font-black text-white ml-1 uppercase tracking-wider">
+                NTP Live Synced
+              </Text>
             </View>
           </View>
 
@@ -724,15 +589,13 @@ const handleCheckOut = async () => {
           </View>
         </View>
 
-        {/* ========================================================================= */}
-        {/* 2. SLIDING SEGMENTED SWITCH: OFFICE MODE vs WORK-FROM-HOME (WFH)           */}
-        {/* ========================================================================= */}
+        {/* WORK MODE SWITCH */}
         <View className="bg-white border border-[#E7E4F5] rounded-3xl p-2 mb-4 shadow-xs">
           <View className="flex-row bg-[#F6F5FC] p-1 rounded-2xl border border-[#E7E4F5]">
             <TouchableOpacity
               onPress={() => setActiveMode("OFFICE")}
               disabled={attendanceState !== "NOT_CHECKED_IN"}
-              className={`flex-1 py-2.5 rounded-xl flex-row items-center justify-center transition-all ${
+              className={`flex-1 py-2.5 rounded-xl flex-row items-center justify-center ${
                 activeMode === "OFFICE" ? "bg-white shadow-sm" : ""
               } ${attendanceState !== "NOT_CHECKED_IN" ? "opacity-75" : ""}`}
             >
@@ -745,7 +608,7 @@ const handleCheckOut = async () => {
             <TouchableOpacity
               onPress={() => setActiveMode("WFH")}
               disabled={attendanceState !== "NOT_CHECKED_IN"}
-              className={`flex-1 py-2.5 rounded-xl flex-row items-center justify-center transition-all ${
+              className={`flex-1 py-2.5 rounded-xl flex-row items-center justify-center ${
                 activeMode === "WFH" ? "bg-[#5B4FD1] shadow-sm" : ""
               } ${attendanceState !== "NOT_CHECKED_IN" ? "opacity-75" : ""}`}
             >
@@ -757,18 +620,14 @@ const handleCheckOut = async () => {
           </View>
         </View>
 
-        {/* ========================================================================= */}
-        {/* 3. GEOFENCE / WFH PERIMETER MONITOR                                       */}
-        {/* ========================================================================= */}
+        {/* GEOFENCE STATUS */}
         <View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 mb-4 shadow-xs">
           <View className="flex-row items-center justify-between mb-3">
             <View className="flex-row items-center">
               <View className={`w-9 h-9 rounded-xl items-center justify-center mr-2.5 ${
                 activeMode === "WFH"
                   ? "bg-indigo-50 border border-indigo-200"
-                  : isWithinGeofence 
-                    ? "bg-[#E7FAEE] border border-[#1FAE5C]/20" 
-                    : "bg-[#FDE9E8] border border-[#E4453C]/20"
+                  : isWithinGeofence ? "bg-[#E7FAEE] border border-[#1FAE5C]/20" : "bg-[#FDE9E8] border border-[#E4453C]/20"
               }`}>
                 {activeMode === "WFH" ? (
                   <Home size={18} color="#5B4FD1" />
@@ -783,9 +642,7 @@ const handleCheckOut = async () => {
                 <Text className="text-[10px] font-semibold text-[#7A76A6]">
                   {activeMode === "WFH"
                     ? "Geofence Exempt • Remote GPS breadcrumb logged"
-                    : isVerifying 
-                      ? "Verifying GPS fix..." 
-                      : `Current distance: ${userDistance !== null ? userDistance : "--"}m`}
+                    : isVerifying ? "Verifying GPS fix..." : `Current distance: ${userDistance !== null ? userDistance : "--"}m`}
                 </Text>
               </View>
             </View>
@@ -801,9 +658,7 @@ const handleCheckOut = async () => {
           <View className={`p-2.5 rounded-2xl flex-row items-center ${
             activeMode === "WFH"
               ? "bg-indigo-50 border border-indigo-200/60"
-              : isWithinGeofence 
-                ? "bg-[#E7FAEE] border border-[#1FAE5C]/30" 
-                : "bg-[#FDE9E8] border border-[#E4453C]/30"
+              : isWithinGeofence ? "bg-[#E7FAEE] border border-[#1FAE5C]/30" : "bg-[#FDE9E8] border border-[#E4453C]/30"
           }`}>
             {activeMode === "WFH" ? (
               <>
@@ -830,9 +685,7 @@ const handleCheckOut = async () => {
           </View>
         </View>
 
-        {/* ========================================================================= */}
-        {/* 4. LIVE SELFIE CAMERA & RETAKE CONTAINER                                  */}
-        {/* ========================================================================= */}
+        {/* CAMERA PREVIEW */}
         <View className="bg-white border border-[#E7E4F5] rounded-3xl p-5 mb-4 shadow-xs items-center">
           <View className="w-full flex-row items-center justify-between mb-4">
             <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">
@@ -906,9 +759,7 @@ const handleCheckOut = async () => {
           )}
         </View>
 
-        {/* ========================================================================= */}
-        {/* 5. DYNAMIC BREAK MANAGEMENT (80 MIN POOL & TIMER PAUSE)                   */}
-        {/* ========================================================================= */}
+        {/* BREAK CONTROLS */}
         {attendanceState !== "NOT_CHECKED_IN" && attendanceState !== "CHECKED_OUT" && (
           <View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 mb-4 shadow-xs">
             <View className="flex-row items-center justify-between pb-2 mb-3 border-b border-[#E7E4F5]">
@@ -923,7 +774,6 @@ const handleCheckOut = async () => {
               </Text>
             </View>
 
-            {/* Progress Bar */}
             <View className="w-full h-2.5 bg-[#F6F5FC] rounded-full overflow-hidden mb-3 border border-[#E7E4F5]">
               <View 
                 className={`h-full rounded-full ${usedBreakMinutes > 80 ? "bg-rose-500" : "bg-[#5B4FD1]"}`}
@@ -964,9 +814,7 @@ const handleCheckOut = async () => {
           </View>
         )}
 
-        {/* ========================================================================= */}
-        {/* 6. FINAL SHIFT CHECK-OUT ACTION BUTTON                                    */}
-        {/* ========================================================================= */}
+        {/* FINAL CHECK OUT */}
         {attendanceState === "WORKING" && (
           <View className="mb-4">
             <TouchableOpacity
@@ -987,9 +835,7 @@ const handleCheckOut = async () => {
           </View>
         )}
 
-        {/* ========================================================================= */}
-        {/* 7. ATTENDANCE & WORKING HOURS TIMING SUMMARY (ALWAYS VISIBLE)             */}
-        {/* ========================================================================= */}
+        {/* TIMING SUMMARY CARD */}
         <View className="bg-[#5B4FD1] border border-[#2C2270] rounded-3xl p-5 mb-4 shadow-sm">
           <View className="flex-row items-center justify-between pb-3 mb-3 border-b border-white/10">
             <View className="flex-row items-center gap-1.5">
@@ -1005,7 +851,6 @@ const handleCheckOut = async () => {
             </View>
           </View>
 
-          {/* Active Working Hours Ticker */}
           {attendanceState !== "NOT_CHECKED_IN" && (
             <View className="items-center py-2.5 mb-3 bg-white/10 rounded-2xl border border-white/10">
               <Text className="text-[10px] font-bold text-[#A6A2CE] uppercase tracking-widest mb-0.5">
@@ -1051,9 +896,7 @@ const handleCheckOut = async () => {
           </View>
         </View>
 
-        {/* ========================================================================= */}
-        {/* 8. BREAK SESSIONS HISTORY LOG                                             */}
-        {/* ========================================================================= */}
+        {/* BREAK HISTORY LOG */}
         {breakHistory.length > 0 && (
           <View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 mb-4 shadow-xs">
             <View className="flex-row items-center justify-between pb-2 mb-3 border-b border-[#E7E4F5]">
@@ -1086,19 +929,17 @@ const handleCheckOut = async () => {
                     </View>
                   </View>
                   <View className="bg-white px-2.5 py-1 rounded-lg border border-[#E7E4F5]">
-  <Text className="text-[11px] font-black text-[#1F1B3D]">
-    {formatBreakDuration(item.durationSeconds, item.durationMinutes)}
-  </Text>
-</View>
+                    <Text className="text-[11px] font-black text-[#1F1B3D]">
+                      {formatBreakDuration(item.durationSeconds, item.durationMinutes)}
+                    </Text>
+                  </View>
                 </View>
               ))}
             </View>
           </View>
         )}
 
-        {/* ========================================================================= */}
-        {/* 9. BREAK SELECTION POPUP MODAL                                            */}
-        {/* ========================================================================= */}
+        {/* BREAK SELECTION MODAL */}
         <Modal
           visible={isBreakModalVisible}
           transparent

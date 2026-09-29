@@ -1,8 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { BASE_HOST } from "../constants/config";
 
 // Replace with your Spring Boot server base URL
-const BASE_API_URL = "http://192.168.31.133:8080/api";
+const BASE_API_URL = `${BASE_HOST}/api`;
 
 export interface Address {
   street?: string;

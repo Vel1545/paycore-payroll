@@ -17,6 +17,7 @@ import {
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import ScreenContainer from "../components/ScreenContainer";
+import { BASE_HOST } from "../constants/config";
 
 interface EmployeeRecord {
   id: string;
@@ -34,10 +35,8 @@ interface ExportColumn {
   selected: boolean;
 }
 
-const LOCAL_IP = "192.168.31.133";
-const REPORT_API_URL = Platform.OS === "web"
-  ? "http://192.168.31.133:8080/api/admin/reports/employees/excel"
-  : `http://${LOCAL_IP}:8080/api/admin/reports/employees/excel`;
+const REPORT_API_URL = `${BASE_HOST}/api/admin/reports/employees/excel`
+  
 
 const INITIAL_EMPLOYEES: EmployeeRecord[] = [
   { id: "EMP-1042", name: "Marcus Sterling", role: "Principal Tech Lead", dept: "Engineering", joinDate: "2024-03-15", ctc: 6500, status: "Active" },

@@ -20,16 +20,13 @@ import {
   Wallet,
   AlertCircle,
 } from "lucide-react-native";
-import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
 import ScreenContainer from "../components/ScreenContainer";
 import { UserSession } from "../services/UserSession";
+import { BASE_HOST } from "../constants/config";
 
-const LOCAL_IP = "192.168.31.228";
-const API_BASE_URL =
-  Platform.OS === "web"
-    ? "http://192.168.31.228:8080/api/admin/workflow"
-    : `http://${LOCAL_IP}:8080/api/admin/workflow`;
+const API_BASE_URL = `${BASE_HOST}/api/admin/workflow`;
 
 const CURRENT_EMP_ID = UserSession.empId;
 
@@ -108,17 +105,20 @@ function DatePickerField({ label, value, onChange }: DatePickerFieldProps) {
       </TouchableOpacity>
 
       {showNativePicker && (
-        <DateTimePicker
-          value={value}
-          mode="date"
-          display={Platform.OS === "ios" ? "spinner" : "default"}
-          onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
-            setShowNativePicker(false);
-            if (event.type === "set" && selectedDate) {
-              onChange(selectedDate);
-            }
-          }}
-        />
+<DateTimePicker
+  value={value}
+  mode="date"
+  display={Platform.OS === "ios" ? "spinner" : "default"}
+  onValueChange={(_event, selectedDate) => {
+    setShowNativePicker(false);
+    if (selectedDate) {
+      onChange(selectedDate);
+    }
+  }}
+  onDismiss={() => {
+    setShowNativePicker(false);
+  }}
+/>
       )}
     </View>
   );
