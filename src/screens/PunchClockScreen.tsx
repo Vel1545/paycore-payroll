@@ -110,6 +110,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
   const [isCapturing, setIsCapturing] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [hasInitialFix, setHasInitialFix] = useState(false);
 
   // Dynamic Geofence Configuration
   const [activeBranchName, setActiveBranchName] = useState<string>("Assigned Office");
@@ -210,28 +211,63 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
     }
   };
 
-  const checkLiveLocation = async (rulesOverride?: GeofenceConfig[]) => {
-    setIsVerifying(true);
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert("Permission Required", "GPS Location access is mandatory to punch attendance.");
-        return;
-      }
+const isCheckingLocation = useRef(false);
 
-      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+const checkLiveLocation = async (rulesOverride?: GeofenceConfig[]) => {
+  if (isCheckingLocation.current) return;
+  isCheckingLocation.current = true;
+  setIsVerifying(true);
+
+  try {
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission Required", "GPS Location access is mandatory to punch attendance.");
+      return;
+    }
+
+    // 1. First attempt: Quick read from device's last known location
+    let location = await Location.getLastKnownPositionAsync({
+      maxAge: 30000, // accepts location recorded within last 30s
+    });
+
+    // 2. If no cached location, fetch fresh position with a strict timeout
+    if (!location) {
+      location = await Promise.race([
+        Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        }),
+        new Promise<null>((_, reject) =>
+          setTimeout(() => reject(new Error("Location request timed out")), 6000)
+        ),
+      ]);
+    }
+
+    if (location && location.coords) {
       const currentLat = location.coords.latitude;
       const currentLng = location.coords.longitude;
 
       setUserCoords({ latitude: currentLat, longitude: currentLng });
       setIsMockLocation(location.mocked || false);
       evaluateGeofence(currentLat, currentLng, rulesOverride || geofenceRules);
-    } catch (error) {
-      console.warn("GPS lock failed:", error);
-    } finally {
-      setIsVerifying(false);
+      setHasInitialFix(true);
     }
-  };
+  } catch (error) {
+    console.warn("GPS lock fallback/error:", error);
+    // If timeout or error occurs, try reading any last known location as fallback
+    try {
+      const fallback = await Location.getLastKnownPositionAsync();
+      if (fallback?.coords) {
+        setUserCoords({ latitude: fallback.coords.latitude, longitude: fallback.coords.longitude });
+        evaluateGeofence(fallback.coords.latitude, fallback.coords.longitude, rulesOverride || geofenceRules);
+      }
+    } catch (e) {
+      // Ignore fallback failure
+    }
+  } finally {
+    setIsVerifying(false);
+    isCheckingLocation.current = false;
+  }
+};
 
   const fetchTodayAttendanceState = async () => {
     try {
@@ -300,44 +336,53 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
   };
 
   // Lifecycle: Sync offset once & run the 1-second clock locally
-  useEffect(() => {
-    syncServerTimeOffset();
-    fetchTodayAttendanceState();
+useEffect(() => {
+  syncServerTimeOffset();
+  fetchTodayAttendanceState();
 
-    const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
-      if (nextState === "active") {
+  let previousState = AppState.currentState;
+  let lastRefetchAt = 0;
+  const MIN_REFETCH_INTERVAL_MS = 5000;
+
+  const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
+    // Only re-fetch if transition occurred from background/inactive -> active
+    if (previousState.match(/inactive|background/) && nextState === "active") {
+      const now = Date.now();
+      if (now - lastRefetchAt > MIN_REFETCH_INTERVAL_MS) {
+        lastRefetchAt = now;
         syncServerTimeOffset();
         fetchTodayAttendanceState();
       }
-    });
+    }
+    previousState = nextState;
+  });
 
-    // Pure local tick using the calculated serverOffsetMs
-    const clockTimer = setInterval(() => {
-      const nowSynced = getSyncedServerDate();
-      setCurrentTimeIST(
-        nowSynced.toLocaleTimeString("en-IN", {
-          timeZone: "Asia/Kolkata",
-          hour12: true,
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        })
-      );
-      setCurrentDateIST(
-        nowSynced.toLocaleDateString("en-IN", {
-          timeZone: "Asia/Kolkata",
-          weekday: "short",
-          day: "numeric",
-          month: "short",
-        })
-      );
-    }, 1000);
+  const clockTimer = setInterval(() => {
+    const nowSynced = getSyncedServerDate();
+    setCurrentTimeIST(
+      nowSynced.toLocaleTimeString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour12: true,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      })
+    );
+    setCurrentDateIST(
+      nowSynced.toLocaleDateString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+      })
+    );
+  }, 1000);
 
-    return () => {
-      sub.remove();
-      clearInterval(clockTimer);
-    };
-  }, []);
+  return () => {
+    sub.remove();
+    clearInterval(clockTimer);
+  };
+}, []);
 
   // Increment worked seconds when working
   useEffect(() => {
@@ -640,9 +685,9 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
                   {activeMode === "WFH" ? "Work-From-Home Status" : `${activeBranchName} (${allowedRadiusMeters}m)`}
                 </Text>
                 <Text className="text-[10px] font-semibold text-[#7A76A6]">
-                  {activeMode === "WFH"
-                    ? "Geofence Exempt • Remote GPS breadcrumb logged"
-                    : isVerifying ? "Verifying GPS fix..." : `Current distance: ${userDistance !== null ? userDistance : "--"}m`}
+                 {activeMode === "WFH"
+  ? "Geofence Exempt • Remote GPS breadcrumb logged"
+  : isVerifying && !hasInitialFix ? "Verifying GPS fix..." : `Current distance: ${userDistance !== null ? userDistance : "--"}m`}
                 </Text>
               </View>
             </View>

@@ -1,25 +1,25 @@
 import React, { useState, useEffect } from "react";
-import { 
-  View, 
-  Text, 
-  TouchableOpacity, 
-  TextInput, 
-  ScrollView, 
-  Alert, 
-  Platform, 
-  Modal, 
-  Switch, 
-  ActivityIndicator, 
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  TextInput,
+  ScrollView,
+  Alert,
+  Platform,
+  Modal,
+  Switch,
+  ActivityIndicator,
   useWindowDimensions,
   FlatList
 } from "react-native";
 import CrossPlatformDatePicker from "../components/CrossPlatformDatePicker";
 import { LinearGradient } from "expo-linear-gradient";
-import { 
-  Users, ArrowRight, Clock, XCircle, ChevronLeft,
-  Search, Navigation, ChevronRight, Filter, 
-  DollarSign, Landmark, UserCheck, CalendarCheck, Edit3,
-  UserPlus, X, ClipboardList, Trash2, Shield, BarChart3, FileSpreadsheet, ShieldCheck,
+import {
+  Users, ArrowRight, ChevronLeft,
+  Search, Navigation, ChevronRight,
+  DollarSign, Landmark,  Edit3,
+  UserPlus, X, ClipboardList, BarChart3, FileSpreadsheet, ShieldCheck,
   ChevronDown
 } from "lucide-react-native";
 import { BASE_HOST } from "../constants/config";
@@ -119,9 +119,8 @@ const NativeDropdown = ({ label, selectedValue, options, onSelect, isDesktop }: 
                       onSelect(item.value);
                       setModalVisible(false);
                     }}
-                    className={`p-3 rounded-xl mb-1 flex-row items-center justify-between ${
-                      isSelected ? "bg-[#EEECFA]" : "bg-transparent active:bg-slate-50"
-                    }`}
+                    className={`p-3 rounded-xl mb-1 flex-row items-center justify-between ${isSelected ? "bg-[#EEECFA]" : "bg-transparent active:bg-slate-50"
+                      }`}
                   >
                     <Text className={`font-bold text-sm ${isSelected ? "text-[#5B4FD1]" : "text-[#1F1B3D]"}`}>
                       {item.label}
@@ -149,7 +148,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
   const [casualLeave, setCasualLeave] = useState("04");
   const [odPermitted, setOdPermitted] = useState("08");
   const [otHours, setOtHours] = useState("16.5");
-  
+
   const [usersList, setUsersList] = useState<UserItem[]>([]);
   const [selectedUserEmpId, setSelectedUserEmpId] = useState<string>("");
   const [userSubTab, setUserSubTab] = useState<"personal" | "bank" | "salary" | "balances">("personal");
@@ -263,7 +262,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
         setUsersList(data);
-        setSelectedUserEmpId((prevId) => 
+        setSelectedUserEmpId((prevId) =>
           data.some((u: UserItem) => u.empId === prevId) ? prevId : data[0].empId
         );
       } else {
@@ -314,10 +313,10 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
 
     setSavingUser(true);
     try {
-      const url = isEditingUser 
-        ? `${API_BASE_URL}/users/${formEmpId}` 
+      const url = isEditingUser
+        ? `${API_BASE_URL}/users/${formEmpId}`
         : `${API_BASE_URL}/users`;
-      
+
       const method = isEditingUser ? "PUT" : "POST";
       const payload = isEditingUser
         ? { fullName: formFullName.trim(), email: formEmail.trim(), mobileNumber: formMobile.trim(), role: formRole, active: formActive }
@@ -363,7 +362,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
 
   return (
     <View className="flex-1 bg-[#F4F6F9]">
-      <ScrollView 
+      <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ flexGrow: 1, paddingBottom: 120 }}
         className="flex-1"
@@ -381,7 +380,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
 
           <View className="max-w-6xl mx-auto w-full">
             <View className="flex-row items-center justify-between mb-6">
-              <TouchableOpacity 
+              <TouchableOpacity
                 onPress={() => {
                   if (adminView !== "menu") {
                     setAdminView("menu");
@@ -414,7 +413,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
 
         {adminView !== "menu" && (
           <View className="max-w-6xl mt-1 mx-auto w-full px-5 md:px-10 mb-4">
-            <TouchableOpacity 
+            <TouchableOpacity
               onPress={() => setAdminView("menu")}
               className="flex-row items-center gap-2 bg-[#EEECFA] px-4 py-2.5 rounded-2xl self-start border border-[#5B4FD1]/20 shadow-xs"
             >
@@ -436,7 +435,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
 
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 16 }}>
                 {/* Onboarding */}
-                <TouchableOpacity 
+                <TouchableOpacity
                   onPress={() => navigation.navigate("AdminOnboardingSubmissions")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-indigo-200/80"
@@ -459,7 +458,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                 </TouchableOpacity>
 
                 {/* Users */}
-                <TouchableOpacity 
+                <TouchableOpacity
                   onPress={() => setAdminView("users")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-emerald-200/80"
@@ -482,7 +481,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                 </TouchableOpacity>
 
                 {/* Reports */}
-                <TouchableOpacity 
+                <TouchableOpacity
                   onPress={() => navigation.navigate("AdminReports", { initialTab: "reports" })}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-amber-200/80"
@@ -505,7 +504,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                 </TouchableOpacity>
 
                 {/* Dashboard */}
-                <TouchableOpacity 
+                <TouchableOpacity
                   onPress={() => setAdminView("dashboard")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-blue-200/80"
@@ -528,7 +527,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                 </TouchableOpacity>
 
                 {/* Attendance Audit */}
-                <TouchableOpacity 
+                <TouchableOpacity
                   onPress={() => navigation.navigate("AttendanceAuditTabs")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-teal-200/80"
@@ -551,7 +550,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                 </TouchableOpacity>
 
                 {/* User Directory */}
-                <TouchableOpacity 
+                <TouchableOpacity
                   onPress={() => navigation.navigate("UserDirectory")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-purple-200/80"
@@ -579,7 +578,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
           {/* DASHBOARD VIEW */}
           {adminView === "dashboard" && (
             <View className="w-full gap-4">
-              
+
               {/* FILTER BAR WITH NATIVE DROPDOWNS */}
               <View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 md:p-5 shadow-xs gap-4">
                 <View className="flex-col sm:flex-row sm:items-center sm:justify-between pb-3 border-b border-slate-100 gap-2">
@@ -591,7 +590,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                       Select parameters to filter workforce analytics in real-time
                     </Text>
                   </View>
-                  
+
                   <View className="self-start sm:self-auto bg-[#EEECFA] px-2.5 py-1 rounded-full border border-[#5B4FD1]/20 shrink-0">
                     <Text className="text-[9px] font-black text-[#5B4FD1] uppercase">Parametric Engine</Text>
                   </View>
@@ -799,7 +798,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                 <View className="flex-row items-center gap-2">
                   <View className="flex-1 bg-white border border-[#E7E4F5] rounded-2xl px-3.5 py-3 shadow-xs flex-row items-center">
                     <Search size={isDesktop ? 18 : 16} color="#7A76A6" />
-                    <TextInput 
+                    <TextInput
                       value={searchQuery}
                       onChangeText={setSearchQuery}
                       placeholder="Search by Employee ID, Name or Role..."
@@ -850,11 +849,10 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                           <TouchableOpacity
                             key={u.empId}
                             onPress={() => setSelectedUserEmpId(u.empId)}
-                            className={`p-3.5 rounded-2xl border flex-row items-center justify-between ${
-                              isSelected 
-                                ? "bg-[#EEECFA] border-[#5B4FD1]" 
+                            className={`p-3.5 rounded-2xl border flex-row items-center justify-between ${isSelected
+                                ? "bg-[#EEECFA] border-[#5B4FD1]"
                                 : "bg-[#F6F5FC] border-[#E7E4F5]"
-                            }`}
+                              }`}
                           >
                             <View className="flex-row items-center gap-3.5 flex-1 pr-1">
                               <View className={`w-10 h-10 rounded-xl items-center justify-center ${isSelected ? "bg-[#5B4FD1]" : "bg-[#E7E4F5]"}`}>
@@ -880,11 +878,10 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                           <TouchableOpacity
                             key={u.empId}
                             onPress={() => setSelectedUserEmpId(u.empId)}
-                            className={`px-3.5 py-2 rounded-xl border flex-row items-center ${
-                              isSelected 
-                                ? "bg-[#5B4FD1] border-[#5B4FD1] shadow-xs" 
+                            className={`px-3.5 py-2 rounded-xl border flex-row items-center ${isSelected
+                                ? "bg-[#5B4FD1] border-[#5B4FD1] shadow-xs"
                                 : "bg-[#F6F5FC] border-[#E7E4F5]"
-                            }`}
+                              }`}
                           >
                             <Text style={{ fontSize: 12 }} className={`font-bold ${isSelected ? "text-white" : "text-[#1F1B3D]"}`}>
                               {u.fullName?.split(" ")?.[0] || "User"} ({u.role?.substring(0, 3)})
@@ -911,9 +908,8 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                       <TouchableOpacity
                         key={st.key}
                         onPress={() => setUserSubTab(st.key as any)}
-                        className={`flex-1 py-3 rounded-xl items-center justify-center ${
-                          isActive ? "bg-[#5B4FD1] shadow-xs" : ""
-                        }`}
+                        className={`flex-1 py-3 rounded-xl items-center justify-center ${isActive ? "bg-[#5B4FD1] shadow-xs" : ""
+                          }`}
                       >
                         <Text style={{ fontSize: isDesktop ? 14 : 12 }} className={`font-black ${isActive ? "text-white" : "text-[#7A76A6]"}`}>
                           {st.label}
@@ -934,8 +930,8 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                           ID: {selectedUserObj.empId} • Role: {selectedUserObj.role} • Status: {selectedUserObj.active ? "Active" : "Inactive"}
                         </Text>
                       </View>
-                      
-                      <TouchableOpacity 
+
+                      <TouchableOpacity
                         onPress={() => handleOpenEditModal(selectedUserObj)}
                         className="w-10 h-10 rounded-xl bg-[#EEECFA] border border-[#5B4FD1]/20 items-center justify-center active:opacity-80"
                       >
@@ -1027,7 +1023,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                     </View>
 
                     <View className="pt-2">
-                      <TouchableOpacity 
+                      <TouchableOpacity
                         onPress={() => {
                           const msg = "Balance quotas saved successfully!";
                           Platform.OS === "web" ? window.alert(msg) : Alert.alert("Success", msg);
@@ -1068,7 +1064,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   Generate and download comprehensive spreadsheet exports containing employee personal details, banking identifiers, salary breakdowns, and active accrual quotas.
                 </Text>
 
-                <TouchableOpacity 
+                <TouchableOpacity
                   onPress={() => {
                     const msg = "Downloading master employee spreadsheet report...";
                     Platform.OS === "web" ? window.alert(msg) : Alert.alert("Export Successful", msg);
@@ -1088,8 +1084,8 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
 
       {/* 5. ADD / EDIT EMPLOYEE MODAL */}
       <Modal visible={showUserModal} transparent animationType="fade">
-        <TouchableOpacity 
-          activeOpacity={1} 
+        <TouchableOpacity
+          activeOpacity={1}
           onPress={() => setShowUserModal(false)}
           className="flex-1 bg-black/40 justify-center items-center p-4"
         >
@@ -1114,11 +1110,10 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   placeholderTextColor="#A6A2CE"
                   autoCapitalize="characters"
                   style={{ fontSize: isDesktop ? 14 : 12 }}
-                  className={`border rounded-xl p-3 font-bold ${
-                    isEditingUser 
-                      ? "bg-slate-100 border-slate-200 text-slate-500" 
+                  className={`border rounded-xl p-3 font-bold ${isEditingUser
+                      ? "bg-slate-100 border-slate-200 text-slate-500"
                       : "bg-[#F6F5FC] border-[#E7E4F5] text-[#1F1B3D]"
-                  }`}
+                    }`}
                 />
               </View>
 
@@ -1170,11 +1165,10 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                       <TouchableOpacity
                         key={r}
                         onPress={() => setFormRole(r)}
-                        className={`flex-1 py-2.5 rounded-xl border items-center ${
-                          isSelected 
-                            ? "bg-[#5B4FD1] border-[#5B4FD1]" 
+                        className={`flex-1 py-2.5 rounded-xl border items-center ${isSelected
+                            ? "bg-[#5B4FD1] border-[#5B4FD1]"
                             : "bg-[#F6F5FC] border-[#E7E4F5]"
-                        }`}
+                          }`}
                       >
                         <Text style={{ fontSize: isDesktop ? 12 : 10 }} className={`font-black ${isSelected ? "text-white" : "text-[#1F1B3D]"}`}>
                           {r}

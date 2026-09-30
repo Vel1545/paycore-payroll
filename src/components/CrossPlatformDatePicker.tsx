@@ -19,10 +19,10 @@ export default function CrossPlatformDatePicker({
   const [showPicker, setShowPicker] = useState(false);
 
   // Normalize input value to both Date object and YYYY-MM-DD string
-  const dateObj = value instanceof Date 
-    ? value 
-    : typeof value === "string" && value 
-      ? new Date(value + (value.includes("T") ? "" : "T00:00:00")) 
+  const dateObj = value instanceof Date
+    ? value
+    : typeof value === "string" && value
+      ? new Date(value + (value.includes("T") ? "" : "T00:00:00"))
       : new Date();
 
   const formattedStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")}`;
@@ -48,14 +48,12 @@ export default function CrossPlatformDatePicker({
 
   return (
     <View
-      className={`border border-[#E7E4F5] bg-white rounded-xl ${
-        compact ? "flex-1 flex-row items-center px-2.5 py-1.5" : "flex-1 p-3"
-      }`}
+      className={`border border-[#E7E4F5] bg-white rounded-xl ${compact ? "flex-1 flex-row items-center px-2.5 py-1.5" : "flex-1 p-3"
+        }`}
     >
       <Text
-        className={`font-black text-[#7A76A6] uppercase ${
-          compact ? "text-[9px] mr-1.5 shrink-0" : "text-[10px] mb-1"
-        }`}
+        className={`font-black text-[#7A76A6] uppercase ${compact ? "text-[9px] mr-1.5 shrink-0" : "text-[10px] mb-1"
+          }`}
       >
         {label}{compact ? ":" : ""}
       </Text>
@@ -92,9 +90,8 @@ export default function CrossPlatformDatePicker({
             className="flex-row items-center justify-between"
           >
             <Text
-              className={`font-bold text-[#1F1B3D] ${
-                compact ? "text-[11px]" : "text-xs"
-              }`}
+              className={`font-bold text-[#1F1B3D] ${compact ? "text-[11px]" : "text-xs"
+                }`}
             >
               {formattedStr}
             </Text>
@@ -106,7 +103,11 @@ export default function CrossPlatformDatePicker({
               value={isNaN(dateObj.getTime()) ? new Date() : dateObj}
               mode="date"
               display={Platform.OS === "ios" ? "spinner" : "default"}
-              onChange={handleMobileChange}
+              onValueChange={(_event, selectedDate) => {
+                if (selectedDate) {
+                  handleMobileChange(selectedDate);
+                }
+              }}
             />
           )}
         </>

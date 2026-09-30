@@ -135,6 +135,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     const resolvedName = backendUser.fullName || backendUser.name || "";
     const resolvedEmail = backendUser.email || "";
     const resolvedRole = backendUser.role || "EMPLOYEE";
+    const resolvedDesignation = backendUser.designation || "Femi9 Employee";
 
     // 1. Store in the UserSession singleton for direct constant access
     UserSession.setUser({
@@ -142,6 +143,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       name: resolvedName,
       email: resolvedEmail,
       role: resolvedRole,
+      designation : resolvedDesignation,
     });
 
 
@@ -154,6 +156,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       isAdmin: !!backendUser.isAdmin,
       token: token,
       role: resolvedRole,
+      designation: resolvedDesignation,
     };
 
     await saveUserSession(formattedUser);

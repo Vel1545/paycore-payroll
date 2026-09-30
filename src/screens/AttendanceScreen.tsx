@@ -3,14 +3,8 @@ import { View, Text, TouchableOpacity, ScrollView, Platform, ActivityIndicator }
 import { 
   ChevronLeft, 
   Camera, 
-  Clock, 
-  CheckCircle2, 
-  Calendar, 
-  ChevronDown, 
   ShieldCheck, 
   Fingerprint,
-  ArrowUpRight,
-  Sparkles
 } from "lucide-react-native";
 import ScreenContainer from "../components/ScreenContainer";
 import { UserSession } from "../services/UserSession";
@@ -148,7 +142,7 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
             <View className="bg-white/20 px-3 py-1 rounded-full border border-white/25 flex-row items-center">
               <ShieldCheck size={12} color="#FFFFFF" />
               <Text className="text-[10px] font-black text-white ml-1 uppercase tracking-wider">
-                EMP-{empId.replace(/[^0-9]/g, "") || "1042"}
+                {empId || "1042"}
               </Text>
             </View>
           </View>
@@ -161,7 +155,7 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
           showsVerticalScrollIndicator={false}
           className="flex-1"
           contentContainerStyle={{
-            paddingBottom: Platform.OS === "web" ? 50 : 110,
+            paddingBottom: Platform.OS === "web" ? 80 : 110,
           }}
         >
           {/* Quick Biometric Punch Card */}

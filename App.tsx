@@ -3,12 +3,12 @@ import React, { useState, useEffect } from "react";
 import { View, Platform, ActivityIndicator, TouchableOpacity } from "react-native";
 import { configureReanimatedLogger, ReanimatedLogLevel } from "react-native-reanimated";
 import * as Linking from "expo-linking";
-import { registerRootComponent } from "expo";
-import { NavigationContainer } from "@react-navigation/native";
+import { NavigationContainer,type LinkingOptions } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 
-// 1. Mandatory Headless Background Task Import (Top-Level Execution)
+// 1. Mandatory Headless Background Task Import
 import "./src/services/locationTrackingTask";
 
 // Icons
@@ -38,6 +38,7 @@ import AttendanceAuditTabsScreen from "./src/screens/AttendanceAuditTabsScreen";
 // Context & Storage
 import { AuthProvider } from "./src/context/AuthContext";
 import { getSavedSession, clearActiveSessionOnly } from "./src/utils/authStorage";
+import { BASE_HOST } from "./src/constants/config";
 
 configureReanimatedLogger({
   level: ReanimatedLogLevel.warn,
@@ -45,6 +46,7 @@ configureReanimatedLogger({
 });
 
 const Tab = createBottomTabNavigator();
+const RootStack = createNativeStackNavigator();
 
 // ==========================================
 // NOTCHED CENTER BUTTON
@@ -78,11 +80,11 @@ const NotchedCenterButton = ({ onPress }: any) => (
 );
 
 // React Navigation Deep Linking Configuration
-const linking = {
+const linking: LinkingOptions<any> = {
   prefixes: [
     Linking.createURL("/"),
     "paycore://",
-    "http://192.168.31.228:8080",
+    `${BASE_HOST}`,
   ],
   config: {
     screens: {
@@ -106,133 +108,131 @@ const linking = {
   },
 };
 
-function MainNavigator({ userSession, onLogout }: { userSession: any; onLogout: () => void }) {
+function MainTabs({ userSession, onLogout }: { userSession: any; onLogout: () => void }) {
   const insets = useSafeAreaInsets();
   const bottomOffset = Math.max(insets.bottom, Platform.OS === "android" ? 50 : 16);
 
   return (
-    <NavigationContainer linking={linking}>
-      <Tab.Navigator
-        screenOptions={{
-          headerShown: false,
-          tabBarShowLabel: true,
-          tabBarLabelPosition: "below-icon",
-          tabBarActiveTintColor: "#5B4FD1",
-          tabBarInactiveTintColor: "#94A3B8",
-          tabBarItemStyle: {
-            justifyContent: "center",
-            alignItems: "center",
-            paddingVertical: 2,
-          },
-          tabBarStyle: {
-            position: "absolute",
-            marginHorizontal: 8,
-            bottom: bottomOffset,
-            height: 64,
-            backgroundColor: "#FFFFFF",
-            borderRadius: 18,
-            borderTopWidth: 0,
-            paddingBottom: 8,
-            paddingTop: 4,
-            shadowColor: "#5B4FD1",
-            shadowOffset: { width: 0, height: 8 },
-            shadowOpacity: 0.12,
-            shadowRadius: 18,
-            elevation: 10,
-            borderWidth: 1,
-            borderColor: "#F1EFFB",
-          },
-          tabBarLabelStyle: {
-            fontSize: 10,
-            fontWeight: "700",
-            marginTop: 2,
-          },
+    <Tab.Navigator
+      screenOptions={{
+        headerShown: false,
+        tabBarShowLabel: true,
+        tabBarLabelPosition: "below-icon",
+        tabBarActiveTintColor: "#5B4FD1",
+        tabBarInactiveTintColor: "#94A3B8",
+        tabBarItemStyle: {
+          justifyContent: "center",
+          alignItems: "center",
+          paddingVertical: 2,
+        },
+        tabBarStyle: {
+          position: "absolute",
+          marginHorizontal: 8,
+          bottom: bottomOffset,
+          height: 64,
+          backgroundColor: "#FFFFFF",
+          borderRadius: 18,
+          borderTopWidth: 0,
+          paddingBottom: 8,
+          paddingTop: 4,
+          shadowColor: "#5B4FD1",
+          shadowOffset: { width: 0, height: 8 },
+          shadowOpacity: 0.12,
+          shadowRadius: 18,
+          elevation: 10,
+          borderWidth: 1,
+          borderColor: "#F1EFFB",
+        },
+        tabBarLabelStyle: {
+          fontSize: 10,
+          fontWeight: "700",
+          marginTop: 2,
+        },
+      }}
+    >
+      {/* TAB 1: HOME */}
+      <Tab.Screen
+        name="Home"
+        options={{
+          tabBarLabel: "Home",
+          tabBarIcon: ({ color, focused }) => (
+            <House color={focused ? "#5B4FD1" : color} size={20} />
+          ),
         }}
       >
-        {/* TAB 1: HOME */}
-        <Tab.Screen
-          name="Home"
-          options={{
-            tabBarLabel: "Home",
-            tabBarIcon: ({ color, focused }) => (
-              <House color={focused ? "#5B4FD1" : color} size={20} />
-            ),
-          }}
-        >
-          {(props) => (
-            <HomeScreen
-              {...props}
-              userSession={userSession}
-              onLogout={onLogout}
-            />
-          )}
-        </Tab.Screen>
+        {(props) => (
+          <HomeScreen
+            {...props}
+            userSession={userSession}
+            onLogout={onLogout}
+          />
+        )}
+      </Tab.Screen>
 
-        {/* TAB 2: CHATS */}
-        <Tab.Screen
-          name="Chat"
-          options={{
-            tabBarLabel: "Chats",
-            tabBarIcon: ({ color, focused }) => (
-              <MessagesSquare color={focused ? "#5B4FD1" : color} size={20} />
-            ),
-          }}
-        >
-          {(props) => <ChatScreen {...props} userSession={userSession} />}
-        </Tab.Screen>
+      {/* TAB 2: CHATS */}
+      <Tab.Screen
+        name="Chat"
+        options={{
+          tabBarLabel: "Chats",
+          tabBarIcon: ({ color, focused }) => (
+            <MessagesSquare color={focused ? "#5B4FD1" : color} size={20} />
+          ),
+        }}
+      >
+        {(props) => <ChatScreen {...props} userSession={userSession} />}
+      </Tab.Screen>
 
-        {/* TAB 3: CENTER NOTCHED SCANNER */}
-        <Tab.Screen
-          name="PunchClock"
-          component={PunchClockScreen}
-          options={{
-            tabBarLabel: () => null,
-            tabBarIcon: () => null,
-            tabBarButton: (props) => <NotchedCenterButton {...props} />,
-          }}
-        />
+      {/* TAB 3: CENTER NOTCHED SCANNER */}
+      <Tab.Screen
+        name="PunchClock"
+        component={PunchClockScreen}
+        options={{
+          tabBarLabel: () => null,
+          tabBarIcon: () => null,
+          tabBarButton: (props) => <NotchedCenterButton {...props} />,
+        }}
+      />
 
-        {/* TAB 4: ATTENDANCE */}
-        <Tab.Screen
-          name="Attendance"
-          component={AttendanceScreen}
-          options={{
-            tabBarLabel: "Attendance",
-            tabBarIcon: ({ color, focused }) => (
-              <CalendarClock color={focused ? "#5B4FD1" : color} size={20} />
-            ),
-          }}
-        />
+      {/* TAB 4: ATTENDANCE */}
+      <Tab.Screen
+        name="Attendance"
+        component={AttendanceScreen}
+        options={{
+          tabBarLabel: "Attendance",
+          tabBarIcon: ({ color, focused }) => (
+            <CalendarClock color={focused ? "#5B4FD1" : color} size={20} />
+          ),
+        }}
+      />
 
-        {/* TAB 5: PROFILE / SETTINGS */}
-        <Tab.Screen
-          name="Profile"
-          component={ProfileScreen}
-          options={{
-            tabBarLabel: "Settings",
-            tabBarIcon: ({ color, focused }) => (
-              <UserRoundCog color={focused ? "#5B4FD1" : color} size={20} />
-            ),
-          }}
-        />
+      {/* TAB 5: PROFILE / SETTINGS */}
+      <Tab.Screen
+        name="Profile"
+        component={ProfileScreen}
+        options={{
+          tabBarLabel: "Settings",
+          tabBarIcon: ({ color, focused }) => (
+            <UserRoundCog color={focused ? "#5B4FD1" : color} size={20} />
+          ),
+        }}
+      />
 
-        {/* Hidden Operational Routes */}
-        <Tab.Screen name="Apply" component={ApplyScreen} options={{ tabBarItemStyle: { display: "none" } }} />
-        <Tab.Screen name="Approvals" component={ApprovalsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
-        <Tab.Screen name="CandidateForm" component={CandidateFormRoute} options={{ tabBarItemStyle: { display: "none" } }} />
-        <Tab.Screen name="Celebrations" component={CelebrationsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
-        <Tab.Screen name="AdminHub" component={AdminHubScreen} options={{ tabBarItemStyle: { display: "none" } }} />
-        <Tab.Screen name="AdminOnboardingSubmissions" component={AdminOnboardingSubmissionsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
-        <Tab.Screen name="AdminReports" component={AdminReportsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
-        <Tab.Screen name="MyHub" component={MyHubScreen} options={{ tabBarItemStyle: { display: "none" } }} />
-        <Tab.Screen name="UserDirectory" component={UserDirectoryScreen} options={{ tabBarItemStyle: { display: "none" } }} />
-        <Tab.Screen name="HrPolicy" component={HrPolicyScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      {/* Hidden Operational Routes */}
+      <Tab.Screen name="Apply" component={ApplyScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="Approvals" component={ApprovalsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="CandidateForm" component={CandidateFormRoute} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="Celebrations" component={CelebrationsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="AdminHub" component={AdminHubScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="AdminOnboardingSubmissions" component={AdminOnboardingSubmissionsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="AdminReports" component={AdminReportsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="MyHub" component={MyHubScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="UserDirectory" component={UserDirectoryScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="HrPolicy" component={HrPolicyScreen} options={{ tabBarItemStyle: { display: "none" } }} />
 
-        {/* Live Fleet Tracking & Route Polyline Maps */}
-        <Tab.Screen name="LiveTracking" component={LiveTrackingScreen} options={{ tabBarItemStyle: { display: "none" } }} />
-        <Tab.Screen name="AttendanceAuditTabs" component={AttendanceAuditTabsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
-      </Tab.Navigator>
-    </NavigationContainer>
+      {/* Live Fleet Tracking & Route Polyline Maps */}
+      <Tab.Screen name="LiveTracking" component={LiveTrackingScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="AttendanceAuditTabs" component={AttendanceAuditTabsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+    </Tab.Navigator>
   );
 }
 
@@ -296,23 +296,42 @@ export default function App() {
     );
   }
 
+  const isUserAllowedIn = initialDeepLinkRoute || userSession.isAuthenticated;
+
   return (
     <AuthProvider>
       <SafeAreaProvider className="flex-1 bg-[#F6F5FC]">
         <View className="flex-1 bg-[#F6F5FC]">
-          {initialDeepLinkRoute || userSession.isAuthenticated ? (
-            <MainNavigator userSession={userSession} onLogout={handleLogout} />
-          ) : (
-            <LoginScreen
-              onLoginSuccess={(authData) =>
-                setUserSession({
-                  isAuthenticated: true,
-                  empId: authData.empId,
-                  isAdmin: authData.isAdmin,
-                })
-              }
-            />
-          )}
+          {/* Top-level NavigationContainer wraps all routes */}
+          <NavigationContainer linking={linking}>
+            <RootStack.Navigator screenOptions={{ headerShown: false }}>
+              {!isUserAllowedIn ? (
+                <RootStack.Screen name="Login">
+                  {(props) => (
+                    <LoginScreen
+                      {...props}
+                      onLoginSuccess={(authData: any) =>
+                        setUserSession({
+                          isAuthenticated: true,
+                          empId: authData.empId,
+                          isAdmin: authData.isAdmin,
+                        })
+                      }
+                    />
+                  )}
+                </RootStack.Screen>
+              ) : (
+                <RootStack.Screen name="MainTabs">
+                  {() => (
+                    <MainTabs
+                      userSession={userSession}
+                      onLogout={handleLogout}
+                    />
+                  )}
+                </RootStack.Screen>
+              )}
+            </RootStack.Navigator>
+          </NavigationContainer>
         </View>
       </SafeAreaProvider>
     </AuthProvider>

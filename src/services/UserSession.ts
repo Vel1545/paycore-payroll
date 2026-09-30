@@ -5,6 +5,7 @@ export interface UserData {
   name: string;
   email: string;
   role: string;
+  designation: string;
 }
 
 // In-memory constant reference
@@ -13,6 +14,7 @@ class SessionManager {
   private _name: string = "";
   private _email: string = "";
   private _role: string = "";
+  private _designation: string ="";
 
   // Direct getters — access them like regular constants: UserSession.empId
   get empId(): string {
@@ -31,12 +33,17 @@ class SessionManager {
     return this._role;
   }
 
+    get designation(): string {
+    return this._designation;
+  }
+
   // Call once at login
   setUser(data: UserData) {
     this._empId = data.empId;
     this._name = data.name;
     this._email = data.email;
     this._role = data.role;
+    this._designation =data.designation;
     AsyncStorage.setItem("@session_user", JSON.stringify(data));
   }
 
@@ -50,6 +57,7 @@ class SessionManager {
         this._name = data.name;
         this._email = data.email;
         this._role = data.role;
+        this._designation = data.designation;
         return true;
       }
     } catch (e) {
@@ -64,6 +72,7 @@ class SessionManager {
     this._name = "";
     this._email = "";
     this._role = "";
+     this._designation="";
     AsyncStorage.removeItem("@session_user");
   }
 }

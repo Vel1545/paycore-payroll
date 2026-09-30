@@ -1,18 +1,18 @@
 import React, { useState } from "react";
-import { 
-  View, 
-  Text, 
-  TouchableOpacity, 
-  TextInput, 
-  ScrollView, 
-  Alert, 
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  TextInput,
+  ScrollView,
+  Alert,
   Platform,
   Modal,
   ActivityIndicator,
   useWindowDimensions
 } from "react-native";
-import { 
-  ChevronLeft, Search, UserPlus, UserCheck, FileText, Download, X 
+import {
+  ChevronLeft, Search, UserPlus, UserCheck, FileText, Download, X
 } from "lucide-react-native";
 import * as Clipboard from 'expo-clipboard'; // <-- Added Expo Clipboard import
 import ScreenContainer from "../components/ScreenContainer";
@@ -140,7 +140,7 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
     }
   };
 
-  const filteredCandidates = completedCandidates.filter(c => 
+  const filteredCandidates = completedCandidates.filter(c =>
     c.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
     c.mobileNumber.includes(searchQuery) ||
     c.department.toLowerCase().includes(searchQuery.toLowerCase())
@@ -148,11 +148,11 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
 
   return (
     <ScreenContainer scrollable={false} fullWidth={true}>
-      
+
       {/* Header Bar */}
       <View className="mb-4 flex-row items-center justify-between">
         <View className="flex-row items-center gap-3">
-          <TouchableOpacity 
+          <TouchableOpacity
             onPress={() => navigation.goBack()}
             className="w-10 h-10 bg-white border border-[#E7E4F5] rounded-xl items-center justify-center shadow-xs"
           >
@@ -190,7 +190,7 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 60 }} className="flex-1">
           <View style={{ width: isDesktop ? 600 : "100%", alignSelf: "center" }} className="gap-4">
             <View className="bg-white border border-[#E7E4F5] rounded-3xl p-6 md:p-8 shadow-xs gap-5">
-              
+
               <View className="flex-row items-center gap-3 pb-3 border-b border-slate-100">
                 <View className="w-10 h-10 rounded-xl bg-[#EEECFA] items-center justify-center">
                   <UserPlus size={20} color="#5B4FD1" />
@@ -298,7 +298,7 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
 
                   <Text className="text-base font-black text-[#1F1B3D]" numberOfLines={1}>{candidate.fullName}</Text>
                   <Text className="text-xs font-bold text-[#5B4FD1] mt-0.5">{candidate.designation} • {candidate.department}</Text>
-                  
+
                   <View className="mt-3 pt-3 border-t border-slate-100 flex-row justify-between items-center">
                     <Text className="text-[11px] font-semibold text-[#7A76A6]">Mobile: {candidate.mobileNumber}</Text>
                     <Text className="text-[10px] font-bold text-slate-400">{candidate.submissionDate}</Text>
@@ -315,7 +315,7 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
         <View className="flex-1 bg-black/40 justify-center items-center p-4">
           {selectedCandidate && (
             <View className="w-full max-w-lg bg-white border border-[#E7E4F5] rounded-3xl p-6 shadow-xl gap-5 max-h-[85%]">
-              
+
               <View className="flex-row items-center justify-between pb-3 border-b border-slate-100">
                 <View>
                   <Text className="text-lg font-black text-[#1F1B3D]">{selectedCandidate.fullName}</Text>
@@ -345,7 +345,7 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
                         <FileText size={16} color="#5B4FD1" />
                         <Text className="text-xs font-bold text-[#1F1B3D]">{doc.label}</Text>
                       </View>
-                      <TouchableOpacity 
+                      <TouchableOpacity
                         onPress={() => handleDownloadDoc(doc.label, doc.url)}
                         className="bg-[#EEECFA] px-3 py-1.5 rounded-lg border border-[#5B4FD1]/30 flex-row items-center gap-1"
                       >

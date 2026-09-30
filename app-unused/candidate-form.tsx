@@ -39,7 +39,7 @@ export default function CandidateFormRoute() {
 
     const verifyAccess = async () => {
       try {
-        const res = await fetch(`http://${LOCAL_IP}/api/admin/verify-access?token=${token}&mobile=${mobile}`);
+        const res = await fetch(`http://${BASE_HOST}/api/admin/verify-access?token=${token}&mobile=${mobile}`);
         if (res.ok) {
           setIsAuthorized(true);
         } else {

@@ -529,7 +529,7 @@ const handleSubmitAdvance = async () => {
       {/* TAB 1: LEAVE / HALF DAY / PERMISSION                                      */}
       {/* ========================================================================= */}
       {activeTab === "leave" && (
-        <View>
+        <View className="mb-4">
           {/* Balance Cards */}
           <View className="bg-white border border-[#E7E4F5] rounded-2xl p-4 mb-4 shadow-xs">
             <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-2">
