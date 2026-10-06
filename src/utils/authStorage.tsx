@@ -1,4 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { UserSession } from "../services/UserSession";
+import { Platform } from "react-native";
 
 const SESSION_TOKEN_KEY = "paycore_session_token";
 const DEVICE_ID_KEY = "paycore_device_id";
@@ -29,7 +31,28 @@ export const getSavedSession = async () => {
 
 // Logout preserves the device verification flag so they only need Emp ID next time
 export const clearActiveSessionOnly = async () => {
-  await AsyncStorage.multiRemove(["jwt_token", SESSION_TOKEN_KEY]);
+  try {
+    // 1. Clear in-memory singleton
+    if (UserSession?.clear) {
+      UserSession.clear();
+    }
+
+    // 2. Clear Mobile storage
+    await AsyncStorage.multiRemove([
+      "jwt_token",
+      SESSION_TOKEN_KEY,
+      "paycore_remembered_emp_id", // Stops silent auto-login from triggering after logout
+    ]);
+
+    // 3. Clear Web storage (if user is on PC / Browser)
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      window.localStorage.removeItem("jwt_token");
+      window.localStorage.removeItem(SESSION_TOKEN_KEY);
+      window.localStorage.removeItem("paycore_remembered_emp_id");
+    }
+  } catch (error) {
+    console.warn("Error clearing session:", error);
+  }
 };
 
 // Full wipe (e.g. app uninstall or unregister)

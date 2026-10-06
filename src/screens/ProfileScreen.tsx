@@ -34,7 +34,7 @@ interface ProfileScreenProps {
     replace?: (screen: string) => void;
     reset?: (config: any) => void;
   };
-  onLogout?: () => void;
+ onLogout?: () => Promise<void> | void;
 }
 
 export default function ProfileScreen({ navigation, onLogout }: ProfileScreenProps) {
@@ -59,32 +59,31 @@ export default function ProfileScreen({ navigation, onLogout }: ProfileScreenPro
     { id: "help", title: "Help & Support", icon: HelpCircle },
   ];
 
-  const handleLogoutPress = () => {
-    const confirmLogout = async () => {
-      await clearActiveSessionOnly();
-      if (onLogout) {
-        onLogout();
-      } else if (navigation.replace) {
-        navigation.replace("Login");
-      } else if (navigation.reset) {
-        navigation.reset({
-          index: 0,
-          routes: [{ name: "Login" }],
-        });
-      }
-    };
-
-    if (Platform.OS === "web") {
-      if (window.confirm("Are you sure you want to log out?")) {
-        confirmLogout();
-      }
+const handleLogoutPress = () => {
+  const confirmLogout = async () => {
+    if (onLogout) {
+      // Calls App.tsx handleLogout -> triggers clean transition to LoginScreen
+       onLogout();
     } else {
-      Alert.alert("Confirm Logout", "Are you sure you want to log out of your session?", [
-        { text: "Cancel", style: "cancel" },
-        { text: "Logout", style: "destructive", onPress: confirmLogout },
-      ]);
+      await clearActiveSessionOnly();
+      navigation?.reset?.({
+        index: 0,
+        routes: [{ name: "Login" }],
+      });
     }
   };
+
+  if (Platform.OS === "web") {
+    if (window.confirm("Are you sure you want to log out?")) {
+      confirmLogout();
+    }
+  } else {
+    Alert.alert("Confirm Logout", "Are you sure you want to log out of your session?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Logout", style: "destructive", onPress: confirmLogout },
+    ]);
+  }
+};
 
   return (
     <View className="flex-1 bg-[#5B4FD1]">

@@ -24,7 +24,7 @@ import { BASE_HOST } from "../constants/config";
 interface HomeScreenProps {
   navigation: any;
   userSession?: { empId: string; isAdmin: boolean };
-  onLogout?: () => void;
+  onLogout?: () => Promise<void> | void;
 }
 
 const API_BASE_URL = `${BASE_HOST}/api/attendance`;
@@ -54,6 +54,9 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
     totalHours: "00h 00m",
     hasCheckedIn: false,
     isCheckedOut: false,
+    shiftStart:"9.00 AM",
+    shiftEnd:"6.00 PM"
+
   });
   const [monthCalendarData, setMonthCalendarData] = useState<Record<string, any>>({});
 
@@ -96,6 +99,8 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
           totalHours: "00h 00m",
           hasCheckedIn: false,
           isCheckedOut: false,
+          shiftStart: "9.00 AM",
+          shiftEnd:"6.00 PM"
         });
         setMonthCalendarData(data.calendar || {});
       }
@@ -188,20 +193,19 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
     return { selectedStatus: status, leaveBadgeText: badgeText };
   }, [currentDate, selectedDayNumber, monthCalendarData]);
 
-  const handleLogoutPress = async () => {
+const handleLogoutPress = async () => {
+  cachedOverview = null;
+  if (onLogout) {
+    // This will invoke handleLogout in App.tsx and re-render to LoginScreen
+     onLogout();
+  } else {
     await clearActiveSessionOnly();
-    cachedOverview = null;
-    if (onLogout) {
-      onLogout();
-    } else if (navigation?.replace) {
-      navigation.replace("Login");
-    } else if (navigation?.reset) {
-      navigation.reset({
-        index: 0,
-        routes: [{ name: "Login" }],
-      });
-    }
-  };
+    navigation?.reset?.({
+      index: 0,
+      routes: [{ name: "Login" }],
+    });
+  }
+};
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F4F6F9" }} edges={["top"]}>
@@ -745,7 +749,7 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
               ) : (
                 <View className="bg-[#E7FAEE] border border-[#1FAE5C]/30 px-3 py-1 rounded-full">
                   <Text className="text-[10px] font-black text-[#1FAE5C] uppercase">
-                    Shift • 09:00 - 18:00
+                    Shift • {todaySummary.shiftStart?todaySummary.shiftStart:"9.30 AM"} - {todaySummary.shiftEnd?todaySummary.shiftEnd:"6.30 PM"}
                   </Text>
                 </View>
               )}

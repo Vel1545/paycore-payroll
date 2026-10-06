@@ -64,7 +64,11 @@ TaskManager.defineTask(SHIFT_LOCATION_TASK, async ({ data, error }: any) => {
 });
 
 // 2. Start Tracking (Call this on Punch In)
-export async function startShiftTracking(empId: string) {
+export async function startShiftTracking(empId: string, workMode?: string) {
+  if ((workMode || "").toUpperCase() !== "SALES") {
+    console.log(`Live tracking skipped for ${empId} — work mode is "${workMode}", not SALES.`);
+    return;
+  }
   await AsyncStorage.setItem("active_tracking_emp_id", empId);
   await AsyncStorage.setItem("is_shift_tracking_active", "true");
 
@@ -81,10 +85,10 @@ export async function startShiftTracking(empId: string) {
   const hasStarted = await Location.hasStartedLocationUpdatesAsync(SHIFT_LOCATION_TASK);
   if (!hasStarted) {
     await Location.startLocationUpdatesAsync(SHIFT_LOCATION_TASK, {
-      accuracy: Location.Accuracy.Balanced,
-      timeInterval: 3600000,          // 1 hour (3,600,000 ms)
-      distanceInterval: 50,          // Wake up if displaced by 50 meters
-      deferredUpdatesInterval: 3600000,
+       accuracy: Location.Accuracy.Balanced,
+      timeInterval: 1800000,          // 30 minutes
+      distanceInterval: 0,            // time-based cadence only
+      deferredUpdatesInterval: 1800000,
       showsBackgroundLocationIndicator: true,
       foregroundService: {
         notificationTitle: "Shift Tracking Active",

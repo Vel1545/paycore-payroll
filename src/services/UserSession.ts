@@ -38,13 +38,13 @@ class SessionManager {
   }
 
   // Call once at login
-  setUser(data: UserData) {
+  async setUser(data: UserData) {
     this._empId = data.empId;
     this._name = data.name;
     this._email = data.email;
     this._role = data.role;
     this._designation =data.designation;
-    AsyncStorage.setItem("@session_user", JSON.stringify(data));
+    await AsyncStorage.setItem("@session_user", JSON.stringify(data));
   }
 
   // Call once on app startup (e.g. in App.tsx / splash screen)
@@ -67,13 +67,13 @@ class SessionManager {
   }
 
   // Call on logout
-  clear() {
+  async clear() {
     this._empId = "";
     this._name = "";
     this._email = "";
     this._role = "";
      this._designation="";
-    AsyncStorage.removeItem("@session_user");
+    await AsyncStorage.removeItem("@session_user");
   }
 }
 
