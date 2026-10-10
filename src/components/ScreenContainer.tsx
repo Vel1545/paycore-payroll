@@ -1,13 +1,16 @@
 import React from "react";
-import { View, ScrollView, Platform } from "react-native";
+import { View, ScrollView, Platform,ScrollViewProps  } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useResponsive } from "../hooks/useResponsive";
 
 interface ScreenContainerProps {
   children: React.ReactNode;
-  scrollable?: boolean;
+  scrollable?: boolean; // false: the screen brings its own ScrollView (for example one with pull-to-refresh)
   contentContainerStyle?: object;
   fullWidth?: boolean;
+  scrollRef?: React.Ref<ScrollView>; // lets a screen scroll the page itself (for example to a field)
+ // was:  refreshControl?: React.ReactElement;
+refreshControl?: ScrollViewProps["refreshControl"]; // optional pull-to-refresh for screens that use the built-in scrolling
 }
 
 export default function ScreenContainer({
@@ -15,6 +18,8 @@ export default function ScreenContainer({
   scrollable = true,
   contentContainerStyle,
   fullWidth = false,
+  scrollRef,
+  refreshControl,
 }: ScreenContainerProps) {
   const { isDesktop } = useResponsive();
 
@@ -33,8 +38,13 @@ export default function ScreenContainer({
         >
           {scrollable ? (
             <ScrollView
+              ref={scrollRef}
               className="flex-1 w-full"
               showsVerticalScrollIndicator={false}
+              refreshControl={refreshControl}
+              // A tap on a button works with the keyboard open (no first tap that only closes the keyboard)
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
               contentContainerStyle={[
                 {
                   flexGrow: 1,

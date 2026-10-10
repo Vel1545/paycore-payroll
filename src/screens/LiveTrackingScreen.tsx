@@ -57,8 +57,8 @@ if (Platform.OS !== "web") {
   }
   try {
     WebView = require("react-native-webview").WebView;
-  } catch (e) {
-    console.warn("react-native-webview not installed:", e);
+  } catch {
+    /* optional package: only needed for the map fallback in Expo Go on Android */
   }
 }
 
@@ -68,7 +68,8 @@ if (Platform.OS !== "web") {
 const API_ATTENDANCE = `${BASE_HOST}/api/attendance`;
 const API_ADMIN = `${BASE_HOST}/api/admin`;
 const POLL_MS = 60_000; // auto-refresh, today only
-const STAY_RADIUS_M = 150; // consecutive points within this are one "stay"
+const STAY_RADIUS_M = 100; // consecutive points within this are one "stay"
+const STOP_MIN_MINUTES = 5; // a stay at least this long counts as a stop (shorter ones are just passing by)
 const APPROX_STAY_RADIUS_M = 600; // approximate (coarse) fixes are grouped more loosely
 const MAX_ROUTE_WAYPOINTS = 8;
 // Turn on only after the events_json column, the /trace-events endpoint and tracking.events-enabled=true are live.
@@ -108,7 +109,8 @@ interface TracePoint {
   accuracyMeters?: number | null;
   batteryPercentage?: number | null;
   locationName?: string;
-  quality?: "GOOD" | "LOW";
+  quality?: "GOOD" | "LOW" | "STALE";
+  remarks?: string;
   source?: string;
 }
 
@@ -130,6 +132,8 @@ interface PingRow {
   accuracy: number | null;
   battery: number | null;
   approx: boolean;
+  stale: boolean;
+  remarks?: string;
   isPunch: boolean;
 }
 
@@ -292,11 +296,13 @@ const buildTimeline = (points: TracePoint[], events: TraceEvent[], ymd: string):
 
   const stays: StayItem[] = [];
   let cur: StayItem | null = null;
+  let pingSeq = 0; // keeps every ping key unique, even for identical duplicate rows
 
   for (const { p, ms } of valid) {
     const lat = Number(p.latitude);
     const lng = Number(p.longitude);
-    const approx = p.quality === "LOW";
+    const stale = p.quality === "STALE"; // no usable fix: the position is a copy of the last known one
+    const approx = p.quality === "LOW" || stale;
     const isPunch = p.source === "PUNCH";
     // Old check-in/out rows stored 0 for unknown battery/accuracy
     const placeholder = p.accuracyMeters === 0 && p.batteryPercentage === 0;
@@ -304,7 +310,7 @@ const buildTimeline = (points: TracePoint[], events: TraceEvent[], ymd: string):
     const accuracy = p.accuracyMeters ? p.accuracyMeters : null;
 
     const ping: PingRow = {
-      key: `ping-${ms}-${lat}-${lng}`,
+      key: `ping-${pingSeq++}-${ms}`,
       ms,
       time: p.time,
       lat,
@@ -313,6 +319,8 @@ const buildTimeline = (points: TracePoint[], events: TraceEvent[], ymd: string):
       accuracy,
       battery,
       approx,
+      stale,
+      remarks: p.remarks,
       isPunch,
     };
 
@@ -339,7 +347,11 @@ const buildTimeline = (points: TracePoint[], events: TraceEvent[], ymd: string):
       endLabel: p.time,
       lat,
       lng,
-      place: approx ? "Approximate location" : p.locationName || `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+      place: stale
+        ? p.locationName || "Last known position"
+        : approx
+        ? "Approximate location"
+        : p.locationName || `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
       count: 1,
       battery,
       accuracy,
@@ -361,7 +373,9 @@ const buildTimeline = (points: TracePoint[], events: TraceEvent[], ymd: string):
       last.tags.push("Check-out");
     }
   }
-  stays.forEach((s) => s.approx && s.tags.push("Approximate"));
+  stays.forEach((s) => {
+    if (s.approx) s.tags.push(s.pings.every((x) => x.stale) ? "Last known" : "Approximate");
+  });
 
   const eventItems: EventItem[] = events.map((e, i) => ({
     kind: "event",
@@ -385,50 +399,29 @@ const toEventItems = (events: TraceEvent[], ymd: string): EventItem[] =>
     reason: e.reason,
   }));
 
-// When the server stores no events (no events_json column), missing time is computed from the pings
-const GAP_MINUTES = 90;
-const deriveGapEvents = (points: TracePoint[], ymd: string, includeOngoing: boolean): TraceEvent[] => {
-  const rows = points
-    .filter((p) => p.latitude != null && p.longitude != null)
-    .map((p) => ({ ms: toMs(p, ymd), punch: p.source === "PUNCH" }))
-    .filter((r) => r.ms > 0)
-    .sort((a, b) => a.ms - b.ms);
-  if (rows.length === 0) return [];
-
-  const hhmm = (t: number) => {
-    const d = new Date(t);
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
-  const mk = (at: number, reason: string): TraceEvent => ({
-    time: hhmm(at),
-    ts: new Date(at).toISOString(),
-    status: "MISSED",
-    reason,
-  });
-
-  const out: TraceEvent[] = [];
-  for (let i = 1; i < rows.length; i++) {
-    const gap = Math.round((rows[i].ms - rows[i - 1].ms) / 60000);
-    if (gap >= GAP_MINUTES) {
-      out.push(
-        mk(
-          rows[i - 1].ms + GAP_MINUTES * 60000,
-          `No location between ${hhmm(rows[i - 1].ms)} and ${hhmm(rows[i].ms)} (${gap} min)`
-        )
-      );
+// Distance travelled along a path. Steps shorter than minStep are ignored, so GPS jitter while standing still
+// does not add up to fake kilometres.
+const pathLengthM = (points: { lat: number; lng: number }[], minStep: number) => {
+  let total = 0;
+  let anchor: { lat: number; lng: number } | null = null;
+  for (const p of points) {
+    if (!anchor) {
+      anchor = p;
+      continue;
+    }
+    const d = distM(anchor.lat, anchor.lng, p.lat, p.lng);
+    if (d >= minStep) {
+      total += d;
+      anchor = p;
     }
   }
+  return total;
+};
 
-  // Still-running gap for today, unless the shift already ended (two punches, last one is the check-out)
-  const last = rows[rows.length - 1];
-  const ended = last.punch && rows.filter((r) => r.punch).length >= 2;
-  if (includeOngoing && !ended) {
-    const gap = Math.round((Date.now() - last.ms) / 60000);
-    if (gap >= GAP_MINUTES) {
-      out.push(mk(last.ms + GAP_MINUTES * 60000, `No location since ${hhmm(last.ms)} (${gap} min so far)`));
-    }
-  }
-  return out;
+const stopTitle = (s: StayItem) => {
+  const mins = Math.round((s.endMs - s.startMs) / 60000);
+  const range = s.startLabel === s.endLabel ? s.startLabel : `${s.startLabel} – ${s.endLabel}`;
+  return mins >= 1 ? `${range} · ${fmtDuration(mins)}` : range;
 };
 
 const Stat = ({ label, value, sub }: { label: string; value: string; sub?: string }) => (
@@ -476,6 +469,7 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
+  const [editing, setEditing] = useState(false); // true while the admin is typing a new search
 
   // Refs so polling always sees the latest selection/date (no stale closures)
   const selectedRef = useRef(selected);
@@ -487,7 +481,7 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
   const loadStaff = async (ymd: string) => {
     const my = ++staffReq.current;
     try {
-      const res = await fetch(`${API_ATTENDANCE}/active-fleet?date=${ymd}`);
+      const res = await fetch(`${API_ATTENDANCE}/active-fleet?date=${ymd}`, { cache: "no-store" });
       let rows: StaffRow[] = [];
       if (res.ok) {
         const d = await res.json();
@@ -514,7 +508,7 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
     if (!silent) setLoadingDay(true);
     try {
       const [tRes, eRes] = await Promise.all([
-        fetch(`${API_ATTENDANCE}/traces?empId=${empId}&date=${ymd}`),
+        fetch(`${API_ATTENDANCE}/traces?empId=${encodeURIComponent(empId)}&date=${ymd}`, { cache: "no-store" }),
         USE_SERVER_EVENTS
           ? fetch(`${API_ATTENDANCE}/trace-events?empId=${empId}&date=${ymd}`).catch(() => null)
           : Promise.resolve(null),
@@ -596,14 +590,15 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
 
   const openDatePicker = () => {
     if (Platform.OS === "android") {
-      DateTimePickerAndroid.open({
-        value: selectedDate,
-        mode: "date",
-        maximumDate: new Date(),
-        onChange: (event, d) => {
-          if (event.type === "set" && d) setSelectedDate(d);
-        },
-      });
+DateTimePickerAndroid.open({
+  value: selectedDate,
+  mode: "date",
+  maximumDate: new Date(),
+  onValueChange: (_event: any, d?: Date) => {
+    if (d) setSelectedDate(d);
+  },
+  onDismiss: () => {},
+});
     } else if (Platform.OS === "ios") {
       setShowIosPicker(true);
     }
@@ -629,6 +624,7 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
   const selectEmployee = (empId: string, name: string) => {
     setSelected({ empId, name });
     setQuery("");
+    setEditing(false);
     setSearchFocused(false);
     Keyboard.dismiss();
   };
@@ -641,6 +637,18 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
         selected.name)) ||
     "";
   const selectedDept = selected ? staffMap.get(selected.empId)?.department : null;
+
+  // The search bar shows the chosen employee until the admin starts typing again
+  const inputValue = selected && !editing ? `${selectedName}  (${selected.empId})` : query;
+
+  // Clear = forget the chosen employee and go back to the all-staff view
+  const clearSearch = () => {
+    setQuery("");
+    setEditing(false);
+    setSelected(null);
+    setSearchFocused(false);
+    Keyboard.dismiss();
+  };
 
   const chipRows: StaffRow[] =
     selected && !staffMap.has(selected.empId)
@@ -657,15 +665,11 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
   };
 
   // ----------------------------- derived day data -----------------------------
-  // Server events (events_json) when available; otherwise gaps derived from the pings
-  const allEvents = useMemo(
-    () => (events.length > 0 ? events : deriveGapEvents(points, dateStr, isToday)),
-    [events, points, dateStr, isToday]
-  );
+  // No separate "missing" rows any more: a weak or missing position is explained by the entry's own remarks
+  const allEvents = events;
 
   const timeline = useMemo(() => buildTimeline(points, allEvents, dateStr), [points, allEvents, dateStr]);
   const stays = useMemo(() => timeline.filter((i): i is StayItem => i.kind === "stay"), [timeline]);
-  const reliableStays = stays.filter((s) => !s.approx);
 
   // Every ping in time order (with events), for the "All pings" view
   const flatItems = useMemo<FlatItem[]>(() => {
@@ -689,58 +693,86 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
     return m;
   }, [stays]);
 
+  // Every reliable position in time order: this is the flow path drawn on the map
+  const pathPoints = useMemo(
+    () =>
+      stays
+        .filter((st) => !st.approx)
+        .flatMap((st) => st.pings)
+        .sort((x, y) => x.ms - y.ms),
+    [stays]
+  );
+
+  // First stay, last stay and every stop; each gets a map marker with its time spent
+  const markerStays = useMemo(() => {
+    const good = stays.filter((st) => !st.approx);
+    const first = good[0];
+    const lastStay = good[good.length - 1];
+    return good
+      .filter((st) => st === first || st === lastStay || (st.endMs - st.startMs) / 60000 >= STOP_MIN_MINUTES)
+      .map((st) => ({ stay: st, color: st === first ? "#1FAE5C" : st === lastStay ? "#5B4FD1" : "#F59E0B" }));
+  }, [stays]);
+
   const summary = useMemo(() => {
-    const base = reliableStays.length ? reliableStays : stays;
-    let km = 0;
-    for (let i = 1; i < base.length; i++) km += distM(base[i - 1].lat, base[i - 1].lng, base[i].lat, base[i].lng);
-    const batts = stays.map((s) => s.battery).filter((b): b is number => b != null);
+    const path = pathPoints.length ? pathPoints : stays.flatMap((st) => st.pings);
+    const km = pathLengthM(path, 50) / 1000;
+    const stops = stays.filter((st) => (st.endMs - st.startMs) / 60000 >= STOP_MIN_MINUTES);
+    const stoppedMin = stops.reduce((n, st) => n + Math.round((st.endMs - st.startMs) / 60000), 0);
+    const longest = stops.reduce<StayItem | null>(
+      (best, st) => (!best || st.endMs - st.startMs > best.endMs - best.startMs ? st : best),
+      null
+    );
+    const batts = stays.map((st) => st.battery).filter((v): v is number => v != null);
     return {
       first: stays[0]?.startLabel ?? "--:--",
       last: stays[stays.length - 1]?.endLabel ?? "--:--",
-      km: (km / 1000).toFixed(1),
-      issues: allEvents.length,
+      km: km.toFixed(1),
+      issues: stays.reduce((n, st) => n + st.pings.filter((x) => x.remarks).length, 0),
       battery: batts.length ? `${batts[0]}% → ${batts[batts.length - 1]}%` : "—",
+      stops: stops.length,
+      stoppedMin,
+      longest,
     };
-  }, [stays, reliableStays, allEvents]);
+  }, [stays, pathPoints]);
 
   const lastSeenMins = isToday && stays.length ? minutesSinceHHmm(stays[stays.length - 1].endLabel) : null;
 
   // ----------------------------- map -----------------------------
   const mapCoords = useMemo(() => {
     if (selected) {
-      const src = reliableStays.length ? reliableStays : stays;
-      return src.map((s) => ({ latitude: s.lat, longitude: s.lng }));
+      const src = pathPoints.length ? pathPoints : stays.flatMap((st) => st.pings);
+      return src.map((p) => ({ latitude: p.lat, longitude: p.lng }));
     }
     return staff
       .filter((s) => s.latestLatitude != null && s.latestLongitude != null)
       .map((s) => ({ latitude: Number(s.latestLatitude), longitude: Number(s.latestLongitude) }));
-  }, [selected, stays, reliableStays, staff]);
+  }, [selected, stays, pathPoints, staff]);
 
   const hasCoords = mapCoords.length > 0;
 
   // HTML for the WebView (Leaflet) map, rebuilt only when the data changes
   const leafletHtml = useMemo(() => {
-    const src = reliableStays.length ? reliableStays : stays;
-    const route = selected ? src.map((s) => ({ lat: s.lat, lng: s.lng })) : [];
+    const src = pathPoints.length ? pathPoints : stays.flatMap((st) => st.pings);
+    const route = selected ? src.map((p) => ({ lat: p.lat, lng: p.lng })) : [];
     const markers: WebMarker[] = selected
-      ? src.map((s, i) => ({
-          lat: s.lat,
-          lng: s.lng,
-          title: s.startLabel === s.endLabel ? s.startLabel : `${s.startLabel} – ${s.endLabel}`,
-          sub: s.place,
-          color: i === 0 ? "#1FAE5C" : i === src.length - 1 ? "#5B4FD1" : "#F59E0B",
+      ? markerStays.map(({ stay, color }) => ({
+          lat: stay.lat,
+          lng: stay.lng,
+          title: stopTitle(stay),
+          sub: stay.place,
+          color,
         }))
       : staff
-          .filter((s) => s.latestLatitude != null && s.latestLongitude != null)
-          .map((s) => ({
-            lat: Number(s.latestLatitude),
-            lng: Number(s.latestLongitude),
-            title: `${s.userName} (${s.empId})`,
-            sub: s.lastTime ? `Last ping ${s.lastTime}` : "",
+          .filter((st) => st.latestLatitude != null && st.latestLongitude != null)
+          .map((st) => ({
+            lat: Number(st.latestLatitude),
+            lng: Number(st.latestLongitude),
+            title: `${st.userName} (${st.empId})`,
+            sub: st.lastTime ? `Last ping ${st.lastTime}` : "",
             color: "#5B4FD1",
           }));
     return buildLeafletHtml(route, markers);
-  }, [selected, stays, reliableStays, staff]);
+  }, [selected, stays, pathPoints, markerStays, staff]);
 
   useEffect(() => {
     if (tab !== "map" || !hasCoords) return;
@@ -765,25 +797,25 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
       {!mapBlocked ? (
         <MapView
           ref={mapRef}
-          provider={PROVIDER_GOOGLE}
+          provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined} // iPhone uses Apple Maps: no Google key needed
           style={StyleSheet.absoluteFill}
           initialRegion={{ latitude: 11.341, longitude: 77.7172, latitudeDelta: 0.08, longitudeDelta: 0.08 }}
         >
-          {selected && reliableStays.length > 1 && (
+          {selected && pathPoints.length > 1 && (
             <Polyline
-              coordinates={reliableStays.map((s) => ({ latitude: s.lat, longitude: s.lng }))}
+              coordinates={pathPoints.map((p) => ({ latitude: p.lat, longitude: p.lng }))}
               strokeColor="#5B4FD1"
               strokeWidth={4}
             />
           )}
           {selected &&
-            reliableStays.map((s, i) => (
+            markerStays.map(({ stay, color }) => (
               <Marker
-                key={s.key}
-                coordinate={{ latitude: s.lat, longitude: s.lng }}
-                title={s.startLabel === s.endLabel ? s.startLabel : `${s.startLabel} – ${s.endLabel}`}
-                description={s.place}
-                pinColor={i === 0 ? "#1FAE5C" : i === reliableStays.length - 1 ? "#5B4FD1" : "#F59E0B"}
+                key={stay.key}
+                coordinate={{ latitude: stay.lat, longitude: stay.lng }}
+                title={stopTitle(stay)}
+                description={stay.place}
+                pinColor={color}
               />
             ))}
           {!selected &&
@@ -800,7 +832,9 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
                 />
               ))}
         </MapView>
-      ) : WebView ? (
+) : Platform.OS === "web" ? (
+  <iframe title="Route map" srcDoc={leafletHtml} style={{ border: 0, width: "100%", height: "100%" }} />
+) : WebView ? (
         <WebView
           originWhitelist={["*"]}
           source={{ html: leafletHtml, baseUrl: MAP_REFERRER_URL }}
@@ -912,7 +946,7 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
               ) : null}
               {p.approx ? (
                 <View className="bg-amber-100 px-2 py-0.5 rounded-full">
-                  <Text className="text-[9px] font-black text-amber-800">Approximate</Text>
+                  <Text className="text-[9px] font-black text-amber-800">{p.stale ? "Last known" : "Approximate"}</Text>
                 </View>
               ) : null}
             </View>
@@ -924,6 +958,9 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
               {p.accuracy != null ? `  ·  ±${p.accuracy}m` : ""}
               {p.battery != null ? `  ·  ${p.battery}% bat` : ""}
             </Text>
+            {p.remarks ? (
+              <Text className="text-[10px] font-semibold text-amber-700 mt-0.5">Remarks: {p.remarks}</Text>
+            ) : null}
           </View>
           <TouchableOpacity
             onPress={() => openPin(p.lat, p.lng)}
@@ -938,6 +975,7 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
     // Grouped view: one card per stop; tap to see every ping inside it
     const stayCard = (item: StayItem, isLast: boolean) => {
       const open = !!expanded[item.key];
+      const firstRemark = item.pings.find((x) => x.remarks)?.remarks;
       return (
         <View className="bg-white border border-[#E7E4F5] rounded-2xl p-3.5">
           <TouchableOpacity
@@ -976,9 +1014,9 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
               {item.tags.map((t) => (
                 <View
                   key={t}
-                  className={`px-2 py-0.5 rounded-full ${t === "Approximate" ? "bg-amber-100" : "bg-[#EEECFA]"}`}
+                  className={`px-2 py-0.5 rounded-full ${(t === "Approximate" || t === "Last known") ? "bg-amber-100" : "bg-[#EEECFA]"}`}
                 >
-                  <Text className={`text-[9px] font-black ${t === "Approximate" ? "text-amber-800" : "text-[#5B4FD1]"}`}>
+                  <Text className={`text-[9px] font-black ${(t === "Approximate" || t === "Last known") ? "text-amber-800" : "text-[#5B4FD1]"}`}>
                     {t}
                   </Text>
                 </View>
@@ -988,6 +1026,12 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
                 {item.battery != null ? `${item.accuracy != null ? "  ·  " : ""}${item.battery}% battery` : ""}
               </Text>
             </View>
+
+            {firstRemark ? (
+              <Text className="text-[10px] font-semibold text-amber-700 mt-1.5" numberOfLines={2}>
+                Remarks: {firstRemark}
+              </Text>
+            ) : null}
 
             <View className="flex-row items-center mt-2">
               <Text className="text-[10px] font-black text-[#5B4FD1]">
@@ -999,6 +1043,39 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
 
           {open && <View className="mt-2">{item.pings.map((p) => pingRow(p, true, false))}</View>}
         </View>
+      );
+    };
+
+    // A stop is a stay of 5+ minutes, a check-in / check-out, or the first / last place of the day
+    const isStopItem = (st: StayItem) =>
+      st.tags.length > 0 ||
+      (st.endMs - st.startMs) / 60000 >= STOP_MIN_MINUTES ||
+      st === stays[0] ||
+      st === stays[stays.length - 1];
+    const stopStays = stays.filter(isStopItem);
+
+    const compactStay = (st: StayItem) => (
+      <View className="flex-row items-center justify-between py-1">
+        <Text className="text-[10px] font-semibold text-[#7A76A6] flex-1" numberOfLines={1}>
+          {st.startLabel}  ·  passing  ·  {st.place}
+        </Text>
+        <TouchableOpacity onPress={() => openPin(st.lat, st.lng)}>
+          <ExternalLink size={12} color="#A6A2CE" />
+        </TouchableOpacity>
+      </View>
+    );
+
+    // How far and how long the person travelled to the next stop
+    const travelHint = (st: StayItem) => {
+      const idx = stopStays.findIndex((x) => x.key === st.key);
+      const next = stopStays[idx + 1];
+      if (idx < 0 || !next) return null;
+      const km = distM(st.lat, st.lng, next.lat, next.lng) / 1000;
+      const mins = Math.max(0, Math.round((next.startMs - st.endMs) / 60000));
+      return (
+        <Text className="text-[10px] font-bold text-[#7A76A6] mt-1.5 ml-1">
+          ↓ {km.toFixed(1)} km  ·  {fmtDuration(mins)} to the next stop
+        </Text>
       );
     };
 
@@ -1032,9 +1109,21 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
           {viewMode === "grouped"
             ? timeline.map((item, i) => {
                 const last = i === timeline.length - 1;
-                return item.kind === "stay"
-                  ? rail(item.key, item.approx ? "bg-slate-400" : "bg-[#5B4FD1]", last, stayCard(item, last))
-                  : rail(item.key, eventDot(item.status), last, eventCard(item));
+                if (item.kind === "event") return rail(item.key, eventDot(item.status), last, eventCard(item));
+                const stop = isStopItem(item);
+                return rail(
+                  item.key,
+                  item.approx ? "bg-slate-400" : stop ? "bg-[#5B4FD1]" : "bg-slate-300",
+                  last,
+                  stop ? (
+                    <>
+                      {stayCard(item, last)}
+                      {travelHint(item)}
+                    </>
+                  ) : (
+                    compactStay(item)
+                  )
+                );
               })
             : flatItems.map((item, i) => {
                 const last = i === flatItems.length - 1;
@@ -1157,19 +1246,47 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
             <ChevronLeft size={16} color="#1F1B3D" />
           </TouchableOpacity>
 
-          <TouchableOpacity
-            onPress={openDatePicker}
-            activeOpacity={0.8}
-            className="flex-1 mx-2 h-9 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] flex-row items-center justify-center"
-          >
-            <CalendarDays size={14} color="#5B4FD1" />
-            <Text className="text-xs font-black text-[#1F1B3D] ml-2">{fmtDateLong(selectedDate)}</Text>
-            {isToday && (
-              <View className="ml-2 bg-emerald-100 px-2 py-0.5 rounded-full">
-                <Text className="text-[9px] font-black text-emerald-800">TODAY</Text>
-              </View>
-            )}
-          </TouchableOpacity>
+          {Platform.OS === "web" ? (
+            <View className="flex-1 mx-2 h-9 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] flex-row items-center justify-center px-2">
+              <CalendarDays size={14} color="#5B4FD1" />
+              <input
+                type="date"
+                value={dateStr}
+                max={toYmd(new Date())}
+                 onChange={(e) => { const d = parseYmd(e.target.value); if (d) setSelectedDate(d); }}
+                style={{
+                  backgroundColor: "transparent",
+                  border: "none",
+                  outline: "none",
+                  fontFamily: "inherit",
+                  fontSize: 12,
+                  fontWeight: 800,
+                  color: "#1F1B3D",
+                  marginLeft: 8,
+                  cursor: "pointer",
+                }}
+              />
+              {isToday && (
+                <View className="ml-2 bg-emerald-100 px-2 py-0.5 rounded-full">
+                  <Text className="text-[9px] font-black text-emerald-800">TODAY</Text>
+                </View>
+              )}
+            </View>
+          ) : (
+            <TouchableOpacity
+              onPress={openDatePicker}
+              activeOpacity={0.8}
+              className="flex-1 mx-2 h-9 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] flex-row items-center justify-center"
+            >
+              <CalendarDays size={14} color="#5B4FD1" />
+              <Text className="text-xs font-black text-[#1F1B3D] ml-2">{fmtDateLong(selectedDate)}</Text>
+              {isToday && (
+                <View className="ml-2 bg-emerald-100 px-2 py-0.5 rounded-full">
+                  <Text className="text-[9px] font-black text-emerald-800">TODAY</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity
             onPress={() => shiftDay(1)}
@@ -1191,34 +1308,55 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
         </View>
 
         {Platform.OS === "ios" && showIosPicker && (
-          <DateTimePicker
-            value={selectedDate}
-            mode="date"
-            display="inline"
-            maximumDate={new Date()}
-            onChange={(_, d) => {
-              setShowIosPicker(false);
-              if (d) setSelectedDate(d);
-            }}
-          />
+<DateTimePicker
+  value={selectedDate}
+  mode="date"
+  display="inline"
+  maximumDate={new Date()}
+  onValueChange={(_event: any, d?: Date) => {
+    setShowIosPicker(false);
+    if (d) setSelectedDate(d);
+  }}
+  onDismiss={() => setShowIosPicker(false)}
+/>
         )}
 
         <View className="px-4 pt-2.5">
           <View className="flex-row items-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 h-11">
             <Search size={16} color="#7A76A6" />
             <TextInput
-              value={query}
-              onChangeText={setQuery}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
+              value={inputValue}
+              onChangeText={(t) => {
+                setEditing(true);
+                setQuery(t);
+              }}
+              onFocus={() => {
+                setSearchFocused(true);
+                if (selected) {
+                  setEditing(true); // start a fresh search; the current employee stays selected until a new one is picked
+                  setQuery("");
+                }
+              }}
+              onBlur={() =>
+                setTimeout(() => {
+                  setSearchFocused(false);
+                  setEditing(false);
+                  setQuery("");
+                }, 150)
+              }
+              selectTextOnFocus
               placeholder="Search employee by name or ID"
               placeholderTextColor="#A6A2CE"
               autoCapitalize="none"
               autoCorrect={false}
-              className="flex-1 ml-2 text-xs font-semibold text-[#1F1B3D]"
+              spellCheck={false}
+              autoComplete="off"
+              importantForAutofill="no"
+              textContentType="none"
+              className={`flex-1 ml-2 text-xs text-[#1F1B3D] ${selected && !editing ? "font-black" : "font-semibold"}`}
             />
-            {query ? (
-              <TouchableOpacity onPress={() => setQuery("")}>
+            {selected || query ? (
+              <TouchableOpacity onPress={clearSearch} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                 <X size={16} color="#7A76A6" />
               </TouchableOpacity>
             ) : null}
@@ -1235,7 +1373,7 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
                 return (
                   <TouchableOpacity
                     key={u.empId}
-                    onPress={() => selectEmployee(u.empId, u.name)}
+                    onPressIn={() => selectEmployee(u.empId, u.name)}
                     className={`px-3.5 py-2.5 flex-row items-center justify-between active:bg-[#F6F5FC] ${
                       i > 0 ? "border-t border-[#F1EFFB]" : ""
                     }`}
@@ -1325,10 +1463,20 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
               <Stat label="First ping" value={summary.first} />
               <Stat label="Last ping" value={summary.last} />
               <Stat label="Distance" value={`${summary.km} km`} />
-              <Stat label="Issues" value={String(summary.issues)} sub={summary.issues ? "see timeline" : "none"} />
+              <Stat label="Remarks" value={String(summary.issues)} sub={summary.issues ? "see timeline" : "none"} />
             </View>
             {summary.battery !== "—" && (
               <Text className="text-[10px] font-semibold text-[#7A76A6] mt-1.5 px-1">Battery {summary.battery}</Text>
+            )}
+            {summary.stops > 0 && (
+              <Text className="text-[10px] font-semibold text-[#7A76A6] mt-1 px-1">
+                {summary.stops} stop{summary.stops === 1 ? "" : "s"}  ·  {fmtDuration(summary.stoppedMin)} at stops
+                {summary.longest
+                  ? `  ·  longest: ${summary.longest.place} (${fmtDuration(
+                      Math.round((summary.longest.endMs - summary.longest.startMs) / 60000)
+                    )})`
+                  : ""}
+              </Text>
             )}
           </View>
         )}

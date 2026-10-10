@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import {
   View,
   Text,
+  Keyboard,
   ScrollView,
   TouchableOpacity,
   TextInput,
@@ -13,6 +14,9 @@ import {
 } from "react-native";
 import {
   ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   User,
   RefreshCw,
   X,
@@ -30,6 +34,8 @@ import { BASE_HOST } from "../constants/config";
 type TabType = "ATTENDANCE" | "LEAVE" | "CLAIMS";
 type LeaveFilterType = "ALL" | "PERMISSION" | "HALF_DAY" | "FULL_DAY";
 type AttendanceFilterType = "ALL" | "PRESENT" | "ABSENT" | "ON_DUTY";
+
+const PAGE_SIZE = 100; // records shown per page
 
 const LEAVE_CATEGORIES: LeaveFilterType[] = ["ALL", "PERMISSION", "HALF_DAY", "FULL_DAY"];
 const ATTENDANCE_STATUS_FILTERS: AttendanceFilterType[] = ["ALL", "PRESENT", "ABSENT", "ON_DUTY"];
@@ -49,18 +55,120 @@ const ALL_COLUMNS = [
   { id: "penaltyInr", label: "Penalty Amount" },
 ];
 
+// ---------------------------------------------------------------------------
+// Date helpers + quick ranges
+// ---------------------------------------------------------------------------
+const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+const formatDateToISO = (date: Date): string => {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const RANGE_PRESETS = [
+  { id: "TODAY", label: "Today" },
+  { id: "YESTERDAY", label: "Yesterday" },
+  { id: "LAST7", label: "Last 7 days" },
+  { id: "MONTH", label: "This month" },
+] as const;
+
+const presetRange = (id: string): [Date, Date] => {
+  const today = startOfDay(new Date());
+  switch (id) {
+    case "YESTERDAY": {
+      const y = new Date(today);
+      y.setDate(y.getDate() - 1);
+      return [y, y];
+    }
+    case "LAST7": {
+      const s = new Date(today);
+      s.setDate(s.getDate() - 6);
+      return [s, today];
+    }
+    case "MONTH":
+      return [new Date(today.getFullYear(), today.getMonth(), 1), today];
+    default:
+      return [today, today];
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Pagination bar (kept outside the horizontally scrolling table, so it never scrolls sideways)
+// ---------------------------------------------------------------------------
+function PaginationBar({
+  page,
+  totalPages,
+  total,
+  pageSize,
+  onChange,
+}: {
+  page: number;
+  totalPages: number;
+  total: number;
+  pageSize: number;
+  onChange: (p: number) => void;
+}) {
+  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const to = Math.min(total, page * pageSize);
+  const atStart = page <= 1;
+  const atEnd = page >= totalPages;
+  const btn = (disabled: boolean) =>
+    `w-9 h-9 rounded-lg border items-center justify-center ${
+      disabled ? "bg-slate-50 border-slate-100" : "bg-white border-[#E7E4F5] active:bg-[#F6F5FC]"
+    }`;
+
+  return (
+    <View className="flex-row items-center justify-between px-3 py-3 border-t border-slate-100 bg-[#FAF9FE]">
+      <View>
+        <Text className="text-[11px] font-black text-[#1F1B3D]">
+          {from}–{to} of {total}
+        </Text>
+        <Text className="text-[10px] font-bold text-[#7A76A6]">
+          Page {page} / {totalPages}
+        </Text>
+      </View>
+
+      {totalPages > 1 && (
+        <View className="flex-row items-center gap-1.5">
+          <TouchableOpacity disabled={atStart} onPress={() => onChange(1)} className={btn(atStart)}>
+            <ChevronsLeft size={15} color={atStart ? "#CBD5E1" : "#5B4FD1"} />
+          </TouchableOpacity>
+          <TouchableOpacity disabled={atStart} onPress={() => onChange(page - 1)} className={btn(atStart)}>
+            <ChevronLeft size={15} color={atStart ? "#CBD5E1" : "#5B4FD1"} />
+          </TouchableOpacity>
+          <TouchableOpacity disabled={atEnd} onPress={() => onChange(page + 1)} className={btn(atEnd)}>
+            <ChevronRight size={15} color={atEnd ? "#CBD5E1" : "#5B4FD1"} />
+          </TouchableOpacity>
+          <TouchableOpacity disabled={atEnd} onPress={() => onChange(totalPages)} className={btn(atEnd)}>
+            <ChevronsRight size={15} color={atEnd ? "#CBD5E1" : "#5B4FD1"} />
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
+  );
+}
+
 export default function AttendanceAuditTabsScreen({ navigation }: any) {
-  // Global Filters
-  const [fromDate, setFromDate] = useState<Date>(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const [toDate, setToDate] = useState<Date>(new Date());
+  // Global Filters: the page opens on TODAY; the user widens the range when needed
+  const [fromDate, setFromDate] = useState<Date>(() => startOfDay(new Date()));
+  const [toDate, setToDate] = useState<Date>(() => startOfDay(new Date()));
   const [selectedDept, setSelectedDept] = useState("ALL");
-  const [empIdInput, setEmpIdInput] = useState("ALL");
+  const [empIdInput, setEmpIdInput] = useState("");
+  const [appliedEmp, setAppliedEmp] = useState("");
+  const [directory, setDirectory] = useState<{ empId: string; empName: string }[]>([]);
   const [adminView, setAdminView] = useState<"menu" | "users" | "dashboard" | "onboarding" | "reports">("menu");
   const [selectedAttendanceStatus, setSelectedAttendanceStatus] = useState<AttendanceFilterType>("ALL");
 
   // Tab State
   const [activeTab, setActiveTab] = useState<TabType>("ATTENDANCE");
   const [selectedLeaveCategory, setSelectedLeaveCategory] = useState<LeaveFilterType>("ALL");
+
+  // Pagination
+  const [page, setPage] = useState(1);
+  const scrollRef = useRef<ScrollView>(null);
+  const tableTop = useRef(0);
 
   // Modal State for Cell Inspection
   const [modalType, setModalType] = useState<"PUNCH" | "BREAK" | "PENALTY" | null>(null);
@@ -80,7 +188,7 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
   ]);
   const [isExporting, setIsExporting] = useState(false);
   const [allEmployees, setAllEmployees] = useState<{ empId: string; empName: string }[]>([]);
-const [showSuggestions, setShowSuggestions] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
 
   // Data & Loading
   const [isLoading, setIsLoading] = useState(false);
@@ -93,78 +201,138 @@ const [showSuggestions, setShowSuggestions] = useState(false);
   // Persistent master list of departments
   const [availableDepartments, setAvailableDepartments] = useState<string[]>(["ALL"]);
 
-  const formatDateToISO = (date: Date): string => {
-    const yyyy = date.getFullYear();
-    const mm = String(date.getMonth() + 1).padStart(2, "0");
-    const dd = String(date.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
-  };
+  const reqId = useRef(0);
 
   const fetchAuditData = async () => {
+    const my = ++reqId.current;
     setIsLoading(true);
     try {
       const fromStr = formatDateToISO(fromDate);
       const toStr = formatDateToISO(toDate);
-      const safeEmpId = encodeURIComponent(empIdInput.trim() || "ALL");
-    const safeDept = encodeURIComponent(selectedDept);
-      const url = `${BASE_HOST}/api/attendance/audit-summary?fromDate=${fromStr}&toDate=${toStr}&empId=${empIdInput.trim() || "ALL"}&department=${selectedDept}`;
+      const url =
+        `${BASE_HOST}/api/attendance/audit-summary?fromDate=${fromStr}&toDate=${toStr}` +
+        `&empId=${encodeURIComponent(appliedEmp || "ALL")}&department=${encodeURIComponent(selectedDept)}`;
       const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
+      if (my !== reqId.current) return; // a newer search already started: ignore this old answer
       setAuditData(json);
 
       setAllEmployees((prev) => {
-      const map = new Map<string, string>();
-      prev.forEach((e) => map.set(e.empId, e.empName));
-
-      (json.attendanceList || []).forEach((row: any) => {
-        if (row.empId && row.empId !== "ALL") {
-          map.set(row.empId, row.empName || row.empId);
-        }
-      });
-      (json.leaveList || []).forEach((row: any) => {
-        if (row.empId && row.empId !== "ALL") {
-          map.set(row.empId, row.empName || row.empId);
-        }
+        const map = new Map<string, string>();
+        prev.forEach((e) => map.set(e.empId, e.empName));
+        [...(json.attendanceList || []), ...(json.leaveList || [])].forEach((row: any) => {
+          if (row.empId && row.empId !== "ALL") map.set(row.empId, row.empName || row.empId);
+        });
+        return Array.from(map.entries()).map(([empId, empName]) => ({ empId, empName }));
       });
 
-      return Array.from(map.entries()).map(([empId, empName]) => ({ empId, empName }));
-    });
-      // Collect and preserve all seen departments
       setAvailableDepartments((prev) => {
         const set = new Set(prev);
         set.add("ALL");
-        (json.attendanceList || []).forEach((row: any) => {
-          if (row.department && row.department.trim()) set.add(row.department.trim());
-        });
-        (json.leaveList || []).forEach((row: any) => {
-          if (row.department && row.department.trim()) set.add(row.department.trim());
-        });
-        (json.claimList || []).forEach((row: any) => {
+        [...(json.attendanceList || []), ...(json.leaveList || []), ...(json.claimList || [])].forEach((row: any) => {
           if (row.department && row.department.trim()) set.add(row.department.trim());
         });
         return Array.from(set);
       });
     } catch (err) {
-      console.warn("Failed to fetch audit data:", err);
+      if (my === reqId.current) console.warn("Failed to fetch audit data:", err);
     } finally {
-      setIsLoading(false);
+      if (my === reqId.current) setIsLoading(false);
     }
   };
 
+  // All employees (not only those in the current result) for the suggestions
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${BASE_HOST}/api/admin/users`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setDirectory(
+            data
+              .filter((u: any) => u?.empId)
+              .map((u: any) => ({ empId: u.empId, empName: u.fullName || u.userName || u.empId }))
+          );
+        }
+      } catch {
+        /* suggestions fall back to the employees seen in the results */
+      }
+    })();
+  }, []);
+
+  const suggestionPool = useMemo(() => {
+    const map = new Map<string, string>();
+    directory.forEach((e) => map.set(e.empId, e.empName));
+    allEmployees.forEach((e) => {
+      if (!map.has(e.empId)) map.set(e.empId, e.empName);
+    });
+    return Array.from(map.entries()).map(([empId, empName]) => ({ empId, empName }));
+  }, [directory, allEmployees]);
+
   const filteredSuggestions = useMemo(() => {
-  const query = empIdInput.trim().toLowerCase();
-  if (!query || query === "all") return [];
+    const q = empIdInput.trim().toLowerCase();
+    if (!q) return [];
+    return suggestionPool
+      .filter((e) => e.empId.toLowerCase().includes(q) || e.empName.toLowerCase().includes(q))
+      .slice(0, 6);
+  }, [suggestionPool, empIdInput]);
 
-  return allEmployees.filter(
-    (emp) =>
-      emp.empId.toLowerCase().includes(query) ||
-      emp.empName.toLowerCase().includes(query)
-  ).slice(0, 6); // Display top 6 suggestions
-}, [allEmployees, empIdInput]);
+  // "Showing: Name (ID)" label for the applied search
+  const appliedLabel = useMemo(() => {
+    if (!appliedEmp) return "";
+    const hit = suggestionPool.find((e) => e.empId.toLowerCase() === appliedEmp.toLowerCase());
+    return hit ? `${hit.empName} (${hit.empId})` : appliedEmp;
+  }, [appliedEmp, suggestionPool]);
 
+  // Apply a search: shows the records straight away (the effect below reloads them)
+  const applySearch = (value: string) => {
+    setEmpIdInput(value);
+    setAppliedEmp(value.trim());
+    setShowSuggestions(false);
+    Keyboard.dismiss();
+  };
+
+  const clearSearch = () => {
+    setEmpIdInput("");
+    setAppliedEmp("");
+    setShowSuggestions(false);
+  };
+
+  // ----- quick date ranges and "is anything filtered" -----
+  const fromIso = formatDateToISO(fromDate);
+  const toIso = formatDateToISO(toDate);
+  const activePreset = RANGE_PRESETS.find((p) => {
+    const [f, t] = presetRange(p.id);
+    return formatDateToISO(f) === fromIso && formatDateToISO(t) === toIso;
+  })?.id;
+
+  const applyPreset = (id: string) => {
+    const [f, t] = presetRange(id);
+    setFromDate(f);
+    setToDate(t);
+  };
+
+  const isFiltered =
+    appliedEmp !== "" ||
+    selectedDept !== "ALL" ||
+    selectedAttendanceStatus !== "ALL" ||
+    selectedLeaveCategory !== "ALL" ||
+    activePreset !== "TODAY";
+
+  const resetAllFilters = () => {
+    clearSearch();
+    setSelectedDept("ALL");
+    setSelectedAttendanceStatus("ALL");
+    setSelectedLeaveCategory("ALL");
+    applyPreset("TODAY");
+  };
+
+  // Reload whenever a date, the department or the applied search changes (one effect only)
   useEffect(() => {
     fetchAuditData();
-  }, [fromDate, toDate, selectedDept]);
+  }, [fromDate, toDate, selectedDept, appliedEmp]);
 
   // Local filter for subcategories of attendance
   const filteredAttendanceList = useMemo(() => {
@@ -175,10 +343,38 @@ const [showSuggestions, setShowSuggestions] = useState(false);
   }, [auditData.attendanceList, selectedAttendanceStatus]);
 
   // Local filter for subcategories of leaves
-  const filteredLeaves = (auditData.leaveList || []).filter((item: any) => {
-    if (selectedLeaveCategory === "ALL") return true;
-    return item.category === selectedLeaveCategory;
-  });
+  const filteredLeaves = useMemo(() => {
+    return (auditData.leaveList || []).filter((item: any) => {
+      if (selectedLeaveCategory === "ALL") return true;
+      return item.category === selectedLeaveCategory;
+    });
+  }, [auditData.leaveList, selectedLeaveCategory]);
+
+  const claimList: any[] = auditData.claimList || [];
+
+  // ----- pagination: 100 rows per page for the tab that is open -----
+  const activeTotal =
+    activeTab === "ATTENDANCE" ? filteredAttendanceList.length : activeTab === "LEAVE" ? filteredLeaves.length : claimList.length;
+  const totalPages = Math.max(1, Math.ceil(activeTotal / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * PAGE_SIZE;
+
+  const pagedAttendance = useMemo(
+    () => filteredAttendanceList.slice(pageStart, pageStart + PAGE_SIZE),
+    [filteredAttendanceList, pageStart]
+  );
+  const pagedLeaves = useMemo(() => filteredLeaves.slice(pageStart, pageStart + PAGE_SIZE), [filteredLeaves, pageStart]);
+  const pagedClaims = useMemo(() => claimList.slice(pageStart, pageStart + PAGE_SIZE), [claimList, pageStart]);
+
+  // Back to page 1 whenever the data set changes
+  useEffect(() => {
+    setPage(1);
+  }, [activeTab, fromDate, toDate, selectedDept, appliedEmp, selectedAttendanceStatus, selectedLeaveCategory]);
+
+  const goToPage = (p: number) => {
+    setPage(Math.min(Math.max(1, p), totalPages));
+    scrollRef.current?.scrollTo({ y: Math.max(0, tableTop.current - 8), animated: true });
+  };
 
   // Modal handlers
   const handleOpenPunchModal = (row: any) => {
@@ -207,7 +403,7 @@ const [showSuggestions, setShowSuggestions] = useState(false);
     );
   };
 
-const handleExportExcel = async () => {
+  const handleExportExcel = async () => {
     if (selectedColumns.length === 0) {
       alert("Please select at least one column to export.");
       return;
@@ -215,15 +411,16 @@ const handleExportExcel = async () => {
 
     setIsExporting(true);
     try {
-      const fromStr = formatDateToISO(fromDate);
-      const toStr = formatDateToISO(toDate);
-      const fileName = `attendance_audit_${fromStr}_to_${toStr}.xlsx`;
-      
+      const fileName = `attendance_audit_${fromIso}_to_${toIso}.xlsx`;
+
       // Join column array as comma-separated query string
       const columnsParam = selectedColumns.join(",");
 
-      // Point to the correct attendance endpoint
-      const url = `${BASE_HOST}/api/admin/reports/attendance/export-excel?fromDate=${fromStr}&toDate=${toStr}&empId=${empIdInput.trim() || "ALL"}&department=${selectedDept}&status=${selectedAttendanceStatus}&columns=${columnsParam}`;
+      // The export covers the WHOLE selected range, not only the page that is on screen
+      const url =
+        `${BASE_HOST}/api/admin/reports/attendance/export-excel?fromDate=${fromIso}&toDate=${toIso}` +
+        `&empId=${encodeURIComponent(appliedEmp || "ALL")}&department=${encodeURIComponent(selectedDept)}` +
+        `&status=${selectedAttendanceStatus}&columns=${columnsParam}`;
 
       if (Platform.OS === "web") {
         // Direct browser download
@@ -285,107 +482,135 @@ const handleExportExcel = async () => {
         </View>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 16, paddingBottom: 110 }}>
+      <ScrollView
+        ref={scrollRef}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ padding: 16, paddingBottom: 110 }}
+      >
         {/* 2. Global Filter Panel */}
-        <View 
-  className="bg-white border border-[#E7E4F5] rounded-2xl p-4 mb-4 shadow-xs"
-  style={{ zIndex: 100, elevation: Platform.OS === "android" ? 10 : undefined }}>
-          <Text className="text-[11px] font-black text-[#1F1B3D] uppercase tracking-wider mb-3">Audit Parameters</Text>
+        <View className="bg-white border border-[#E7E4F5] rounded-2xl p-4 mb-4 shadow-xs">
+          <View className="flex-row items-center justify-between mb-3">
+            <Text className="text-[11px] font-black text-[#1F1B3D] uppercase tracking-wider">Audit Parameters</Text>
+            {isFiltered && (
+              <TouchableOpacity
+                onPress={resetAllFilters}
+                className="flex-row items-center px-2 py-1 rounded-lg bg-rose-50 border border-rose-100"
+              >
+                <X size={11} color="#E11D48" />
+                <Text className="text-[10px] font-black text-rose-600 uppercase ml-1">Clear all</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* Quick ranges */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row mb-3">
+            {RANGE_PRESETS.map((p) => {
+              const selected = activePreset === p.id;
+              return (
+                <TouchableOpacity
+                  key={p.id}
+                  onPress={() => applyPreset(p.id)}
+                  className={`px-3 py-1 rounded-full mr-2 border ${
+                    selected ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-[#F6F5FC] border-[#E7E4F5]"
+                  }`}
+                >
+                  <Text className={`text-[10px] font-black ${selected ? "text-white" : "text-[#7A76A6]"}`}>
+                    {p.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
 
           {/* Date Pickers */}
           <View className="flex-col md:flex-row gap-2 mb-3">
             <CrossPlatformDatePicker
               label="From Date"
               value={fromDate}
-              onChange={(date: Date) => setFromDate(date)}
+              onChange={(date: Date) => {
+                setFromDate(date);
+                if (formatDateToISO(date) > toIso) setToDate(date);
+              }}
             />
             <CrossPlatformDatePicker
               label="To Date"
               value={toDate}
-              onChange={(date: Date) => setToDate(date)}
+              onChange={(date: Date) => {
+                setToDate(date);
+                if (formatDateToISO(date) < fromIso) setFromDate(date);
+              }}
             />
           </View>
 
-          {/* Search by Emp ID */}
-{/* Search by Emp ID / Emp Name with Autocomplete */}
-{/* Search by Emp ID / Emp Name with Autocomplete */}
-<View 
-  className="relative mb-3" 
-  style={{ zIndex: 1000, elevation: Platform.OS === "android" ? 15 : undefined }}
->
-  <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-1.5 flex-row items-center">
-    <User size={14} color="#7A76A6" />
-    <TextInput
-      value={empIdInput}
-      onChangeText={(text) => {
-        setEmpIdInput(text);
-        setShowSuggestions(true);
-      }}
-      onFocus={() => setShowSuggestions(true)}
-      placeholder="Search Emp ID or Name (e.g. EMP102 or Ranjith)"
-      placeholderTextColor="#9CA3AF"
-      className="text-xs font-bold text-[#1F1B3D] ml-2 flex-1 py-1"
-    />
+          {/* Search by Emp ID / Emp Name */}
+          <View className="mb-3">
+            <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-1.5 flex-row items-center">
+              <User size={14} color="#7A76A6" />
+              <TextInput
+                value={empIdInput}
+                onChangeText={(text) => {
+                  setEmpIdInput(text);
+                  setShowSuggestions(true);
+                }}
+                onFocus={() => setShowSuggestions(true)}
+                onSubmitEditing={() => applySearch(empIdInput)}
+                returnKeyType="search"
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="Search Emp ID or Name"
+                placeholderTextColor="#9CA3AF"
+                className="text-xs font-bold text-[#1F1B3D] ml-2 flex-1 py-1"
+              />
 
-    {empIdInput.trim() !== "ALL" && empIdInput.length > 0 && (
-      <TouchableOpacity
-        onPress={() => {
-          setEmpIdInput("ALL");
-          setShowSuggestions(false);
-        }}
-        className="p-1 mr-1"
-      >
-        <X size={14} color="#9CA3AF" />
-      </TouchableOpacity>
-    )}
+              {empIdInput.length > 0 && (
+                <TouchableOpacity onPress={clearSearch} className="p-1.5 mr-1">
+                  <X size={14} color="#9CA3AF" />
+                </TouchableOpacity>
+              )}
 
-    <TouchableOpacity
-      onPress={() => {
-        setShowSuggestions(false);
-        fetchAuditData();
-      }}
-      className="bg-[#5B4FD1] px-3 py-1.5 rounded-lg active:opacity-80"
-    >
-      <Text className="text-[10px] font-black text-white uppercase">Filter</Text>
-    </TouchableOpacity>
-  </View>
-
-  {/* Suggestions Overlay Dropdown */}
-  {showSuggestions && filteredSuggestions.length > 0 && (
-    <View 
-      className="absolute top-[44px] left-0 right-0 bg-white border border-[#E7E4F5] rounded-xl shadow-2xl overflow-hidden"
-      style={{
-        zIndex: 9999,
-        elevation: Platform.OS === "android" ? 20 : undefined,
-      }}
-    >
-      <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled={true}>
-        {filteredSuggestions.map((item) => (
-          <TouchableOpacity
-            key={item.empId}
-            onPress={() => {
-              setEmpIdInput(item.empId);
-              setShowSuggestions(false);
-            }}
-            className="flex-row items-center justify-between px-3 py-2.5 border-b border-slate-100 last:border-b-0 active:bg-[#F6F5FC]"
-          >
-            <View className="flex-1 pr-2">
-              <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>
-                {item.empName}
-              </Text>
-              <Text className="text-[10px] font-bold text-slate-400">
-                {item.empId}
-              </Text>
+              <TouchableOpacity
+                onPress={() => applySearch(empIdInput)}
+                className="bg-[#5B4FD1] px-3 py-1.5 rounded-lg active:opacity-80"
+              >
+                <Text className="text-[10px] font-black text-white uppercase">Search</Text>
+              </TouchableOpacity>
             </View>
-            <View className="bg-purple-50 px-2 py-0.5 rounded">
-              <Text className="text-[9px] font-black text-[#5B4FD1] uppercase">Select</Text>
-            </View>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
-    </View>
-  )}
-</View>
+
+            {/* Suggestions: part of the layout (not floating), so every row can be tapped on Android */}
+            {showSuggestions && filteredSuggestions.length > 0 && (
+              <View className="mt-1 bg-white border border-[#E7E4F5] rounded-xl overflow-hidden">
+                {filteredSuggestions.map((item) => (
+                  <TouchableOpacity
+                    key={item.empId}
+                    onPress={() => applySearch(item.empId)}
+                    className="flex-row items-center justify-between px-3 py-2.5 border-b border-slate-100 active:bg-[#F6F5FC]"
+                  >
+                    <View className="flex-1 pr-2">
+                      <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>
+                        {item.empName}
+                      </Text>
+                      <Text className="text-[10px] font-bold text-slate-400">{item.empId}</Text>
+                    </View>
+                    <View className="bg-purple-50 px-2 py-0.5 rounded">
+                      <Text className="text-[9px] font-black text-[#5B4FD1] uppercase">Select</Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {/* The search that is applied, with its own clear button */}
+            {appliedEmp !== "" && (
+              <View className="flex-row items-center self-start mt-2 bg-purple-50 border border-[#5B4FD1]/30 rounded-full pl-3 pr-1.5 py-1">
+                <Text className="text-[11px] font-black text-[#5B4FD1]" numberOfLines={1}>
+                  Showing: {appliedLabel}
+                </Text>
+                <TouchableOpacity onPress={clearSearch} className="ml-1.5 p-1">
+                  <X size={12} color="#5B4FD1" />
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
 
           {/* Dynamic Department Pills */}
           <Text className="text-[10px] font-bold text-slate-400 uppercase mb-1.5">Department Filter</Text>
@@ -410,10 +635,7 @@ const handleExportExcel = async () => {
         </View>
 
         {/* 3. Segmented Tab Selector */}
-        <View 
-  className="flex-row bg-white border border-[#E7E4F5] p-1 rounded-xl mb-4 shadow-xs"
-  style={{ zIndex: 1 }}
->
+        <View className="flex-row bg-white border border-[#E7E4F5] p-1 rounded-xl mb-4 shadow-xs">
           <TouchableOpacity
             onPress={() => setActiveTab("ATTENDANCE")}
             className={`flex-1 py-2 rounded-lg items-center justify-center ${
@@ -443,7 +665,7 @@ const handleExportExcel = async () => {
             }`}
           >
             <Text className={`text-xs font-black ${activeTab === "CLAIMS" ? "text-white" : "text-[#7A76A6]"}`}>
-              Claims ({auditData.claimList?.length || 0})
+              Claims ({claimList.length})
             </Text>
           </TouchableOpacity>
         </View>
@@ -491,7 +713,11 @@ const handleExportExcel = async () => {
                   selectedLeaveCategory === cat ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-white border-[#E7E4F5]"
                 }`}
               >
-                <Text className={`text-[10px] font-black uppercase ${selectedLeaveCategory === cat ? "text-white" : "text-[#7A76A6]"}`}>
+                <Text
+                  className={`text-[10px] font-black uppercase ${
+                    selectedLeaveCategory === cat ? "text-white" : "text-[#7A76A6]"
+                  }`}
+                >
                   {cat.replace("_", " ")}
                 </Text>
               </TouchableOpacity>
@@ -507,9 +733,14 @@ const handleExportExcel = async () => {
           </View>
         )}
 
-        {/* 4. DATA GRID VIEW (Table) */}
+        {/* 4. DATA GRID VIEW (Table), 100 rows per page */}
         {!isLoading && (
-          <View className="bg-white border border-[#E7E4F5] rounded-2xl overflow-hidden shadow-xs">
+          <View
+            className="bg-white border border-[#E7E4F5] rounded-2xl overflow-hidden shadow-xs"
+            onLayout={(e) => {
+              tableTop.current = e.nativeEvent.layout.y;
+            }}
+          >
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={Platform.OS === "web"}
@@ -540,12 +771,13 @@ const handleExportExcel = async () => {
                         </Text>
                       </View>
                     ) : (
-                      filteredAttendanceList.map((row: any, i: number) => {
-                        const isEven = i % 2 === 0;
+                      pagedAttendance.map((row: any, i: number) => {
+                        const rowIndex = pageStart + i;
+                        const isEven = rowIndex % 2 === 0;
                         const isAbsent = row.status === "ABSENT";
                         return (
                           <View
-                            key={i}
+                            key={rowIndex}
                             className={`flex-row items-center border-b border-slate-100 py-3 px-4 ${
                               isEven ? "bg-white" : "bg-[#FAF9FE]"
                             }`}
@@ -665,18 +897,21 @@ const handleExportExcel = async () => {
                         <Text className="text-xs text-slate-400 font-bold">No leave or permission records found.</Text>
                       </View>
                     ) : (
-                      filteredLeaves.map((row: any, i: number) => {
-                        const isEven = i % 2 === 0;
+                      pagedLeaves.map((row: any, i: number) => {
+                        const rowIndex = pageStart + i;
+                        const isEven = rowIndex % 2 === 0;
                         return (
                           <View
-                            key={i}
+                            key={rowIndex}
                             className={`flex-row items-center border-b border-slate-100 py-3 px-4 ${
                               isEven ? "bg-white" : "bg-[#FAF9FE]"
                             }`}
                           >
                             <Text className="w-[90px] text-xs font-bold text-[#1F1B3D]">{row.date}</Text>
                             <View className="flex-1 min-w-[160px]">
-                              <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>{row.empName}</Text>
+                              <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>
+                                {row.empName}
+                              </Text>
                               <Text className="text-[10px] font-bold text-slate-400">{row.empId}</Text>
                             </View>
                             <View className="w-[130px]">
@@ -711,23 +946,26 @@ const handleExportExcel = async () => {
                       <Text className="w-[130px] text-[11px] font-black text-[#5B4FD1] uppercase text-right pr-2">Approved By</Text>
                     </View>
 
-                    {auditData.claimList?.length === 0 ? (
+                    {claimList.length === 0 ? (
                       <View className="py-12 items-center justify-center">
                         <Text className="text-xs text-slate-400 font-bold">No approved claims found.</Text>
                       </View>
                     ) : (
-                      auditData.claimList.map((row: any, i: number) => {
-                        const isEven = i % 2 === 0;
+                      pagedClaims.map((row: any, i: number) => {
+                        const rowIndex = pageStart + i;
+                        const isEven = rowIndex % 2 === 0;
                         return (
                           <View
-                            key={i}
+                            key={rowIndex}
                             className={`flex-row items-center border-b border-slate-100 py-3 px-4 ${
                               isEven ? "bg-white" : "bg-[#FAF9FE]"
                             }`}
                           >
                             <Text className="w-[90px] text-xs font-bold text-[#1F1B3D]">{row.approvedDate}</Text>
                             <View className="flex-1 min-w-[160px]">
-                              <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>{row.empName}</Text>
+                              <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>
+                                {row.empName}
+                              </Text>
                               <Text className="text-[10px] font-bold text-slate-400">{row.empId}</Text>
                             </View>
                             <Text className="flex-1 min-w-[120px] text-xs font-semibold text-slate-600" numberOfLines={1}>
@@ -750,6 +988,17 @@ const handleExportExcel = async () => {
                 )}
               </View>
             </ScrollView>
+
+            {/* Pagination: outside the sideways-scrolling table, so it always stays on screen */}
+            {activeTotal > 0 && (
+              <PaginationBar
+                page={safePage}
+                totalPages={totalPages}
+                total={activeTotal}
+                pageSize={PAGE_SIZE}
+                onChange={goToPage}
+              />
+            )}
           </View>
         )}
       </ScrollView>
@@ -787,9 +1036,7 @@ const handleExportExcel = async () => {
               <Text className="text-xs font-black text-slate-800">
                 {selectedRecord?.empName} ({selectedRecord?.empId})
               </Text>
-              <Text className="text-xs font-semibold text-slate-500">
-                {selectedRecord?.date}
-              </Text>
+              <Text className="text-xs font-semibold text-slate-500">{selectedRecord?.date}</Text>
             </View>
 
             {/* Modal Content Scroll Area */}
@@ -797,7 +1044,7 @@ const handleExportExcel = async () => {
               {/* --- PUNCH EVENTS LIST --- */}
               {modalType === "PUNCH" && (
                 <View>
-                  {(!selectedRecord?.punchEvents || selectedRecord.punchEvents.length === 0) ? (
+                  {!selectedRecord?.punchEvents || selectedRecord.punchEvents.length === 0 ? (
                     <View className="py-6 items-center">
                       <Text className="text-xs text-slate-400 font-semibold">
                         Detailed punch breadcrumbs not logged for this date.
@@ -808,11 +1055,17 @@ const handleExportExcel = async () => {
                     </View>
                   ) : (
                     selectedRecord.punchEvents.map((event: any, idx: number) => (
-                      <View key={idx} className="flex-row items-start py-2.5 border-b border-slate-100 last:border-b-0">
-                        <View className={`px-2 py-0.5 rounded text-[10px] font-black mr-3 ${
-                          event.type === "CHECK_IN" ? "bg-emerald-100 text-emerald-800" : "bg-purple-100 text-[#5B4FD1]"
-                        }`}>
-                          <Text className="text-[10px] font-black">
+                      <View key={idx} className="flex-row items-start py-2.5 border-b border-slate-100">
+                        <View
+                          className={`px-2 py-0.5 rounded mr-3 ${
+                            event.type === "CHECK_IN" ? "bg-emerald-100" : "bg-purple-100"
+                          }`}
+                        >
+                          <Text
+                            className={`text-[10px] font-black ${
+                              event.type === "CHECK_IN" ? "text-emerald-800" : "text-[#5B4FD1]"
+                            }`}
+                          >
                             {event.type}
                           </Text>
                         </View>
@@ -836,7 +1089,7 @@ const handleExportExcel = async () => {
               {/* --- BREAK EVENTS LIST --- */}
               {modalType === "BREAK" && (
                 <View>
-                  {(!selectedRecord?.breakHistory || selectedRecord.breakHistory.length === 0) ? (
+                  {!selectedRecord?.breakHistory || selectedRecord.breakHistory.length === 0 ? (
                     <View className="py-6 items-center">
                       <Text className="text-xs text-slate-400 font-semibold">
                         No individual break timestamps logged for this date.
@@ -889,7 +1142,7 @@ const handleExportExcel = async () => {
               {/* --- PENALTY EVENTS LIST --- */}
               {modalType === "PENALTY" && (
                 <View>
-                  {(!selectedRecord?.penaltyHistory || selectedRecord.penaltyHistory.length === 0) ? (
+                  {!selectedRecord?.penaltyHistory || selectedRecord.penaltyHistory.length === 0 ? (
                     <View className="py-6 items-center">
                       <Text className="text-xs text-slate-400 font-semibold">
                         No itemized penalty logs found for this date.
@@ -971,7 +1224,9 @@ const handleExportExcel = async () => {
             </View>
 
             <Text className="text-[11px] text-slate-500 mb-4">
-              Filtered by: <Text className="font-bold text-slate-700">{selectedDept}</Text> | Status: <Text className="font-bold text-slate-700">{selectedAttendanceStatus}</Text>
+              Range: <Text className="font-bold text-slate-700">{fromIso} to {toIso}</Text> | Department:{" "}
+              <Text className="font-bold text-slate-700">{selectedDept}</Text> | Status:{" "}
+              <Text className="font-bold text-slate-700">{selectedAttendanceStatus}</Text>
             </Text>
 
             {/* Checkbox Grid */}
@@ -986,11 +1241,7 @@ const handleExportExcel = async () => {
                       isChecked ? "bg-purple-50 border-[#5B4FD1]" : "bg-slate-50 border-slate-200"
                     }`}
                   >
-                    {isChecked ? (
-                      <CheckSquare size={14} color="#5B4FD1" />
-                    ) : (
-                      <Square size={14} color="#9CA3AF" />
-                    )}
+                    {isChecked ? <CheckSquare size={14} color="#5B4FD1" /> : <Square size={14} color="#9CA3AF" />}
                     <Text className={`text-xs ml-1.5 font-bold ${isChecked ? "text-[#5B4FD1]" : "text-slate-600"}`}>
                       {col.label}
                     </Text>

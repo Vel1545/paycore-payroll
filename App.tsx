@@ -10,6 +10,8 @@ import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-cont
 
 // 1. Mandatory Headless Background Task Import
 import "./src/services/locationTrackingTask";
+import CheckoutApprovalsScreen from "./src/screens/Checkoutapprovalsscreen ";
+import MyCheckoutRequestsScreen from "./src/screens/Mycheckoutrequestsscreen ";
 
 // Icons
 import { FingerprintIcon } from "phosphor-react-native";
@@ -117,6 +119,7 @@ function MainTabs({ userSession, onLogout }: { userSession: any; onLogout: () =>
       screenOptions={{
         headerShown: false,
         tabBarShowLabel: true,
+        tabBarHideOnKeyboard: true, 
         tabBarLabelPosition: "below-icon",
         tabBarActiveTintColor: "#5B4FD1",
         tabBarInactiveTintColor: "#94A3B8",
@@ -228,6 +231,8 @@ function MainTabs({ userSession, onLogout }: { userSession: any; onLogout: () =>
       <Tab.Screen name="MyHub" component={MyHubScreen} options={{ tabBarItemStyle: { display: "none" } }} />
       <Tab.Screen name="UserDirectory" component={UserDirectoryScreen} options={{ tabBarItemStyle: { display: "none" } }} />
       <Tab.Screen name="HrPolicy" component={HrPolicyScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="CheckoutApprovals" component={CheckoutApprovalsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+      <Tab.Screen name="MyCheckoutRequests" component={MyCheckoutRequestsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
 
       {/* Live Fleet Tracking & Route Polyline Maps */}
       <Tab.Screen name="LiveTracking" component={LiveTrackingScreen} options={{ tabBarItemStyle: { display: "none" } }} />

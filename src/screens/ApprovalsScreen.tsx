@@ -28,6 +28,7 @@ import {
   AlertCircle
 } from "lucide-react-native";
 import ScreenContainer from "../components/ScreenContainer";
+import CheckoutApprovalsPanel from "../components/Checkoutapprovalspanel";
 import CompactDatePicker from "../components/CrossPlatformDatePicker";
 import { useAuth } from "../context/AuthContext";
 import { UserSession } from "../services/UserSession";
@@ -74,6 +75,24 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
   const [requests, setRequests] = useState<InboxRequest[]>([]);
   const [loading, setLoading] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
+
+  // Admin: switch between the normal approval queue and missed check-out requests
+  const [adminView, setAdminView] = useState<"WORKFLOW" | "CHECKOUT">("WORKFLOW");
+  const [coPending, setCoPending] = useState(0);
+
+  const loadCheckoutPending = async () => {
+    try {
+      const r = await fetch(`${BASE_HOST}/api/admin/checkout-requests?status=PENDING`);
+      if (r.ok) {
+        const d = await r.json();
+        setCoPending(Array.isArray(d) ? d.length : 0);
+      }
+    } catch { /* badge is optional */ }
+  };
+
+  useEffect(() => {
+    if (userRole === "ADMIN") loadCheckoutPending();
+  }, [userRole]);
 
   // Search & Bulk Selection
   const [searchQuery, setSearchQuery] = useState("");
@@ -453,6 +472,40 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
         </View>
       </View>
 
+      {/* Admin view switch: normal requests / missed check-outs */}
+      {userRole === "ADMIN" && (
+        <View className="flex-row bg-white border border-[#E7E4F5] p-1 rounded-2xl mb-4">
+          <TouchableOpacity
+            onPress={() => setAdminView("WORKFLOW")}
+            className={`flex-1 py-2.5 rounded-xl items-center ${adminView === "WORKFLOW" ? "bg-[#5B4FD1]" : ""}`}
+          >
+            <Text className={`text-[11px] font-black ${adminView === "WORKFLOW" ? "text-white" : "text-[#7A76A6]"}`}>
+              Leave • Expense • OT • Advance
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => { setAdminView("CHECKOUT"); loadCheckoutPending(); }}
+            className={`flex-1 py-2.5 rounded-xl items-center flex-row justify-center ${adminView === "CHECKOUT" ? "bg-[#5B4FD1]" : ""}`}
+          >
+            <Text className={`text-[11px] font-black ${adminView === "CHECKOUT" ? "text-white" : "text-[#7A76A6]"}`}>
+              Check-Out Requests
+            </Text>
+            {coPending > 0 && (
+              <View className="ml-1.5 min-w-[18px] px-1 h-[18px] rounded-full bg-[#E4453C] items-center justify-center">
+                <Text className="text-[10px] font-black text-white">{coPending}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {userRole === "ADMIN" && adminView === "CHECKOUT" ? (
+        <CheckoutApprovalsPanel
+          adminId={String(user?.empId || user?.userId || user?.userName || "Admin")}
+          onChanged={loadCheckoutPending}
+        />
+      ) : (
+      <>
       {/* Admin Search & Toolbar */}
       {userRole === "ADMIN" && (
         <View className="bg-white border border-[#E7E4F5] rounded-2xl p-4 mb-4 shadow-xs gap-3">
@@ -816,6 +869,8 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
           })
         )}
       </ScrollView>
+      </>
+      )}
 
       {/* Admin Action Modal */}
       <Modal visible={isModalOpen} transparent animationType="fade">

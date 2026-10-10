@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -6,7 +7,9 @@ import {
   ScrollView,
   Platform,
   ActivityIndicator,
-  Modal
+  Modal,
+  TextInput,
+  KeyboardAvoidingView
 } from "react-native";
 import {
   ChevronLeft,
@@ -18,7 +21,8 @@ import {
   Clock,
   AlertTriangle,
   X,
-  ChevronRight
+  ChevronRight,
+  Send
 } from "lucide-react-native";
 import ScreenContainer from "../components/ScreenContainer";
 import { UserSession } from "../services/UserSession";
@@ -53,6 +57,8 @@ interface AttendanceRecord {
   subtitle?: string;
   detailRight?: string;
   isApproved?: boolean;
+  dateIso?: string;                       // optional: "YYYY-MM-DD" from backend (recommended)
+  checkoutRequestStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
   // Break and Penalty Fields from Backend
   breakMinutes?: number;
   excessBreakMinutes?: number;
@@ -98,43 +104,201 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
   const [selectedRecord, setSelectedRecord] = useState<AttendanceRecord | null>(null);
   const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
 
-  // Fetch Full Data from Overview Endpoint
-  useEffect(() => {
-    const fetchOverview = async () => {
-      const today = new Date();
-      const year = today.getFullYear();
-      const month = today.getMonth() + 1;
+  // ------------------------------------------------------------------
+  // Missed check-out request (only for days with a check-in and no check-out)
+  // ------------------------------------------------------------------
+  const REASONS = ["Server error", "Network issue", "Phone problem", "Other"];
+  const [reqRecord, setReqRecord] = useState<AttendanceRecord | null>(null);
+  const [reqHour, setReqHour] = useState("");
+  const [reqMinute, setReqMinute] = useState("");
+  const [reqAmPm, setReqAmPm] = useState<"AM" | "PM">("PM");
+  const [reqReason, setReqReason] = useState("");
+  const [reqNote, setReqNote] = useState("");
+  const [reqError, setReqError] = useState("");
+  const [reqSending, setReqSending] = useState(false);
+  const [reqDone, setReqDone] = useState("");
+  const [coStatuses, setCoStatuses] = useState<Record<string, string>>({}); // date -> PENDING/APPROVED/REJECTED
+  const [coApprovedTimes, setCoApprovedTimes] = useState<Record<string, string>>({}); // date -> "06:45 PM"
+  const [shiftEndStr, setShiftEndStr] = useState<string>("");
 
-      try {
-        setIsLoading(true);
-        const res = await fetch(`${API_BASE_URL}/overview?empId=${empId}&year=${year}&month=${month}`);
-        if (res.ok) {
-          const json = await res.json();
-          if (json.today) setTodayData(json.today);
-          if (json.monthlySummary) setMonthlySummary(json.monthlySummary);
-          if (json.leaveBalances) setLeaveBalances(json.leaveBalances);
+  const isMissingTime = (v?: string) => !v || v.trim() === "" || /^[-\u2013\u2014:\s]+$/.test(v);
 
-          if (json.records && Array.isArray(json.records)) {
-            // Deduplicate incoming array by ID to ensure single occurrence per day
-            const uniqueMap = new Map();
-            json.records.forEach((rec: any) => {
-              const key = rec.id || rec.date;
-              if (!uniqueMap.has(key)) {
-                uniqueMap.set(key, rec);
-              }
-            });
-            setRecords(Array.from(uniqueMap.values()));
-          }
-        }
-      } catch (err) {
-        console.warn("Failed to load attendance records:", err);
-      } finally {
-        setIsLoading(false);
+  const pad2 = (n: number) => String(n).padStart(2, "0");
+  const localIso = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+  const MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+
+  // Reads the record's date text WITHOUT guessing the year wrongly.
+  // (new Date("Oct 07") gives the year 2001, so a date with no year is read by hand.)
+  const recordIso = (rec: AttendanceRecord): string | null => {
+    if (rec.dateIso && /^\d{4}-\d{2}-\d{2}$/.test(rec.dateIso)) return rec.dateIso;
+    const t = (rec.date || "").trim();
+    const nowYear = new Date().getFullYear();
+
+    let m = t.match(/(\d{4})-(\d{2})-(\d{2})/);                       // 2026-10-07
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+
+    m = t.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/);                // 07/10/2026 (day first)
+    if (m) return `${m[3]}-${pad2(+m[2])}-${pad2(+m[1])}`;
+
+    const yearMatch = t.match(/\b(20\d{2})\b/);
+    const year = yearMatch ? +yearMatch[1] : nowYear;
+
+    m = t.match(/([A-Za-z]{3})[A-Za-z]*\.?\s+(\d{1,2})\b/);           // Oct 07 / October 7
+    if (m && MONTHS.includes(m[1].toLowerCase())) {
+      return `${year}-${pad2(MONTHS.indexOf(m[1].toLowerCase()) + 1)}-${pad2(+m[2])}`;
+    }
+    m = t.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3})/);        // 07 Oct / 7th Oct
+    if (m && MONTHS.includes(m[2].toLowerCase())) {
+      return `${year}-${pad2(MONTHS.indexOf(m[2].toLowerCase()) + 1)}-${pad2(+m[1])}`;
+    }
+    return null; // unknown format: no request button (safer than a wrong date)
+  };
+
+  // Today's request is allowed only after the shift end. Past days: always.
+  const shiftEndPassed = (): boolean => {
+    const se = shiftEndStr || ((todayData as any).shiftEnd as string | undefined); // "HH:mm"
+    if (!se || !/^\d{1,2}:\d{2}/.test(se)) return false;
+    const [h, m] = se.split(":").map(Number);
+    const now = new Date();
+    return now.getHours() * 60 + now.getMinutes() >= h * 60 + m;
+  };
+
+  const requestStatusOf = (rec: AttendanceRecord): string | null => {
+    const iso = recordIso(rec);
+    return rec.checkoutRequestStatus || (iso ? coStatuses[iso] : null) || null;
+  };
+
+  // Check-out text for a card: the real one, or the admin-approved time while the list is still old
+  const shownCheckOut = (rec: AttendanceRecord): string => {
+    if (!isMissingTime(rec.checkOut)) return rec.checkOut;
+    const iso = recordIso(rec);
+    if (iso && requestStatusOf(rec) === "APPROVED" && coApprovedTimes[iso]) return coApprovedTimes[iso];
+    return "--:--";
+  };
+
+  const canRequestCheckout = (rec: AttendanceRecord): boolean => {
+    const isPresentRec = rec.recordType === "PRESENT" || rec.status === "Present";
+    if (!isPresentRec) return false;
+    if (isMissingTime(rec.checkIn) || !isMissingTime(rec.checkOut)) return false;
+    const st = requestStatusOf(rec);
+    if (st === "PENDING" || st === "APPROVED") return false;
+    const iso = recordIso(rec);
+    if (!iso) return false;
+    const today = localIso(new Date());
+    if (iso < today) return true;
+    if (iso === today) return shiftEndPassed();
+    return false;
+  };
+
+  const openCheckoutRequest = (rec: AttendanceRecord) => {
+    setReqRecord(rec);
+    setReqHour("");
+    setReqMinute("");
+    setReqAmPm("PM");
+    setReqReason("");
+    setReqNote("");
+    setReqError("");
+    setReqDone("");
+  };
+
+  const submitCheckoutRequest = async () => {
+    if (!reqRecord) return;
+    const h = parseInt(reqHour, 10);
+    const m = parseInt(reqMinute || "0", 10);
+    if (isNaN(h) || h < 1 || h > 12 || isNaN(m) || m < 0 || m > 59) {
+      setReqError("Enter a valid time, for example 6 : 30 PM.");
+      return;
+    }
+    if (!reqReason) {
+      setReqError("Choose a reason.");
+      return;
+    }
+    const iso = recordIso(reqRecord);
+    if (!iso) {
+      setReqError("Could not read the date of this record.");
+      return;
+    }
+    let h24 = h % 12;
+    if (reqAmPm === "PM") h24 += 12;
+    const requestedTime = `${pad2(h24)}:${pad2(m)}`;
+
+    setReqSending(true);
+    setReqError("");
+    try {
+      const res = await fetch(`${API_BASE_URL}/checkout-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          empId,
+          date: iso,
+          requestedTime,
+          reason: reqReason,
+          note: reqNote.trim(),
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setReqError(json?.message || "Could not send the request. Try again.");
+        return;
       }
-    };
+      setCoStatuses((prev) => ({ ...prev, [iso]: "PENDING" }));
+      setReqDone("Request sent to admin. You will see the time here once it is approved.");
+    } catch {
+      setReqError("Network problem. Check your connection and try again.");
+    } finally {
+      setReqSending(false);
+    }
+  };
 
-    fetchOverview();
+  // Load data every time this screen opens (so an approved check-out shows up without restarting the app)
+  const loadAll = useCallback(async () => {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = today.getMonth() + 1;
+
+    try {
+      setIsLoading((prev) => prev || records.length === 0);
+      const res = await fetch(`${API_BASE_URL}/overview?empId=${empId}&year=${year}&month=${month}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.today) setTodayData(json.today);
+        if (json.monthlySummary) setMonthlySummary(json.monthlySummary);
+        if (json.leaveBalances) setLeaveBalances(json.leaveBalances);
+
+        if (json.records && Array.isArray(json.records)) {
+          // Deduplicate incoming array by ID to ensure single occurrence per day
+          const uniqueMap = new Map();
+          json.records.forEach((rec: any) => {
+            const key = rec.id || rec.date;
+            if (!uniqueMap.has(key)) {
+              uniqueMap.set(key, rec);
+            }
+          });
+          setRecords(Array.from(uniqueMap.values()));
+        }
+      }
+      try {
+        const r2 = await fetch(`${API_BASE_URL}/checkout-requests/status?empId=${empId}&year=${year}&month=${month}`);
+        if (r2.ok) {
+          const j2 = await r2.json();
+          setCoStatuses(j2.statuses || {});
+          setCoApprovedTimes(j2.approvedTimes || {});
+          if (j2.shiftEnd) setShiftEndStr(j2.shiftEnd);
+        }
+      } catch { /* request status is optional */ }
+    } catch (err) {
+      console.warn("Failed to load attendance records:", err);
+    } finally {
+      setIsLoading(false);
+    }
   }, [empId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadAll();
+    }, [loadAll])
+  );
 
   // Filter Stream Logic
   const filteredRecords = records.filter((rec: any) => {
@@ -447,6 +611,39 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
                       </View>
                     </View>
 
+                    {/* Missed check-out request */}
+                    {isPresent && canRequestCheckout(item) && (
+                      <TouchableOpacity
+                        onPress={() => openCheckoutRequest(item)}
+                        activeOpacity={0.85}
+                        className="flex-row items-center justify-center bg-[#FEF2D9] border border-[#D08A0C]/30 rounded-xl py-2 mb-2"
+                      >
+                        <Send size={12} color="#D08A0C" />
+                        <Text className="text-[11px] font-black text-[#D08A0C] ml-1.5">
+                          Missed check-out? Request it
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    {isPresent && isMissingTime(item.checkOut) && requestStatusOf(item) === "PENDING" && (
+                      <View className="flex-row items-center justify-center bg-[#EEECFA] border border-[#5B4FD1]/20 rounded-xl py-2 mb-2">
+                        <Clock size={12} color="#5B4FD1" />
+                        <Text className="text-[11px] font-black text-[#5B4FD1] ml-1.5">Request sent • waiting for admin</Text>
+                      </View>
+                    )}
+                    {isPresent && requestStatusOf(item) === "APPROVED" && (
+                      <View className="flex-row items-center justify-center bg-[#E7FAEE] border border-[#1FAE5C]/30 rounded-xl py-2 mb-2">
+                        <ShieldCheck size={12} color="#1FAE5C" />
+                        <Text className="text-[11px] font-black text-[#1FAE5C] ml-1.5">
+                          Approved by admin{shownCheckOut(item) !== "--:--" ? ` • Check-out ${shownCheckOut(item)}` : ""}
+                        </Text>
+                      </View>
+                    )}
+                    {isPresent && isMissingTime(item.checkOut) && requestStatusOf(item) === "REJECTED" && (
+                      <View className="bg-rose-50 border border-rose-200 rounded-xl py-1.5 mb-2 items-center">
+                        <Text className="text-[10.5px] font-black text-rose-600">Last request was rejected. You can send it again.</Text>
+                      </View>
+                    )}
+
                     {/* 2. Body: Balanced 3-Column Center-Aligned Row */}
                     {isPresent ? (
                       <View className="flex-row items-center justify-between py-1">
@@ -492,7 +689,7 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
                             Check Out
                           </Text>
                           <Text className="text-xs font-black text-[#1F1B3D] mt-0.5">
-                            {item.checkOut || "--:--"}
+                            {shownCheckOut(item)}
                           </Text>
                         </View>
                       </View>
@@ -630,6 +827,137 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
               </TouchableOpacity>
             </View>
           </View>
+        </Modal>
+
+        {/* ========================================================================= */}
+        {/* MISSED CHECK-OUT REQUEST MODAL                                           */}
+        {/* ========================================================================= */}
+        <Modal
+          visible={!!reqRecord}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setReqRecord(null)}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            className="flex-1 bg-black/60 items-center justify-center px-4"
+          >
+            <View className="w-full max-w-sm bg-white rounded-3xl p-5 border border-[#E7E4F5]">
+              <View className="flex-row items-center justify-between pb-3 mb-3 border-b border-[#E7E4F5]">
+                <View>
+                  <Text className="text-sm font-black text-[#1F1B3D]">Request Check-Out</Text>
+                  <Text className="text-[10px] font-semibold text-[#7A76A6]">
+                    {reqRecord?.date} • Check-in {reqRecord?.checkIn}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setReqRecord(null)}
+                  className="w-7 h-7 rounded-full bg-[#F6F5FC] items-center justify-center"
+                >
+                  <X size={16} color="#1F1B3D" />
+                </TouchableOpacity>
+              </View>
+
+              {reqDone ? (
+                <View>
+                  <View className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 mb-4">
+                    <Text className="text-xs font-bold text-emerald-700 text-center">{reqDone}</Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setReqRecord(null)}
+                    className="w-full py-2.5 bg-[#5B4FD1] rounded-xl items-center"
+                  >
+                    <Text className="text-xs font-black text-white uppercase tracking-wider">Done</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+                  <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
+                    Time you left
+                  </Text>
+                  <View className="flex-row items-center mb-3">
+                    <TextInput
+                      value={reqHour}
+                      onChangeText={(t) => setReqHour(t.replace(/[^0-9]/g, "").slice(0, 2))}
+                      placeholder="HH"
+                      placeholderTextColor="#9CA3AF"
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      className="w-14 text-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl py-2 text-sm font-black text-[#1F1B3D]"
+                    />
+                    <Text className="mx-1.5 text-base font-black text-[#1F1B3D]">:</Text>
+                    <TextInput
+                      value={reqMinute}
+                      onChangeText={(t) => setReqMinute(t.replace(/[^0-9]/g, "").slice(0, 2))}
+                      placeholder="MM"
+                      placeholderTextColor="#9CA3AF"
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      className="w-14 text-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl py-2 text-sm font-black text-[#1F1B3D]"
+                    />
+                    <View className="flex-row ml-3 bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-0.5">
+                      {(["AM", "PM"] as const).map((ap) => (
+                        <TouchableOpacity
+                          key={ap}
+                          onPress={() => setReqAmPm(ap)}
+                          className={`px-3 py-1.5 rounded-lg ${reqAmPm === ap ? "bg-[#5B4FD1]" : "bg-transparent"}`}
+                        >
+                          <Text className={`text-[11px] font-black ${reqAmPm === ap ? "text-white" : "text-[#7A76A6]"}`}>
+                            {ap}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+
+                  <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
+                    What went wrong
+                  </Text>
+                  <View className="flex-row flex-wrap gap-2 mb-3">
+                    {REASONS.map((r) => (
+                      <TouchableOpacity
+                        key={r}
+                        onPress={() => setReqReason(r)}
+                        className={`px-3 py-1.5 rounded-full border ${
+                          reqReason === r ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-white border-[#E7E4F5]"
+                        }`}
+                      >
+                        <Text className={`text-[11px] font-bold ${reqReason === r ? "text-white" : "text-[#7A76A6]"}`}>
+                          {r}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <TextInput
+                    value={reqNote}
+                    onChangeText={setReqNote}
+                    placeholder="Add a note (optional)"
+                    placeholderTextColor="#9CA3AF"
+                    multiline
+                    className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-2 text-xs font-semibold text-[#1F1B3D] mb-3"
+                    style={{ minHeight: 60, textAlignVertical: "top" }}
+                  />
+
+                  {reqError ? (
+                    <Text className="text-[11px] font-bold text-rose-600 mb-3">{reqError}</Text>
+                  ) : null}
+
+                  <TouchableOpacity
+                    onPress={submitCheckoutRequest}
+                    disabled={reqSending}
+                    className={`w-full py-2.5 rounded-xl items-center ${reqSending ? "bg-[#5B4FD1]/60" : "bg-[#5B4FD1]"}`}
+                  >
+                    {reqSending ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Text className="text-xs font-black text-white uppercase tracking-wider">Send to Admin</Text>
+                    )}
+                  </TouchableOpacity>
+                </ScrollView>
+              )}
+            </View>
+          </KeyboardAvoidingView>
         </Modal>
 
       </View>

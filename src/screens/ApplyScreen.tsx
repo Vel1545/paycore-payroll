@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import {
-  View,
+  View,KeyboardAvoidingView,
   Text,
   TouchableOpacity,
   TextInput,
@@ -19,10 +19,12 @@ import {
   FileText,
   Wallet,
   AlertCircle,
+  LogOut,
 } from "lucide-react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
 import ScreenContainer from "../components/ScreenContainer";
+import CheckoutRequestsPanel from "../components/Checkoutrequestspanel";
 import { UserSession } from "../services/UserSession";
 import { BASE_HOST } from "../constants/config";
 
@@ -54,9 +56,12 @@ function DatePickerField({ label, value, onChange }: DatePickerFieldProps) {
     });
   };
 
-  const formatDateIso = (date: Date) => {
-    return date.toISOString().split("T")[0];
-  };
+const formatDateIso = (date: Date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+};
 
   if (Platform.OS === "web") {
     return (
@@ -124,8 +129,8 @@ function DatePickerField({ label, value, onChange }: DatePickerFieldProps) {
   );
 }
 
-export default function ApplyScreen({ route }: any) {
-  const [activeTab, setActiveTab] = useState<"leave" | "expense" | "overtime" | "advance">(
+export default function ApplyScreen({ route, navigation }: any) {
+  const [activeTab, setActiveTab] = useState<"leave" | "expense" | "overtime" | "advance" | "checkout">(
     route?.params?.tab || "leave"
   );
 
@@ -151,7 +156,7 @@ export default function ApplyScreen({ route }: any) {
   // Overtime State
   const [otProject, setOtProject] = useState("PRJ-8092 • Core Banking Migration");
   const [otDate, setOtDate] = useState<Date>(new Date());
-  const [otHours, setOtHours] = useState("4.5");
+  const [otHours, setOtHours] = useState("1.5");
 
   // Advance State
   const [advanceAmount, setAdvanceAmount] = useState("1,500.00");
@@ -210,22 +215,6 @@ export default function ApplyScreen({ route }: any) {
   };
 
 const [submittingOt, setSubmittingOt] = useState(false);
-// Safely formats Date object or string to YYYY-MM-DD
-    let formattedDate = "";
-    if (otDate instanceof Date) {
-      const year = otDate.getFullYear();
-      const month = String(otDate.getMonth() + 1).padStart(2, "0");
-      const day = String(otDate.getDate()).padStart(2, "0");
-      formattedDate = `${year}-${month}-${day}`;
-    } else if (typeof otDate === "string") {
-      const str = (otDate as string).trim();
-      if (str.includes("-") && str.split("-")[0].length === 2) {
-        const [d, m, y] = str.split("-");
-        formattedDate = `${y}-${m}-${d}`;
-      } else {
-        formattedDate = str;
-      }
-    }
 
 const handleSubmitOvertime = async () => {
     const hours = parseFloat(otHours) || 0;
@@ -476,6 +465,7 @@ const handleSubmitAdvance = async () => {
   };
 
   return (
+     <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
     <ScreenContainer>
       {/* 1. Header */}
       <View className="mb-4">
@@ -501,6 +491,7 @@ const handleSubmitAdvance = async () => {
           { id: "expense", label: "Expense", icon: FileText },
           { id: "overtime", label: "Overtime", icon: Clock },
           { id: "advance", label: "Advance", icon: Wallet },
+          { id: "checkout", label: "Check-Out", icon: LogOut },
         ].map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -508,13 +499,14 @@ const handleSubmitAdvance = async () => {
             <TouchableOpacity
               key={tab.id}
               onPress={() => setActiveTab(tab.id as any)}
-              className={`flex-1 py-2.5 rounded-xl items-center flex-row justify-center ${
+              className={`flex-1 py-2 rounded-xl items-center justify-center ${
                 isActive ? "bg-[#5B4FD1] shadow-xs" : ""
               }`}
             >
               <Icon size={14} color={isActive ? "#FFFFFF" : "#7A76A6"} />
               <Text
-                className={`text-[11px] font-black ml-1.5 ${
+                numberOfLines={1}
+                className={`text-[10px] font-black mt-1 ${
                   isActive ? "text-white" : "text-[#7A76A6]"
                 }`}
               >
@@ -1035,6 +1027,16 @@ const handleSubmitAdvance = async () => {
       })()}
 
       {/* ========================================================================= */}
+      {/* TAB 5: MISSED CHECK-OUT REQUESTS (view only; requests are sent from Attendance) */}
+      {/* ========================================================================= */}
+      {activeTab === "checkout" && (
+        <CheckoutRequestsPanel
+          empId={String(UserSession.empId || "")}
+          onOpenAttendance={() => navigation?.navigate?.("Attendance")}
+        />
+      )}
+
+      {/* ========================================================================= */}
       {/* MODALS                                                                    */}
       {/* ========================================================================= */}
       <Modal visible={showRequestTypeModal} transparent animationType="fade">
@@ -1217,5 +1219,6 @@ const handleSubmitAdvance = async () => {
         </TouchableOpacity>
       </Modal>
     </ScreenContainer>
+    </KeyboardAvoidingView>
   );
 }

@@ -2,16 +2,22 @@ import * as TaskManager from "expo-task-manager";
 import * as Location from "expo-location";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Battery from "expo-battery";
+import { Platform } from "react-native";
+import Constants, { ExecutionEnvironment } from "expo-constants";
 import { BASE_HOST } from "../constants/config";
 
 export const SHIFT_LOCATION_TASK = "BACKGROUND_HOURLY_LOCATION_TASK";
 const API_URL = `${BASE_HOST}/api/attendance/location-ping`;
 
 // ------------------------------- tuning -------------------------------
-const TRACKING_TEST_MODE = true; // set to false for the production build
-const INTERVAL_MS = TRACKING_TEST_MODE ? 5 * 60 * 1000 : 60 * 60 * 1000;
-// Extra OS updates closer than this to the last entry are ignored (one entry per interval)
-const MIN_GAP_MS = Math.round(INTERVAL_MS * 0.8);
+const TRACKING_TEST_MODE = false; // set to false for the production build
+// Movement-based tracking. The phone is asked for a position every SAMPLE_INTERVAL_MS, but a point is only SENT when
+//   - the person moved at least MOVE_THRESHOLD_M (a new place, or travelling), or
+//   - HEARTBEAT_MS passed while standing still (this is what measures how long they stay at one place).
+const SAMPLE_INTERVAL_MS = TRACKING_TEST_MODE ? 60 * 1000 : 2 * 60 * 1000;
+const HEARTBEAT_MS = TRACKING_TEST_MODE ? 3 * 60 * 1000 : 10 * 60 * 1000;
+const MOVE_THRESHOLD_M = 75;
+const UNKNOWN_POS = 999; // marker: the last point had no usable position
 const GOOD_ACCURACY_M = 100;
 const FIX_ATTEMPT_TIMEOUTS_MS = [15000, 20000, 25000]; // 3 attempts to get a position
 const SEND_BACKOFF_MS = [0, 3000, 10000]; // 3 attempts to send to the server
@@ -21,7 +27,7 @@ const MAX_OUTBOX = 100;
 const KEY = {
   empId: "active_tracking_emp_id",
   active: "is_shift_tracking_active",
-  nextAllowed: "tracking_next_allowed_ts",
+  lastSent: "tracking_last_sent_point",
   outbox: "tracking_outbox_v1",
   lastGood: "tracking_last_good_fix",
 };
@@ -74,6 +80,17 @@ async function readBattery(): Promise<number | null> {
 
 const accuracyOf = (l: Location.LocationObject | null) =>
   l?.coords.accuracy ?? Number.POSITIVE_INFINITY;
+
+// Distance between two coordinates in meters
+const distanceM = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
 
 // ------------------------------- outbox (send retry) -------------------------------
 async function loadOutbox(): Promise<PingPayload[]> {
@@ -278,6 +295,38 @@ async function buildPoint(
 }
 
 // ------------------------------- main cycle -------------------------------
+// The last point that was sent: movement and standing-still time are measured from it
+interface LastSent {
+  lat: number;
+  lng: number;
+  ts: number;
+}
+
+async function readLastSent(): Promise<LastSent | null> {
+  try {
+    const raw = await AsyncStorage.getItem(KEY.lastSent);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Is this sample worth sending? FIRST = nothing sent yet, MOVED = went somewhere, HEARTBEAT = still there after a while
+function sendReason(sample: Location.LocationObject, last: LastSent | null): "FIRST" | "MOVED" | "HEARTBEAT" | null {
+  if (!last) return "FIRST";
+  const acc = sample.coords.accuracy ?? 0;
+
+  if (last.lat === UNKNOWN_POS) {
+    return acc <= GOOD_ACCURACY_M || sample.timestamp - last.ts >= HEARTBEAT_MS ? "FIRST" : null;
+  }
+
+  const moved = distanceM(last.lat, last.lng, sample.coords.latitude, sample.coords.longitude);
+  // A weak fix can jump around by its own accuracy: do not mistake that for walking
+  if (moved >= Math.max(MOVE_THRESHOLD_M, 2 * acc)) return "MOVED";
+  if (sample.timestamp - last.ts >= HEARTBEAT_MS) return "HEARTBEAT";
+  return null;
+}
+
 // seeds = locations delivered by the OS (may be several in one batch).
 // Empty seeds = a foreground/health-check trigger.
 async function captureAndQueue(seeds: Location.LocationObject[]): Promise<void> {
@@ -285,44 +334,57 @@ async function captureAndQueue(seeds: Location.LocationObject[]): Promise<void> 
   const active = await AsyncStorage.getItem(KEY.active);
   if (!empId || active !== "true") return;
 
-  const nextAllowed = Number(await AsyncStorage.getItem(KEY.nextAllowed)) || 0;
   const ordered = [...seeds].sort((a, b) => a.timestamp - b.timestamp);
+  const last = await readLastSent();
 
-  let work: (Location.LocationObject | null)[];
+  const toSend: { seed: Location.LocationObject | null; reason: string }[] = [];
   if (ordered.length > 0) {
-    // Keep at most one fix per allowed window, so OS extras do not become duplicates
-    work = [];
-    let gate = nextAllowed;
+    let ref = last;
     for (const s of ordered) {
-      if (s.timestamp >= gate) {
-        work.push(s);
-        gate = s.timestamp + MIN_GAP_MS;
+      const reason = sendReason(s, ref);
+      if (reason) {
+        toSend.push({ seed: s, reason });
+        ref = { lat: s.coords.latitude, lng: s.coords.longitude, ts: s.timestamp };
       }
     }
-  } else {
-    work = Date.now() >= nextAllowed ? [null] : [];
+  } else if (!last || Date.now() - last.ts >= HEARTBEAT_MS) {
+    toSend.push({ seed: null, reason: "HEARTBEAT" }); // app opened: nothing was sent for a while
   }
 
-  if (work.length === 0) {
+  if (toSend.length === 0) {
     await flushOutbox(); // nothing new, but deliver anything still pending
     return;
   }
 
   const battery = await readBattery();
-  for (let i = 0; i < work.length; i++) {
-    const seed = work[i];
-    const isNewest = i === work.length - 1;
-    const point = await buildPoint(empId, seed, battery, isNewest);
+  for (let i = 0; i < toSend.length; i++) {
+    const { seed, reason } = toSend[i];
+    const isNewest = i === toSend.length - 1;
+    // retries to improve a weak position are only worth the battery for a standing-still check
+    const point = await buildPoint(empId, seed, battery, isNewest && reason === "HEARTBEAT");
     await enqueue(point);
-    const anchor = seed ? seed.timestamp : Date.now();
-    await AsyncStorage.setItem(KEY.nextAllowed, String(anchor + MIN_GAP_MS));
+
+    if (point.latitude != null && point.longitude != null && point.quality !== "STALE") {
+      await AsyncStorage.setItem(
+        KEY.lastSent,
+        JSON.stringify({ lat: point.latitude, lng: point.longitude, ts: point.capturedAtMs })
+      );
+    } else {
+      // no new position: keep the old one but restart the clock, so a dead GPS does not send on every sample
+      const prev = await readLastSent();
+      await AsyncStorage.setItem(
+        KEY.lastSent,
+        JSON.stringify({ lat: prev?.lat ?? UNKNOWN_POS, lng: prev?.lng ?? UNKNOWN_POS, ts: Date.now() })
+      );
+    }
   }
 
   await flushOutbox();
 }
 
 // Must run at root bundle level (App.tsx imports this file)
-TaskManager.defineTask(SHIFT_LOCATION_TASK, async ({ data, error }: any) => {
+// The background task does not exist on the web, so it is only defined on phones
+if (Platform.OS !== "web") TaskManager.defineTask(SHIFT_LOCATION_TASK, async ({ data, error }: any) => {
   if (error) {
     console.error("Background task error:", error);
     return;
@@ -337,7 +399,7 @@ TaskManager.defineTask(SHIFT_LOCATION_TASK, async ({ data, error }: any) => {
 // ------------------------------- public API -------------------------------
 async function teardownTracking() {
   await AsyncStorage.setItem(KEY.active, "false");
-  await AsyncStorage.multiRemove([KEY.empId, KEY.nextAllowed, KEY.lastGood]);
+  await AsyncStorage.multiRemove([KEY.empId, KEY.lastSent, KEY.lastGood]);
   try {
     if (await Location.hasStartedLocationUpdatesAsync(SHIFT_LOCATION_TASK)) {
       await Location.stopLocationUpdatesAsync(SHIFT_LOCATION_TASK);
@@ -352,6 +414,17 @@ export async function startShiftTracking(
   empId: string,
   workMode?: string
 ): Promise<{ started: boolean; warning?: string }> {
+  // Live tracking is Android-only for now: on iPhone no background task or "Always" permission is requested.
+  // Check-in and check-out locations are still saved by the punch itself.
+  if (Platform.OS !== "android") return { started: false };
+
+  // Expo Go cannot run background location on Android at all: skip quietly instead of throwing its error.
+  // Use a development build or the installed APK to test tracking.
+  if (Constants.executionEnvironment === ExecutionEnvironment.StoreClient) {
+    console.log("Live tracking skipped: Expo Go does not support background location. Use a development build.");
+    return { started: false };
+  }
+
   if ((workMode || "").toUpperCase() !== "SALES") return { started: false };
 
   // Fast path: already tracking this employee, so no permission prompts and no settings redirects on resume
@@ -387,15 +460,15 @@ export async function startShiftTracking(
     [KEY.empId, empId],
     [KEY.active, "true"],
   ]);
-  // The check-in punch already stored a location, so the first background entry is due one gap later
+  // Fresh start: the first sample after check-in is sent right away, then movement is measured from it
   if (!wasActive) {
-    await AsyncStorage.setItem(KEY.nextAllowed, String(Date.now() + MIN_GAP_MS));
+    await AsyncStorage.removeItem(KEY.lastSent);
   }
 
   if (!(await Location.hasStartedLocationUpdatesAsync(SHIFT_LOCATION_TASK))) {
     await Location.startLocationUpdatesAsync(SHIFT_LOCATION_TASK, {
       accuracy: Location.Accuracy.High,
-      timeInterval: INTERVAL_MS, // Android only; iOS ignores it
+      timeInterval: SAMPLE_INTERVAL_MS, // Android only (iPhone is not tracked)
       distanceInterval: 0, // time-based: a stationary rep still needs an entry
       pausesUpdatesAutomatically: false,
       showsBackgroundLocationIndicator: true,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo,useCallback } from "react";
 import { 
   View, 
   Text, 
@@ -6,9 +6,10 @@ import {
   ScrollView, 
   useWindowDimensions,
   ActivityIndicator,
-  Platform
+  RefreshControl
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useFocusEffect } from "@react-navigation/native";
 import {
   Bell, LogOut, ChevronRight, ArrowUpRight,
   Clock, Calendar as CalendarIcon, Fingerprint,
@@ -111,9 +112,20 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
     }
   };
 
-  useEffect(() => {
-    fetchAttendanceOverview();
-  }, [currentDate, empId]);
+// Refresh every time the Home tab is shown, and when the month or user changes,
+// so a check-in made on the Punch tab appears straight away.
+useFocusEffect(
+  useCallback(() => {
+    fetchAttendanceOverview(true);
+  }, [currentDate, empId])
+);
+
+const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+const onPullRefresh = async () => {
+  setIsPullRefreshing(true);
+  await fetchAttendanceOverview(true);
+  setIsPullRefreshing(false);
+};
 
   // Month Navigation
   const handlePrevMonth = () => {
@@ -209,7 +221,10 @@ const handleLogoutPress = async () => {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F4F6F9" }} edges={["top"]}>
-      <ScrollView 
+      <ScrollView refreshControl={
+    <RefreshControl refreshing={isPullRefreshing} onRefresh={onPullRefresh} colors={["#5B4FD1"]} tintColor="#5B4FD1" />
+  }
+      
         showsVerticalScrollIndicator={false} 
         contentContainerStyle={{ flexGrow: 1, paddingBottom: 120 }}
         style={{ flex: 1 }}
