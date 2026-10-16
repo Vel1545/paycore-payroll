@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
+import NotificationBell from "../components/Notificationbell";
 import {
   Bell, LogOut, ChevronRight, ArrowUpRight,
   Clock, Calendar as CalendarIcon, Fingerprint,
@@ -252,7 +253,7 @@ const handleLogoutPress = async () => {
                 onPress={() => (isAdmin ? navigation.navigate("Approvals") : null)}
                 className="w-12 h-12 rounded-2xl bg-white/15 border border-white/25 items-center justify-center relative active:opacity-80 shadow-sm"
               >
-                <Bell size={20} color="#FFFFFF" />
+              <NotificationBell navigation={navigation} empId={empId} isAdmin={isAdmin} />
                 {isAdmin ? (
                   <View className="absolute top-3 right-3 w-2.5 h-2.5 rounded-full bg-rose-400 border border-[#5B4FD1]" />
                 ) : null}
@@ -440,7 +441,7 @@ const handleLogoutPress = async () => {
 
               {/* Pay Slip */}
               <TouchableOpacity 
-                onPress={() => navigation.navigate("MyHub", { initialTab: "payslip" })}
+                   onPress={() => navigation.navigate(isAdmin ? "SalaryView" : "MyHub", { initialTab: "payslip" })}
                 activeOpacity={0.85}
                 className="overflow-hidden rounded-[22px] border border-amber-100"
                 style={{ 

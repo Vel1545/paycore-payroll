@@ -27,7 +27,7 @@ import {
 
 import { UserSession } from "../services/UserSession";
 import { useAuth, UserDetails } from "../context/AuthContext";
-import { BASE_HOST } from "../constants/config";
+import { BASE_HOST, DEVICE_VERIFICATION_ENABLED } from "../constants/config";
 
 interface LoginScreenProps {
   onLoginSuccess: (userData: { empId: string; isAdmin: boolean }) => void;
@@ -56,7 +56,19 @@ const showUniversalAlert = (title: string, message: string) => {
   }
 };
 
-const getClientInfo = async (): Promise<{ deviceId: string; platform: "MOBILE" | "WEB"; deviceModel: string }> => {
+const getClientInfo = async (
+  empId?: string
+): Promise<{ deviceId: string; platform: "MOBILE" | "WEB"; deviceModel: string }> => {
+  const base = await getBaseClientInfo();
+  // TEST MODE: device verification OFF -> every Employee ID gets its own device record,
+  // so one phone/browser can log in as many different IDs/roles as you want.
+  if (!DEVICE_VERIFICATION_ENABLED && empId) {
+    return { ...base, deviceId: `${base.deviceId}::${empId.trim().toUpperCase()}` };
+  }
+  return base;
+};
+
+const getBaseClientInfo = async (): Promise<{ deviceId: string; platform: "MOBILE" | "WEB"; deviceModel: string }> => {
   // In LoginScreen.tsx
 if (Platform.OS === "web") {
   let browserId = typeof window !== "undefined" ? window.localStorage.getItem("paycore_web_client_id") : null;
@@ -162,7 +174,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         setEmpId(savedEmpId);
         setLoading(true);
 
-        const client = await getClientInfo();
+        const client = await getClientInfo(savedEmpId);
 
         const statusRes = await fetch(`${API_BASE_URL}/check-status`, {
           method: "POST",
@@ -228,7 +240,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
 
   const checkUserStatusInDb = async (id: string) => {
     try {
-      const client = await getClientInfo();
+      const client = await getClientInfo(id);
 
       const res = await fetch(`${API_BASE_URL}/check-status`, {
         method: "POST",
@@ -290,7 +302,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const handleDirectLogin = async () => {
     setLoading(true);
     try {
-      const client = await getClientInfo();
+      const client = await getClientInfo(empId);
 
       const res = await fetch(`${API_BASE_URL}/direct-login`, {
         method: "POST",
@@ -367,7 +379,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
 
     setLoading(true);
     try {
-      const client = await getClientInfo();
+      const client = await getClientInfo(empId);
 
       const res = await fetch(`${API_BASE_URL}/verify-otp`, {
         method: "POST",

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,KeyboardAvoidingView,
   Text,
@@ -20,11 +20,13 @@ import {
   Wallet,
   AlertCircle,
   LogOut,
+  Home,
 } from "lucide-react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
 import ScreenContainer from "../components/ScreenContainer";
 import CheckoutRequestsPanel from "../components/Checkoutrequestspanel";
+import WfhCard from "../components/Wfhcard";
 import { UserSession } from "../services/UserSession";
 import { BASE_HOST } from "../constants/config";
 
@@ -129,13 +131,118 @@ const formatDateIso = (date: Date) => {
   );
 }
 
+interface TimePickerFieldProps {
+  label: string;
+  value: Date;
+  onChange: (date: Date) => void;
+}
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+const formatTime12 = (d: Date) => {
+  const h = d.getHours();
+  return `${pad2(h % 12 === 0 ? 12 : h % 12)}:${pad2(d.getMinutes())} ${h >= 12 ? "PM" : "AM"}`;
+};
+
+function TimePickerField({ label, value, onChange }: TimePickerFieldProps) {
+  const [showNativePicker, setShowNativePicker] = useState(false);
+
+  if (Platform.OS === "web") {
+    return (
+      <View className="flex-1">
+        <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">{label}</Text>
+        <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 flex-row justify-between items-center">
+          <input
+            type="time"
+            value={`${pad2(value.getHours())}:${pad2(value.getMinutes())}`}
+            onChange={(e) => {
+              if (e.target.value) {
+                const [hh, mm] = e.target.value.split(":").map(Number);
+                const next = new Date(value);
+                next.setHours(hh, mm, 0, 0);
+                onChange(next);
+              }
+            }}
+            style={{
+              backgroundColor: "transparent",
+              border: "none",
+              outline: "none",
+              fontFamily: "inherit",
+              fontSize: "12px",
+              fontWeight: "700",
+              color: "#1F1B3D",
+              width: "100%",
+              cursor: "pointer",
+            }}
+          />
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View className="flex-1">
+      <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">{label}</Text>
+      <TouchableOpacity
+        onPress={() => setShowNativePicker(true)}
+        className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 flex-row justify-between items-center"
+      >
+        <Text className="text-xs font-bold text-[#1F1B3D]">{formatTime12(value)}</Text>
+        <Clock size={15} color="#5B4FD1" />
+      </TouchableOpacity>
+
+      {showNativePicker && (
+        <DateTimePicker
+          value={value}
+          mode="time"
+          is24Hour={false}
+          display={Platform.OS === "ios" ? "spinner" : "default"}
+          onValueChange={(_event, selectedDate) => {
+            setShowNativePicker(false);
+            if (selectedDate) onChange(selectedDate);
+          }}
+          onDismiss={() => setShowNativePicker(false)}
+        />
+      )}
+    </View>
+  );
+}
+
 export default function ApplyScreen({ route, navigation }: any) {
-  const [activeTab, setActiveTab] = useState<"leave" | "expense" | "overtime" | "advance" | "checkout">(
+  const [activeTab, setActiveTab] = useState<"leave" | "expense" | "overtime" | "advance" | "checkout" | "wfh">(
     route?.params?.tab || "leave"
   );
 
+  // WFH tab is shown only when the server says this person has regular WFH days (wfhDaysPerWeek > 0 or fixed
+  // WFH days) or emergency WFH. With no WFH data the tab is hidden.
+  const [wfhVisible, setWfhVisible] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(`${BASE_HOST}/api/wfh?empId=${encodeURIComponent(String(UserSession.empId || ""))}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const w = await res.json();
+        const has =
+          Number(w?.wfhDaysPerWeek) > 0 
+          //|| (w?.fixedWfhDays?.length ?? 0) > 0 || w?.emergency === true;
+        if (alive) {
+          setWfhVisible(has);
+          // opened on the WFH tab (route.params.tab) but this person has no WFH: go back to Leave
+          if (!has) setActiveTab((t) => (t === "wfh" ? "leave" : t));
+        }
+      } catch {
+        // offline or server error: keep the tab hidden
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
   // Leave State (Added HALF_DAY and halfDaySession)
-  const [requestType, setRequestType] = useState<"LEAVE" | "HALF_DAY" | "PERMISSION">("LEAVE");
+  const [requestType, setRequestType] = useState<"LEAVE" | "HALF_DAY" | "PERMISSION" | "OD">("LEAVE");
+  const [odMode, setOdMode] = useState<"FULL" | "HOURLY">("FULL"); // only used when requestType is OD
   const [halfDaySession, setHalfDaySession] = useState<"FIRST_HALF" | "SECOND_HALF">("FIRST_HALF");
   const [leaveCategory, setLeaveCategory] = useState("Casual Leave (CL)");
   const [fromDate, setFromDate] = useState<Date>(new Date());
@@ -144,6 +251,17 @@ export default function ApplyScreen({ route, navigation }: any) {
   const [permDate, setPermDate] = useState<Date>(new Date());
   const [permTimeSlot, setPermTimeSlot] = useState("");
   const [permHours, setPermHours] = useState("2.0");
+  // Hourly OD: pick start and end time, the hours and time window are worked out automatically
+  const [odStart, setOdStart] = useState<Date>(() => {
+    const d = new Date();
+    d.setMinutes(0, 0, 0);
+    return d;
+  });
+  const [odEnd, setOdEnd] = useState<Date>(() => {
+    const d = new Date();
+    d.setHours(d.getHours() + 1, 0, 0, 0);
+    return d;
+  });
   const [reason, setReason] = useState("");
 
   // Expense State
@@ -171,6 +289,8 @@ export default function ApplyScreen({ route, navigation }: any) {
   const [showExpenseCategoryModal, setShowExpenseCategoryModal] = useState(false);
   const [showAdvanceTypeModal, setShowAdvanceTypeModal] = useState(false);
   const [showRepaymentTypeModal, setShowRepaymentTypeModal] = useState(false);
+
+  const OD_CATEGORY = "On Duty / Client Visit (OD)";
 
   const leaveOptions = [
     "Annual / Paid Vacation (EL)",
@@ -209,7 +329,7 @@ export default function ApplyScreen({ route, navigation }: any) {
 
   const calculateLeaveDays = () => {
     if (requestType === "HALF_DAY") return 0.5;
-    if (requestType === "PERMISSION") return 0;
+    if (requestType === "PERMISSION" || (requestType === "OD" && odMode === "HOURLY")) return 0;
     const diffTime = Math.abs(toDate.getTime() - fromDate.getTime());
     return Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1);
   };
@@ -307,7 +427,24 @@ const handleSubmitOvertime = async () => {
     }
   };
 
+// Hourly OD: duration and time window come from the start / end time
+const odMinutesPicked =
+  odEnd.getHours() * 60 + odEnd.getMinutes() - (odStart.getHours() * 60 + odStart.getMinutes());
+const odHoursPicked = Math.round((odMinutesPicked / 60) * 100) / 100;
+const odSlotText = `${formatTime12(odStart)} - ${formatTime12(odEnd)}`;
+const formatHoursLabel = (mins: number) =>
+  mins <= 0 ? "-" : `${Math.floor(mins / 60)}h ${pad2(mins % 60)}m`;
+
 const handleSubmitLeave = async () => {
+  const isOd = requestType === "OD";
+  const isOdHourly = isOd && odMode === "HOURLY";
+  if (isOdHourly) {
+    if (odMinutesPicked <= 0 || odMinutesPicked > 12 * 60) {
+      const msg = "End time must be after the start time, and the OD can be at most 12 hours.";
+      Platform.OS === "web" ? window.alert(msg) : Alert.alert("Invalid Time", msg);
+      return;
+    }
+  }
   if (!reason.trim()) {
     const msg = "Please enter a reason or handover note.";
     Platform.OS === "web" ? window.alert(msg) : Alert.alert("Required", msg);
@@ -323,7 +460,7 @@ const handleSubmitLeave = async () => {
     if (requestType === "HALF_DAY") {
       targetStartDate = formatDateIso(halfDayDate);
       targetEndDate = formatDateIso(halfDayDate);
-    } else if (requestType === "PERMISSION") {
+    } else if (requestType === "PERMISSION" || isOdHourly) {
       targetStartDate = formatDateIso(permDate);
       targetEndDate = formatDateIso(permDate);
     }
@@ -331,13 +468,18 @@ const handleSubmitLeave = async () => {
     // 3. Exact payload matching LeaveRequestItem / DTO in Spring Boot
     const payload = {
       employeeId: UserSession.empId,
-      leaveCategory: requestType === "PERMISSION" ? "Permission" : leaveCategory,
-      requestType: requestType, // "LEAVE", "HALF_DAY", "PERMISSION"
+      leaveCategory: requestType === "PERMISSION" ? "Permission" : isOd ? OD_CATEGORY : leaveCategory,
+      // Full-day OD is sent as a normal leave request with the OD category.
+      // Hourly OD is sent as an hourly request ("PERMISSION") with the OD category and the hours.
+      requestType: isOdHourly ? "PERMISSION" : isOd ? "LEAVE" : requestType, // "LEAVE", "HALF_DAY", "PERMISSION"
+      hours: isOdHourly ? odHoursPicked : requestType === "PERMISSION" ? parseFloat(permHours) || 0 : null,
       session: requestType === "HALF_DAY" ? halfDaySession : null, // "FIRST_HALF", "SECOND_HALF", or null
       startDate: targetStartDate, // "2026-09-15"
       endDate: targetEndDate,     // "2026-09-15"
       days: calculateLeaveDays(), // 0.5 for HALF_DAY, 0 for PERMISSION, or full days
-      reason: requestType === "PERMISSION"
+      reason: isOdHourly
+        ? `[OD Slot: ${odSlotText} • ${odHoursPicked}h] ${reason.trim()}`
+        : requestType === "PERMISSION"
         ? `[Slot: ${permTimeSlot} • ${permHours}h] ${reason}`
         : reason.trim(),
     };
@@ -357,6 +499,10 @@ const handleSubmitLeave = async () => {
           ? "Half Day Leave"
           : requestType === "PERMISSION"
           ? "Permission"
+          : isOdHourly
+          ? "On Duty (Hourly)"
+          : isOd
+          ? "On Duty (Full Day)"
           : "Leave";
       
       const msg = `${typeName} request submitted successfully! (Ref: ${data.requestId})`;
@@ -492,7 +638,10 @@ const handleSubmitAdvance = async () => {
           { id: "overtime", label: "Overtime", icon: Clock },
           { id: "advance", label: "Advance", icon: Wallet },
           { id: "checkout", label: "Check-Out", icon: LogOut },
-        ].map((tab) => {
+          { id: "wfh", label: "WFH", icon: Home },
+        ]
+          .filter((tab) => tab.id !== "wfh" || wfhVisible)
+          .map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
           return (
@@ -558,6 +707,8 @@ const handleSubmitAdvance = async () => {
                     ? "Full / Multi-Day Leave"
                     : requestType === "HALF_DAY"
                     ? "Half Day Leave"
+                    : requestType === "OD"
+                    ? "On Duty (OD) - Full Day or Hourly"
                     : "Short Permission (Hourly)"}
                 </Text>
                 <ChevronDown size={16} color="#7A76A6" />
@@ -565,7 +716,7 @@ const handleSubmitAdvance = async () => {
             </View>
 
             {/* Category selection for Full or Half Day Leave */}
-            {requestType !== "PERMISSION" && (
+            {requestType !== "PERMISSION" && requestType !== "OD" && (
               <View className="mb-3">
                 <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">
                   Leave Category
@@ -580,8 +731,41 @@ const handleSubmitAdvance = async () => {
               </View>
             )}
 
-            {/* CASE 1: FULL DAY LEAVE */}
-            {requestType === "LEAVE" && (
+            {/* On Duty: choose full day(s) for travel, or hours for a local visit */}
+            {requestType === "OD" && (
+              <View className="mb-3">
+                <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">
+                  On Duty For
+                </Text>
+                <View className="flex-row">
+                  <TouchableOpacity
+                    onPress={() => setOdMode("FULL")}
+                    className={`flex-1 py-3 px-2 rounded-xl mr-2 border items-center ${
+                      odMode === "FULL" ? "bg-[#EEECFA] border-[#5B4FD1]" : "bg-[#F6F5FC] border-[#E7E4F5]"
+                    }`}
+                  >
+                    <Text className={`text-xs font-bold ${odMode === "FULL" ? "text-[#5B4FD1]" : "text-[#1F1B3D]"}`}>
+                      Full Day(s)
+                    </Text>
+                    <Text className="text-[9.5px] text-[#7A76A6] mt-0.5">Travel / multiple places</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => setOdMode("HOURLY")}
+                    className={`flex-1 py-3 px-2 rounded-xl border items-center ${
+                      odMode === "HOURLY" ? "bg-[#EEECFA] border-[#5B4FD1]" : "bg-[#F6F5FC] border-[#E7E4F5]"
+                    }`}
+                  >
+                    <Text className={`text-xs font-bold ${odMode === "HOURLY" ? "text-[#5B4FD1]" : "text-[#1F1B3D]"}`}>
+                      Hourly
+                    </Text>
+                    <Text className="text-[9.5px] text-[#7A76A6] mt-0.5">Local visit, 1-2 hrs</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {/* CASE 1: FULL DAY LEAVE (also full-day OD) */}
+            {(requestType === "LEAVE" || (requestType === "OD" && odMode === "FULL")) && (
               <View className="mb-3">
                 <View className="flex-row mb-2">
                   <View className="flex-1 mr-2">
@@ -660,7 +844,36 @@ const handleSubmitAdvance = async () => {
               </View>
             )}
 
-            {/* CASE 3: PERMISSION */}
+            {/* CASE 3a: HOURLY OD - pick start and end time, hours are calculated */}
+            {requestType === "OD" && odMode === "HOURLY" && (
+              <View className="mb-3">
+                <View className="mb-2">
+                  <DatePickerField label="OD Date" value={permDate} onChange={setPermDate} />
+                </View>
+                <View className="flex-row mb-2">
+                  <View className="flex-1 mr-2">
+                    <TimePickerField label="From Time" value={odStart} onChange={setOdStart} />
+                  </View>
+                  <View className="flex-1">
+                    <TimePickerField label="To Time" value={odEnd} onChange={setOdEnd} />
+                  </View>
+                </View>
+                <View className="bg-[#EEECFA] rounded-xl p-2.5 flex-row justify-between items-center">
+                  <Text className="text-[11px] font-bold text-[#7A76A6]">OD Hours (auto)</Text>
+                  <Text
+                    className={`text-xs font-black ${
+                      odMinutesPicked > 0 && odMinutesPicked <= 720 ? "text-[#5B4FD1]" : "text-[#E4453C]"
+                    }`}
+                  >
+                    {odMinutesPicked > 0 && odMinutesPicked <= 720
+                      ? `${formatHoursLabel(odMinutesPicked)}  •  ${odSlotText}`
+                      : "End time must be after start"}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* CASE 3b: PERMISSION */}
             {requestType === "PERMISSION" && (
               <View className="mb-3">
                 <View className="flex-row mb-2">
@@ -680,17 +893,17 @@ const handleSubmitAdvance = async () => {
                   </View>
                 </View>
                 <View className="mb-3">
-  <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">
-    Time Window Slot
-  </Text>
-  <TextInput
-    value={permTimeSlot}
-    onChangeText={setPermTimeSlot}
-    placeholder="e.g. 02:00 PM - 04:00 PM"
-    placeholderTextColor="#A6A2CE"
-    className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-xs font-bold text-[#1F1B3D]"
-  />
-</View>
+                  <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">
+                    Time Window Slot
+                  </Text>
+                  <TextInput
+                    value={permTimeSlot}
+                    onChangeText={setPermTimeSlot}
+                    placeholder="e.g. 02:00 PM - 04:00 PM"
+                    placeholderTextColor="#A6A2CE"
+                    className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-xs font-bold text-[#1F1B3D]"
+                  />
+                </View>
               </View>
             )}
 
@@ -1037,6 +1250,16 @@ const handleSubmitAdvance = async () => {
       )}
 
       {/* ========================================================================= */}
+      {/* TAB 6: WORK FROM HOME (regular WFH days, or emergency WFH like CL/ML)      */}
+      {/* ========================================================================= */}
+      {activeTab === "wfh" && wfhVisible && (
+        <WfhCard
+          empId={String(UserSession.empId || "")}
+          emptyText="Work from home is not available for your schedule."
+        />
+      )}
+
+      {/* ========================================================================= */}
       {/* MODALS                                                                    */}
       {/* ========================================================================= */}
       <Modal visible={showRequestTypeModal} transparent animationType="fade">
@@ -1083,13 +1306,31 @@ const handleSubmitAdvance = async () => {
                 setRequestType("PERMISSION");
                 setShowRequestTypeModal(false);
               }}
-              className={`p-3 rounded-xl border ${
+              className={`p-3 rounded-xl border mb-2 ${
                 requestType === "PERMISSION"
                   ? "bg-[#EEECFA] border-[#5B4FD1]"
                   : "bg-[#F6F5FC] border-[#E7E4F5]"
               }`}
             >
               <Text className="text-xs font-bold text-[#1F1B3D]">Short Permission (Hourly)</Text>
+            </TouchableOpacity>
+
+            {/* On Duty: full day(s) or hourly */}
+            <TouchableOpacity
+              onPress={() => {
+                setRequestType("OD");
+                setShowRequestTypeModal(false);
+              }}
+              className={`p-3 rounded-xl border ${
+                requestType === "OD"
+                  ? "bg-[#EEECFA] border-[#5B4FD1]"
+                  : "bg-[#F6F5FC] border-[#E7E4F5]"
+              }`}
+            >
+              <Text className="text-xs font-bold text-[#1F1B3D]">On Duty (OD)</Text>
+              <Text className="text-[9.5px] text-[#7A76A6] mt-0.5">
+                Full day(s) for travel, or by the hour for a local visit
+              </Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>

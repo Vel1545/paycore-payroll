@@ -436,6 +436,29 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
   const [allowedRadiusMeters, setAllowedRadiusMeters] = useState<number>(200);
   const [isGeofenceExempt, setIsGeofenceExempt] = useState(false);
 
+  // ----- today's schedule rules, sent by the server in /today -----
+  const [schedule, setSchedule] = useState<{
+    isFlexi: boolean;
+    requiredMinutes: number;
+    isWeeklyOff: boolean;
+    wfhPolicy: boolean;
+    wfhAllowedToday: boolean | null; // null = old server, keep the old behaviour
+    odWaiverEnabled: boolean;
+    odFullDay: boolean;
+    odWindows: { from: string; to: string }[];
+  }>({
+    isFlexi: false,
+    requiredMinutes: 460,
+    isWeeklyOff: false,
+    wfhPolicy: false,
+    wfhAllowedToday: null,
+    odWaiverEnabled: false,
+    odFullDay: false,
+    odWindows: [],
+  });
+  const scheduleRef = useRef(schedule);
+  scheduleRef.current = schedule;
+
   const [activeMode, setActiveMode] = useState<AttendanceMode>("OFFICE");
   const [attendanceState, setAttendanceState] = useState<PunchState>("NOT_CHECKED_IN");
   const [checkInTime, setCheckInTime] = useState<string | null>(null);
@@ -476,6 +499,23 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
   attendanceStateRef.current = attendanceState;
 
   const getSyncedNowMs = () => Date.now() + serverOffsetMs.current;
+
+  // True while an APPROVED On-Duty covers this moment (whole day, or inside the approved hours).
+  // The server applies the same rule, so the app and server always agree.
+  const isOdActiveNow = () => {
+    const sc = scheduleRef.current;
+    if (!sc.odWaiverEnabled) return false;
+    if (sc.odFullDay) return true;
+    if (sc.odWindows.length === 0) return false;
+    let hhmm = new Date(getSyncedNowMs()).toLocaleTimeString("en-GB", {
+      timeZone: "Asia/Kolkata",
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    if (hhmm.startsWith("24")) hhmm = "00" + hhmm.slice(2);
+    return sc.odWindows.some((w) => hhmm >= w.from && hhmm <= w.to);
+  };
 
   const updateDateLabel = () => {
     setCurrentDateIST(
@@ -721,6 +761,18 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
       setGeofenceRules(parsedBranches);
       setIsGeofenceExempt(exemptFlag);
       setWorkMode(String(data.config?.default_work_mode || "IN_OFFICE").toUpperCase());
+      setSchedule({
+        isFlexi: data.is_flexi === true,
+        requiredMinutes: Number(data.required_work_minutes) > 0 ? Number(data.required_work_minutes) : 460,
+        isWeeklyOff: data.is_weekly_off === true,
+        wfhPolicy: data.wfh_policy === true,
+        wfhAllowedToday: typeof data.wfh_allowed_today === "boolean" ? data.wfh_allowed_today : null,
+        odWaiverEnabled: data.od_waiver_enabled === true,
+        odFullDay: data.od_full_day === true,
+        odWindows: Array.isArray(data.od_windows)
+          ? data.od_windows.filter((w: any) => w && w.from && w.to).map((w: any) => ({ from: String(w.from), to: String(w.to) }))
+          : [],
+      });
       if (parsedBranches.length > 0) {
         setActiveBranchName(parsedBranches[0].branch_name || "Office HQ");
         setAllowedRadiusMeters(parsedBranches[0].radius_meters || 200);
@@ -920,7 +972,13 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
         effectiveMode === "WFH" ? "Work-From-Home" : effectiveMode === "SALES" ? "Sales Visit" : `${activeBranchName} Office`;
       notify(
         "Punch Recorded",
-        `Successfully ${type === "CHECK_IN" ? "Checked In" : "Checked Out"} at ${formatToIST(getSyncedNowMs())} via ${modeTitle}.`
+        `Successfully ${type === "CHECK_IN" ? "Checked In" : "Checked Out"} at ${formatToIST(getSyncedNowMs())} via ${modeTitle}.` +
+          (type === "CHECK_OUT" && Number(result?.odMinutesAdded) > 0
+            ? `\nApproved OD time added: ${Math.floor(Number(result.odMinutesAdded) / 60)}h ${Number(result.odMinutesAdded) % 60}m.`
+            : "") +
+          (type === "CHECK_OUT" && Number(result?.shortfallMinutes) > 0
+            ? `\nShort of the daily target by ${Number(result.shortfallMinutes)} min (shortfall penalty applies).`
+            : "")
       );
       setCapturedPhotoUri(null);
       await fetchTodayAttendanceState();
@@ -957,7 +1015,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
         return;
       }
 
-      const needsGps = !(activeModeRef.current === "WFH" || exemptRef.current);
+      const needsGps = !(activeModeRef.current === "WFH" || exemptRef.current || isOdActiveNow());
 
       // 1. Ask for location permission BEFORE the shutter: a system dialog during capture kills the camera session
       if (!(await ensureLocationPermission(needsGps)) && needsGps) return;
@@ -1042,7 +1100,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
         return;
       }
 
-      const needsGps = !(activeModeRef.current === "WFH" || exemptRef.current);
+      const needsGps = !(activeModeRef.current === "WFH" || exemptRef.current || isOdActiveNow());
       const fix = await refreshLocation({ interactive: needsGps, maxAgeMs: LOCATION_MAX_AGE_MS });
 
       if (fix?.isMock) {
@@ -1354,6 +1412,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
                 </Text>
               </TouchableOpacity>
 
+              {schedule.wfhAllowedToday !== false && (
               <TouchableOpacity
                 onPress={() => setActiveMode("WFH")}
                 disabled={attendanceState !== "NOT_CHECKED_IN"}
@@ -1366,9 +1425,30 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
                   Work From Home
                 </Text>
               </TouchableOpacity>
+              )}
             </View>
           )}
         </View>
+
+        {/* WEEK-OFF / APPROVED OD NOTICES */}
+        {schedule.isWeeklyOff && attendanceState === "NOT_CHECKED_IN" && (
+          <View className="bg-[#FFF6E5] border border-[#F0B429]/40 rounded-2xl p-3 mb-3 flex-row items-center">
+            <AlertTriangle size={15} color="#B7791F" />
+            <Text className="text-xs font-bold text-[#B7791F] ml-2 flex-1">
+              Today is your weekly off. Check-in may be rejected by the server.
+            </Text>
+          </View>
+        )}
+        {isOdActiveNow() && !isGeofenceExempt && (
+          <View className="bg-indigo-50 border border-indigo-200/70 rounded-2xl p-3 mb-3 flex-row items-center">
+            <Briefcase size={15} color="#5B4FD1" />
+            <Text className="text-xs font-bold text-[#5B4FD1] ml-2 flex-1">
+              {schedule.odFullDay
+                ? "Approved On-Duty today: you can punch from any location."
+                : `Approved On-Duty ${schedule.odWindows.map((w) => `${w.from}-${w.to}`).join(", ")}: no location check during these hours.`}
+            </Text>
+          </View>
+        )}
 
         {/* GEOFENCE STATUS */}
         <View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 mb-4 shadow-xs">
@@ -1722,7 +1802,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
               </Text>
             </View>
             <View className="bg-white/10 px-2.5 py-0.5 rounded-full flex-row items-center">
-              <Text className="text-[10px] font-black text-emerald-300 uppercase tracking-wider">Target: 8h</Text>
+              <Text className="text-[10px] font-black text-emerald-300 uppercase tracking-wider">Target: {Math.floor(schedule.requiredMinutes / 60)}h{schedule.requiredMinutes % 60 ? ` ${schedule.requiredMinutes % 60}m` : ""}{schedule.isFlexi ? " • Flexi" : ""}</Text>
             </View>
           </View>
 

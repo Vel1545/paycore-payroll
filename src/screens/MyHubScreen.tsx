@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Text, TouchableOpacity, Image, ScrollView } from "react-native";
+import { View, Text, TouchableOpacity, Image, ScrollView, Alert, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../context/AuthContext";
 import { Platform } from "react-native";
@@ -10,7 +10,8 @@ import {
 } from "lucide-react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { UserSession } from "../services/UserSession";
-import { BASE_HOST } from "../constants/config";
+import { downloadPayslipPdf } from "../services/Payslipdownload";
+import PayslipView, { MonthStepper, monthKey, monthLabel } from "../components/Payslipview";
 
 interface MyHubScreenProps {
   navigation: {
@@ -31,6 +32,9 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
 
   const { user } = useAuth();
   const currentUserId = user?.empId || user?.userId || UserSession.empId;
+  const isAdmin = !!(user?.isAdmin || String(user?.role || "").toUpperCase() === "ADMIN");
+  // last month first: the current month is usually not finalized yet
+  const [payMonth, setPayMonth] = useState(() => monthKey(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1)));
 
   const userProfile = {
     name: "Marcus Vance Sterling",
@@ -46,29 +50,20 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
     bloodGroup: "O +ve",
   };
 
-  const handleDownloadPdf = async (empId: string, monthYear: string = "January 2026") => {
-  try {
-    // Construct the endpoint URL matching your backend workflow API route
-    const downloadUrl = `${BASE_HOST}/api/admin/workflow/users/${empId}/payslip/download?month=${encodeURIComponent(monthYear)}`;
-
-    if (Platform.OS === "web") {
-      // 🌐 Web Strategy: Open the download link directly in a new tab or trigger a blob download
-      window.open(downloadUrl, "_blank");
-    } else {
-      // 📱 Mobile Native Strategy: Use fetch to pull the file or open it via Linking/Sharing
-      // For web-first / simple setups, you can also use:
-      // Linking.openURL(downloadUrl);
-      
-      console.log("Downloading PDF for mobile from:", downloadUrl);
-      // Add advanced native file-system downloading here if required
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const handleDownloadPdf = async (empId: string, month: string) => {
+    if (!empId) return;
+    setPdfBusy(true);
+    try {
+      await downloadPayslipPdf(empId, month);   // month is YYYY-MM
+    } catch (e: any) {
+      const msg = e?.message || "Try again";
+      if (Platform.OS === "web") window.alert(`Payslip not available\n${msg}`);
+      else Alert.alert("Payslip not available", msg);
+    } finally {
+      setPdfBusy(false);
     }
-  } catch (error) {
-    console.error("Failed to download PDF payslip:", error);
-    if (Platform.OS === "web") {
-      window.alert("Could not download payslip PDF.");
-    }
-  }
-};
+  };
 
   return (
     <SafeAreaView className="flex-1 bg-[#F4F6F9]" edges={["top"]}>
@@ -279,94 +274,38 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
           {/* 4. PAYSLIP VIEW                                                           */}
           {/* ========================================================================= */}
           {activeTab === "payslip" && (
-            <View className="gap-y-6 mb-10">
-              <View className="flex-row items-center justify-between bg-white border border-slate-100 rounded-3xl p-5 shadow-xl shadow-slate-200/50">
-                <View>
-                  <Text className="text-sm font-black text-[#1F1B3D]">Latest Salary Statement</Text>
-                  <Text className="text-xs font-bold text-[#7A76A6] mt-0.5">December 2025 • Disbursed Dec 28</Text>
+            <View className="mb-10">
+              {isAdmin && (
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => navigation.navigate("SalaryView")}
+                  className="flex-row items-center justify-between bg-[#EEECFA] border border-[#5B4FD1]/20 rounded-2xl px-4 py-3 mb-4"
+                >
+                  <Text className="text-xs font-black text-[#5B4FD1] uppercase tracking-wider">View all employees' salary</Text>
+                  <ChevronRight size={16} color="#5B4FD1" />
+                </TouchableOpacity>
+              )}
+
+              <MonthStepper month={payMonth} onChange={setPayMonth} />
+
+              <View className="flex-row items-center justify-between bg-white border border-slate-100 rounded-3xl p-5 mb-3 shadow-xl shadow-slate-200/50">
+                <View style={{ flex: 1, paddingRight: 8 }}>
+                  <Text className="text-sm font-black text-[#1F1B3D]">Salary statement</Text>
+                  <Text className="text-xs font-bold text-[#7A76A6] mt-0.5">{monthLabel(payMonth)}</Text>
                 </View>
-               <TouchableOpacity 
-  activeOpacity={0.85} 
-  onPress={() => handleDownloadPdf(String(currentUserId), "January 2026")}
-  className="flex-row items-center bg-[#5B4FD1] px-4 py-2.5 rounded-2xl shadow-md shadow-indigo-500/20"
->
-  <Download size={14} color="#FFFFFF" />
-  <Text className="text-white font-black text-xs ml-1.5 uppercase tracking-wider">PDF</Text>
-</TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => handleDownloadPdf(String(currentUserId), payMonth)}
+                  disabled={pdfBusy}
+                  style={{ opacity: pdfBusy ? 0.6 : 1 }}
+                  className="flex-row items-center bg-[#5B4FD1] px-4 py-2.5 rounded-2xl shadow-md shadow-indigo-500/20"
+                >
+                  {pdfBusy ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Download size={14} color="#FFFFFF" />}
+                  <Text className="text-white font-black text-xs ml-1.5 uppercase tracking-wider">PDF</Text>
+                </TouchableOpacity>
               </View>
 
-              <View className="bg-[#5B4FD1] border border-indigo-600 rounded-[28px] p-6 shadow-xl shadow-indigo-950/20 relative overflow-hidden">
-                <View className="absolute -top-10 -right-10 w-36 h-36 rounded-full bg-white/10 blur-xl pointer-events-none" />
-                <Text className="text-[10px] font-black text-purple-200 uppercase tracking-widest">
-                  Take-Home Net Salary
-                </Text>
-                <Text className="text-3xl md:text-4xl font-black text-white mt-1">$5,420.00</Text>
-                <View className="flex-row justify-between pt-4 mt-4 border-t border-white/15">
-                  <Text className="text-xs font-semibold text-purple-200">
-                    Gross: <Text className="font-black text-white">$6,500.00</Text>
-                  </Text>
-                  <Text className="text-xs font-semibold text-rose-200">
-                    Deductions: <Text className="font-black text-rose-200">-$1,080.00</Text>
-                  </Text>
-                </View>
-              </View>
-
-              <View>
-                <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-widest mb-3 px-1">
-                  Earnings & Allowances
-                </Text>
-                <View className="bg-white border border-slate-100 rounded-[28px] p-5 shadow-xl shadow-slate-200/50 divide-y divide-slate-100">
-                  <View className="py-3.5 flex-row justify-between items-center">
-                    <Text className="text-xs font-bold text-[#7A76A6]">Basic Salary</Text>
-                    <Text className="text-xs md:text-sm font-black text-[#1F1B3D]">$4,200.00</Text>
-                  </View>
-                  <View className="py-3.5 flex-row justify-between items-center">
-                    <Text className="text-xs font-bold text-[#7A76A6]">House Rent Allowance (HRA)</Text>
-                    <Text className="text-xs md:text-sm font-black text-[#1F1B3D]">$1,400.00</Text>
-                  </View>
-                  <View className="py-3.5 flex-row justify-between items-center">
-                    <Text className="text-xs font-bold text-[#7A76A6]">Special Allowance</Text>
-                    <Text className="text-xs md:text-sm font-black text-[#1F1B3D]">$650.00</Text>
-                  </View>
-                  <View className="py-3.5 flex-row justify-between items-center">
-                    <Text className="text-xs font-bold text-[#7A76A6]">Performance Bonus</Text>
-                    <Text className="text-xs md:text-sm font-black text-emerald-600">+$250.00</Text>
-                  </View>
-                </View>
-              </View>
-
-              <View>
-                <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-widest mb-3 px-1">
-                  Tax & Statutory Deductions
-                </Text>
-                <View className="bg-white border border-slate-100 rounded-[28px] p-5 shadow-xl shadow-slate-200/50 divide-y divide-slate-100">
-                  <View className="py-3.5 flex-row justify-between items-center">
-                    <Text className="text-xs font-bold text-[#7A76A6]">Income Tax (TDS)</Text>
-                    <Text className="text-xs md:text-sm font-black text-rose-600">-$620.00</Text>
-                  </View>
-                  <View className="py-3.5 flex-row justify-between items-center">
-                    <Text className="text-xs font-bold text-[#7A76A6]">Provident Fund (PF)</Text>
-                    <Text className="text-xs md:text-sm font-black text-rose-600">-$380.00</Text>
-                  </View>
-                  <View className="py-3.5 flex-row justify-between items-center">
-                    <Text className="text-xs font-bold text-[#7A76A6]">Health Insurance</Text>
-                    <Text className="text-xs md:text-sm font-black text-rose-600">-$80.00</Text>
-                  </View>
-                </View>
-              </View>
-
-              <TouchableOpacity activeOpacity={0.85} className="bg-white border border-slate-100 rounded-[28px] p-5 flex-row items-center justify-between shadow-xl shadow-slate-200/50">
-                <View className="flex-row items-center flex-1 pr-2">
-                  <View className="w-12 h-12 rounded-2xl bg-teal-50 border border-teal-100 items-center justify-center mr-4 shrink-0">
-                    <ShieldCheck size={22} color="#0D9488" />
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-xs md:text-sm font-black text-[#1F1B3D]" numberOfLines={1}>Annual Tax Statement (Form 16 / W-2)</Text>
-                    <Text className="text-[11px] font-bold text-[#7A76A6] mt-0.5">Total YTD Tax Withheld: $7,440.00</Text>
-                  </View>
-                </View>
-                <ChevronRight size={18} color="#7A76A6" />
-              </TouchableOpacity>
+              <PayslipView empId={String(currentUserId)} month={payMonth} mode="my" />
             </View>
           )}
 
