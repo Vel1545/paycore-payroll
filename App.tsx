@@ -12,6 +12,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-cont
 import "./src/services/locationTrackingTask";
 import CheckoutApprovalsScreen from "./src/screens/Checkoutapprovalsscreen ";
 import MyCheckoutRequestsScreen from "./src/screens/Mycheckoutrequestsscreen ";
+import SalaryViewScreen from "./src/screens/Salaryviewscreen";
 
 // Icons
 import { FingerprintIcon } from "phosphor-react-native";
@@ -36,6 +37,8 @@ import CandidateFormRoute from "./src/screens/CandidateOnboardingScreen";
 import AdminOnboardingSubmissionsScreen from "./src/screens/AdminOnboardingSubmissionsScreen";
 import LiveTrackingScreen from "./src/screens/LiveTrackingScreen";
 import AttendanceAuditTabsScreen from "./src/screens/AttendanceAuditTabsScreen";
+import NotificationsScreen from "./src/screens/Notificationsscreen";
+import AdminHolidaysScreen from "./src/screens/Adminholidaysscreen";
 
 // Context & Storage
 import { AuthProvider } from "./src/context/AuthContext";
@@ -233,6 +236,10 @@ function MainTabs({ userSession, onLogout }: { userSession: any; onLogout: () =>
       <Tab.Screen name="HrPolicy" component={HrPolicyScreen} options={{ tabBarItemStyle: { display: "none" } }} />
       <Tab.Screen name="CheckoutApprovals" component={CheckoutApprovalsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
       <Tab.Screen name="MyCheckoutRequests" component={MyCheckoutRequestsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+        <Tab.Screen name="SalaryView" component={SalaryViewScreen} options={{ tabBarItemStyle: { display: "none" } }}/>
+        <Tab.Screen name="Notifications" options={{ tabBarItemStyle: { display: "none" } }}>
+        {(props) => <NotificationsScreen {...props} userSession={userSession} />}</Tab.Screen>
+      <Tab.Screen name="AdminHolidays" component={AdminHolidaysScreen} options={{ tabBarItemStyle: { display: "none" } }} />
 
       {/* Live Fleet Tracking & Route Polyline Maps */}
       <Tab.Screen name="LiveTracking" component={LiveTrackingScreen} options={{ tabBarItemStyle: { display: "none" } }} />
