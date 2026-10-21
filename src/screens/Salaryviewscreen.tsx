@@ -15,6 +15,7 @@ const API = `${BASE_HOST}/api/payroll`;
 
 // Fields an admin can correct. The first five are +/- on top of what the system recorded.
 const ADJ_INPUTS = [
+  { key: "presentDays", label: "Present days (incl. week off & holidays) - edit to correct" },
   { key: "adjWorkingDays", label: "Working days of the month (leave empty = system value)" },
   { key: "adjLopDays", label: "LOP days  (+ add / - remove)" },
   { key: "adjPenaltyInr", label: "Penalty ₹  (+ add / - remove)" },
@@ -23,6 +24,7 @@ const ADJ_INPUTS = [
   { key: "bonus", label: "Bonus ₹ (total for the month)" },
   { key: "gift", label: "Gift ₹ (total for the month)" },
   { key: "otherDeductions", label: "Other deductions ₹ (total for the month)" },
+  { key: "advance", label: "Advance ₹ deducted this month (total, replaces the value)" },
 ];
 
 // table columns: label, width, cell renderer
@@ -30,8 +32,8 @@ type Row = any;
 const COLS: { key: string; label: string; w: number; align?: "right"; render: (r: Row) => string }[] = [
   { key: "month", label: "Month", w: 78, render: (r) => r.salaryMonth },
   { key: "period", label: "Period", w: 108, render: (r) => `${shortDate(r.periodStart)} → ${shortDate(r.periodEnd)}` },
-  { key: "wd", label: "Work days", w: 74, align: "right", render: (r) => (r.calculated ? num(r.workingDays) : "—") },
-  { key: "pd", label: "Present", w: 66, align: "right", render: (r) => (r.calculated ? num(r.presentDays) : "—") },
+  { key: "wd", label: "Month days", w: 74, align: "right", render: (r) => (r.calculated ? num(r.monthDays) : "—") },
+  { key: "pd", label: "Present", w: 66, align: "right", render: (r) => (r.calculated ? num(r.presentDaysTotal) : "—") },
   { key: "lop", label: "LOP", w: 56, align: "right", render: (r) => (r.hasLedger ? num(r.lopDaysTotal) : "—") },
   { key: "sal", label: "Monthly salary", w: 104, align: "right", render: (r) => inr(r.monthlySalary) },
   { key: "ot", label: "OT (h / ₹)", w: 100, align: "right", render: (r) => (r.calculated ? `${num(r.overtimeHours)}h / ${inr(r.overtimePay)}` : "—") },
@@ -55,6 +57,8 @@ export default function SalaryViewScreen() {
   const [dept, setDept] = useState("ALL");
   const [searchText, setSearchText] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
+  const [searchFocus, setSearchFocus] = useState(false);
+  const [people, setPeople] = useState<Record<string, { empId: string; userName: string; department?: string }>>({});
   const [departments, setDepartments] = useState<string[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
   const [totals, setTotals] = useState<any>(null);
@@ -66,12 +70,15 @@ export default function SalaryViewScreen() {
   const [dayEdit, setDayEdit] = useState<any>(null);
   const [dayMinutes, setDayMinutes] = useState("");
   const [dayPenalty, setDayPenalty] = useState("");
+  const [dayOtHrs, setDayOtHrs] = useState(""); // text of the hours box (so "1." can be typed)
+  const [dayOtMin, setDayOtMin] = useState(""); // overtime of the day, kept in minutes; the hours box shows the same value
   const [dayReason, setDayReason] = useState("");
   const [daySaving, setDaySaving] = useState(false);
   const [adjOpen, setAdjOpen] = useState(false);
   const [adjSaving, setAdjSaving] = useState(false);
   const [adjForm, setAdjForm] = useState<Record<string, string>>({});
   const [adjReason, setAdjReason] = useState("");
+  const [adjPresent0, setAdjPresent0] = useState("");
   const [adjLog, setAdjLog] = useState<any[]>([]);
 
   const [detailKey, setDetailKey] = useState<{ empId: string; month: string } | null>(null);
@@ -99,6 +106,12 @@ export default function SalaryViewScreen() {
       if (!res.ok) throw new Error(json.message || `HTTP ${res.status}`);
       if (my !== reqId.current) return;
       setRows(json.rows || []);
+      // remember every employee seen so far, for the search suggestions
+      setPeople((prev) => {
+        const next = { ...prev };
+        (json.rows || []).forEach((r: any) => { next[r.empId] = { empId: r.empId, userName: String(r.userName || r.empId), department: r.department }; });
+        return next;
+      });
       setTotals(json.totals || null);
       setDepartments((prev) => Array.from(new Set([...prev, ...(json.departments || [])])));
     } catch (e: any) {
@@ -187,6 +200,7 @@ export default function SalaryViewScreen() {
       const a = s.adjustments || {};
       const show = (v: any) => (v === undefined || v === null || Number(v) === 0 ? "" : String(Number(v)));
       setAdjForm({
+        presentDays: String(Number(s.presentDaysTotal ?? 0)),
         adjWorkingDays: show(a.adjWorkingDays),
         adjLopDays: show(a.adjLopDays),
         adjPenaltyInr: show(a.adjPenaltyInr),
@@ -195,8 +209,10 @@ export default function SalaryViewScreen() {
         bonus: show(s.bonus),
         gift: show(s.gift),
         otherDeductions: show(s.otherDeductions),
+        advance: show(s.advance),
       });
       setAdjReason("");
+      setAdjPresent0(String(Number(s.presentDaysTotal ?? 0)));
       const lg = await fetch(`${API}/adjust/log?empId=${encodeURIComponent(detailKey.empId)}&month=${detailKey.month}`);
       setAdjLog(lg.ok ? await lg.json().catch(() => []) : []);
       setAdjOpen(true);
@@ -215,6 +231,8 @@ export default function SalaryViewScreen() {
     try {
       const changes: Record<string, string> = {};
       ADJ_INPUTS.forEach((f) => { changes[f.key] = (adjForm[f.key] ?? "").trim(); });
+      // present days is sent only when it was edited; then it replaces the LOP correction box
+      if ((changes.presentDays ?? "") === adjPresent0 || changes.presentDays === "") delete changes.presentDays;
       const res = await fetch(`${API}/adjust`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -235,15 +253,28 @@ export default function SalaryViewScreen() {
 
   // ---- Admin correction of one daily attendance record ----
   // Same rule as the check-out: 460+ = Present 1.0, any minutes below that = Half day paid for the minutes (minutes / 460, max 0.99), 0 = Absent
+  // minutes of a full day for this person (460 normally, e.g. 400 for a 09:00-17:00 shift)
+  const reqMin = Number(dayEdit?.requiredMinutes) || 460;
   const dayPreview = (m: number) => {
-    if (m >= 460) return { status: "PRESENT", payable: "1" };
-    if (m > 0) return { status: "HALF_DAY", payable: String(Math.min(0.99, Math.round((m * 100) / 460) / 100)) };
+    if (m >= reqMin) return { status: "PRESENT", payable: "1" };
+    if (m > 0) return { status: "HALF_DAY", payable: String(Math.min(0.99, Math.round((m * 100) / reqMin) / 100)) };
     return { status: "ABSENT", payable: "0" };
   };
 
+  // hours <-> minutes helpers for the day edit form
+  const fmtHM = (m: number) => `${Math.floor(m / 60)} h ${m % 60} min`;
+  const hoursFromMin = (m: string) => (m === "" ? "" : String(Math.round((Number(m) / 60) * 100) / 100));
+
   const openDayEdit = (d: any) => {
     setDayEdit(d);
-    setDayMinutes(d.netMinutes === null || d.netMinutes === undefined ? "" : String(Number(d.netMinutes)));
+    // net minutes = paid part (max 460) + overtime
+    const net = d.netMinutes === null || d.netMinutes === undefined ? null : Number(d.netMinutes);
+    const req = Number(d.requiredMinutes) || 460;
+    const approvedOt = Math.round(Number(d.approvedOtHours || 0) * 60);
+    setDayMinutes(net === null ? "" : String(Math.min(net, req)));
+    const otStart = net === null ? "" : String(Math.max(approvedOt, net > req ? net - req : 0));
+    setDayOtMin(otStart);
+    setDayOtHrs(hoursFromMin(otStart));
     setDayPenalty(d.penaltyInr === null || d.penaltyInr === undefined ? "" : String(Number(d.penaltyInr)));
     setDayReason("");
   };
@@ -252,6 +283,10 @@ export default function SalaryViewScreen() {
     if (!detailKey || !dayEdit) return;
     if (dayMinutes === "") {
       notify("Minutes needed", "Please enter the worked minutes.");
+      return;
+    }
+    if (Number(dayMinutes) < reqMin && Number(dayOtMin || 0) > 0) {
+      notify("Overtime not allowed", "Overtime can only be added to a full day (" + reqMin + " paid minutes).");
       return;
     }
     if (!dayReason.trim()) {
@@ -267,6 +302,7 @@ export default function SalaryViewScreen() {
           empId: detailKey.empId,
           date: dayEdit.date,
           netMinutes: Number(dayMinutes),
+          otMinutes: dayOtMin === "" ? 0 : Number(dayOtMin),
           penaltyInr: dayPenalty === "" ? null : Number(dayPenalty),
           by: myEmpId,
           reason: dayReason.trim(),
@@ -326,6 +362,16 @@ export default function SalaryViewScreen() {
       Alert.alert("Calculate all", msg, [{ text: "Cancel", style: "cancel" }, { text: "Calculate", onPress: go }]);
     }
   };
+
+  // suggestions while typing: name or employee id contains the text (max 6)
+  const suggestions = (() => {
+    const t = searchText.trim().toLowerCase();
+    if (!searchFocus || t.length < 1) return [];
+    return (Object.values(people) as { empId: string; userName: string; department?: string }[])
+      .filter((p) => p.userName.toLowerCase().includes(t) || p.empId.toLowerCase().includes(t))
+      .sort((a, b) => Number(b.userName.toLowerCase().startsWith(t)) - Number(a.userName.toLowerCase().startsWith(t)) || a.userName.localeCompare(b.userName))
+      .slice(0, 6);
+  })();
 
   const tableWidth = NAME_W + COLS.reduce((s, c) => s + c.w, 0) + STATUS_W;
 
@@ -460,8 +506,10 @@ export default function SalaryViewScreen() {
           <Search size={16} color="#7A76A6" />
           <TextInput
             value={searchText}
-            onChangeText={setSearchText}
-            onSubmitEditing={() => setAppliedSearch(searchText.trim())}
+            onChangeText={(t) => { setSearchText(t); setSearchFocus(true); }}
+            onFocus={() => setSearchFocus(true)}
+            onBlur={() => setTimeout(() => setSearchFocus(false), 200)}
+            onSubmitEditing={() => { setAppliedSearch(searchText.trim()); setSearchFocus(false); }}
             returnKeyType="search"
             placeholder="Search by name or employee ID"
             placeholderTextColor="#A6A2CE"
@@ -481,6 +529,24 @@ export default function SalaryViewScreen() {
             <Text className="text-xs font-black text-[#5B4FD1]">Search</Text>
           </TouchableOpacity>
         </View>
+        {suggestions.length > 0 && (
+          <View className="bg-white border border-[#E7E4F5] rounded-2xl mb-3 -mt-1 overflow-hidden">
+            {suggestions.map((p, i) => (
+              <TouchableOpacity
+                key={p.empId}
+                onPress={() => {
+                  setSearchText(p.userName);
+                  setAppliedSearch(p.empId); // exact person (two people can share a name)
+                  setSearchFocus(false);
+                }}
+                className={`px-3 py-2.5 ${i > 0 ? "border-t border-[#F0EEFA]" : ""}`}
+              >
+                <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>{p.userName}</Text>
+                <Text className="text-[10px] font-bold text-[#7A76A6]" numberOfLines={1}>{p.empId}{p.department ? ` • ${p.department}` : ""}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
 
         {/* Totals */}
         {totals && (
@@ -610,17 +676,58 @@ export default function SalaryViewScreen() {
                     {num(dayEdit.netMinutes)} min • pay day {num(dayEdit.payableDays)}
                   </Text>
 
-                  <Text className="text-[11px] font-black text-[#7A76A6] mb-1">Paid minutes for the day (460 = full day)</Text>
+                  <Text className="text-[11px] font-black text-[#7A76A6] mb-1">Paid minutes for the day ({reqMin} = full day, max {reqMin})</Text>
                   <TextInput
                     value={dayMinutes}
-                    onChangeText={(t) => setDayMinutes(t.replace(/[^0-9]/g, ""))}
+                    onChangeText={(t) => setDayMinutes(t.replace(/[^0-9]/g, "").slice(0, 3))}
                     keyboardType="number-pad"
-                    placeholder="e.g. 460"
+                    placeholder={`e.g. ${reqMin}`}
                     placeholderTextColor="#A6A2CE"
                     className="h-11 rounded-2xl border border-[#E7E4F5] bg-[#F6F5FC] px-3 text-sm font-bold text-[#1F1B3D]"
                   />
                   <Text className="text-[11px] font-black mt-1.5" style={{ color: "#5B4FD1" }}>
                     {dayMinutes === "" ? "" : (() => { const p = dayPreview(Number(dayMinutes)); return `Becomes ${p.status} • pay day ${p.payable}`; })()}
+                  </Text>
+
+                  {dayMinutes !== "" && (
+                    <Text className="text-[10px] font-bold text-[#7A76A6]">= {fmtHM(Number(dayMinutes))}</Text>
+                  )}
+
+                  <Text className="text-[11px] font-black text-[#7A76A6] mb-1 mt-3">Overtime (after {reqMin} minutes) - type hours or minutes</Text>
+                  <View className="flex-row">
+                    <View className="flex-1 mr-2">
+                      <TextInput
+                        value={dayOtHrs}
+                        onChangeText={(t) => {
+                          const c = t.replace(/[^0-9.]/g, "").replace(/(\..*)\./g, "$1");
+                          setDayOtHrs(c);
+                          setDayOtMin(c === "" || c === "." ? "" : String(Math.round(parseFloat(c) * 60)));
+                        }}
+                        keyboardType="decimal-pad"
+                        placeholder="0"
+                        placeholderTextColor="#A6A2CE"
+                        className="h-11 rounded-2xl border border-[#E7E4F5] bg-[#F6F5FC] px-3 text-sm font-bold text-[#1F1B3D]"
+                      />
+                      <Text className="text-[10px] font-bold text-[#7A76A6] mt-1">hours (e.g. 1.5)</Text>
+                    </View>
+                    <View className="flex-1">
+                      <TextInput
+                        value={dayOtMin}
+                        onChangeText={(t) => {
+                          const c = t.replace(/[^0-9]/g, "");
+                          setDayOtMin(c);
+                          setDayOtHrs(hoursFromMin(c));
+                        }}
+                        keyboardType="number-pad"
+                        placeholder="0"
+                        placeholderTextColor="#A6A2CE"
+                        className="h-11 rounded-2xl border border-[#E7E4F5] bg-[#F6F5FC] px-3 text-sm font-bold text-[#1F1B3D]"
+                      />
+                      <Text className="text-[10px] font-bold text-[#7A76A6] mt-1">minutes (e.g. 90)</Text>
+                    </View>
+                  </View>
+                  <Text className="text-[11px] font-black mt-1" style={{ color: "#5B4FD1" }}>
+                    Overtime {fmtHM(Number(dayOtMin || 0))} • day total {fmtHM(Math.min(Number(dayMinutes || 0), reqMin) + Number(dayOtMin || 0))}
                   </Text>
 
                   <Text className="text-[11px] font-black text-[#7A76A6] mb-1 mt-3">Penalty ₹ for the day (leave as it is to keep)</Text>

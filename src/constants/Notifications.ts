@@ -32,10 +32,20 @@ export function setAlertSoundPreference(on: boolean) {
   alertSoundEnabled = on;
 }
 
+// The chat room that is open on screen right now ("" = none). A message for that room does not pop a banner
+// (the chat screen plays its own soft sound and shows the message directly).
+let activeChatRoom = "";
+export function setActiveChatRoom(roomId: string) {
+  activeChatRoom = roomId || "";
+}
+
 // Show the banner while the app is open. Shift reminders always ring; alerts follow the user's sound choice.
 if (PUSH_SUPPORTED) Notifications.setNotificationHandler({
   handleNotification: async (notification) => {
     const type = (notification.request.content.data as any)?.type;
+    if (type === "CHAT" && activeChatRoom && (notification.request.content.data as any)?.roomId === activeChatRoom) {
+      return { shouldShowBanner: false, shouldShowList: false, shouldPlaySound: false, shouldSetBadge: false };
+    }
     const isAlert = type === "ANNOUNCEMENT" || type === "CHAT" || type === "APPROVAL";
     return {
       shouldShowBanner: true,

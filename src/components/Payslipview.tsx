@@ -186,8 +186,8 @@ export default function PayslipView({ empId, month, mode, reloadKey = 0, showEmp
       </View>
 
       <Section title="Attendance">
-        <Line label="Working days in month" value={num(s.workingDays)} />
-        <Line label="Present days" value={num(s.presentDays)} />
+        <Line label="Days in month" value={num(s.monthDays)} />
+        <Line label="Present days (incl. week off & holidays)" value={num(s.presentDaysTotal)} />
         <Line label="LOP days (total)" value={num(s.lopDaysTotal)} bold tone={Number(s.lopDaysTotal) > 0 ? "#E4453C" : undefined} />
         <Line label="  Absent (no punch, no leave)" value={num(s.lopAbsentDays)} />
         <Line label="  Leave beyond balance" value={num(s.lopLeaveDays)} />

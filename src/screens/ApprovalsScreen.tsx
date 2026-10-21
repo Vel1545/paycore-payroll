@@ -55,7 +55,31 @@ interface InboxRequest {
   rejectionReason?: string;
 }
 
+// The 4 admin groups (tabs). A notification opens one of them: route.params = { tab, requestId, kind }
+type Group = "leave" | "otod" | "money" | "checkout";
+const GROUP_TABS: { id: Group; label: string }[] = [
+  { id: "leave", label: "Leave • Permission • Half Day" },
+  { id: "otod", label: "OT & OD" },
+  { id: "money", label: "Advance & Claim" },
+  { id: "checkout", label: "Check-out" },
+];
+// kind sent by the notification -> group
+const KIND_GROUP: Record<string, Group> = {
+  LEAVE: "leave", PERMISSION: "leave", HALF_DAY: "leave",
+  OD: "otod", OVERTIME: "otod",
+  ADVANCE: "money", CLAIM: "money",
+  CHECKOUT: "checkout",
+};
+// request category (from the inbox list) -> group
+const groupOfCategory = (category?: string): Group => {
+  const c = (category || "").toLowerCase();
+  if (c === "overtime" || c === "od") return "otod";
+  if (c === "expense" || c === "claim" || c === "advance") return "money";
+  return "leave"; // leave, permission, half day, shift
+};
+
 interface ApprovalsScreenProps {
+  route?: { params?: { tab?: string; requestId?: string; kind?: string } };
   navigation?: {
     goBack?: () => void;
     navigate?: (screen: string, params?: any) => void;
@@ -65,10 +89,13 @@ interface ApprovalsScreenProps {
 
 const API_BASE_URL= `${BASE_HOST}/api/admin/workflow`;
 
-export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
+export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenProps) {
   const { user } = useAuth();
   const isAdmin = user?.isAdmin ?? false;
   const currentUserId = user?.empId || user?.userId || UserSession.empId;
+  // Who is approving: the person's real name (never the role "Admin"); falls back to the employee id
+  const approverName: string =
+    String((user as any)?.fullName || (user as any)?.name || (UserSession as any)?.name || user?.userName || currentUserId || "").trim() || "Approver";
   const userRole = user?.role ? user.role.toUpperCase() : (isAdmin ? "ADMIN" : "USER");
 
   const [activeFilter, setActiveFilter] = useState<"PENDING" | "APPROVED" | "HISTORY" | "REJECTED">("PENDING");
@@ -76,23 +103,51 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
   const [loading, setLoading] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
 
-  // Admin: switch between the normal approval queue and missed check-out requests
-  const [adminView, setAdminView] = useState<"WORKFLOW" | "CHECKOUT">("WORKFLOW");
-  const [coPending, setCoPending] = useState(0);
+  // Admin: the 4 groups (tabs) with the number of requests waiting in each
+  const [group, setGroup] = useState<Group>("leave");
+  const [counts, setCounts] = useState<Record<Group, number>>({ leave: 0, otod: 0, money: 0, checkout: 0 });
+  const [highlightId, setHighlightId] = useState<string | null>(null);
 
-  const loadCheckoutPending = async () => {
+  const loadCounts = async () => {
     try {
-      const r = await fetch(`${BASE_HOST}/api/admin/checkout-requests?status=PENDING`);
+      const r = await fetch(`${API_BASE_URL}/pending-counts`, { cache: "no-store" });
       if (r.ok) {
         const d = await r.json();
-        setCoPending(Array.isArray(d) ? d.length : 0);
+        setCounts({ leave: d.leave || 0, otod: d.otod || 0, money: d.money || 0, checkout: d.checkout || 0 });
       }
-    } catch { /* badge is optional */ }
+    } catch { /* badges are optional */ }
   };
+  const loadCheckoutPending = loadCounts; // the check-out panel calls this after an approval
 
   useEffect(() => {
-    if (userRole === "ADMIN") loadCheckoutPending();
+    if (userRole === "ADMIN") loadCounts();
   }, [userRole]);
+
+  // Opened from a notification (or the pending banner): go to the right tab and highlight the request
+  useEffect(() => {
+    const prm = route?.params;
+    if (!prm) return;
+    if (userRole !== "ADMIN") {
+      // employee opened from an "approved / rejected" notification: show that request (it is decided, so under History)
+      if (prm.requestId) {
+        setHighlightId(String(prm.requestId));
+        setActiveFilter("HISTORY");
+        setSearchQuery("");
+      }
+      return;
+    }
+    const g = (GROUP_TABS.find((t) => t.id === prm.tab)?.id as Group | undefined) ?? (prm.kind ? KIND_GROUP[prm.kind] : undefined);
+    if (g) setGroup(g);
+    if (prm.requestId) {
+      setHighlightId(String(prm.requestId));
+      setActiveFilter("PENDING");
+      setSearchQuery("");
+      applyDatePreset("ALL");   // make sure an older request is still inside the window
+    } else {
+      setHighlightId(null);
+    }
+    loadCounts();
+  }, [route?.params?.tab, route?.params?.requestId, route?.params?.kind, userRole]);
 
   // Search & Bulk Selection
   const [searchQuery, setSearchQuery] = useState("");
@@ -125,8 +180,9 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
       let endpoint = "";
 
       if (userRole === "ADMIN") {
-        const statusParam = activeFilter === "HISTORY" ? "ALL" : activeFilter;
-        endpoint = `${API_BASE_URL}/inbox?status=${statusParam}&fromDate=${startDate}&toDate=${endDate}`;
+        // always load every status once; the tabs (Pending / Approved / History / Rejected) filter on the phone,
+        // so all four counts are correct from the start
+        endpoint = `${API_BASE_URL}/inbox?status=ALL&fromDate=${startDate}&toDate=${endDate}`;
       } else {
         endpoint = `${API_BASE_URL}/users/${currentUserId}/requests`;
       }
@@ -136,6 +192,7 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
         const data = await res.json();
         setRequests(Array.isArray(data) ? data : []);
         setSelectedRequestIds([]);
+        loadCounts();
       }
     } catch {
       console.log("Could not load request records");
@@ -146,7 +203,7 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
 
   useEffect(() => {
     fetchInbox();
-  }, [userRole, activeFilter, startDate, endDate]);
+  }, [userRole, startDate, endDate]);
 
   // Quick date preset handler
   const applyDatePreset = (preset: "7D" | "30D" | "ALL") => {
@@ -202,9 +259,9 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
           return {
             ...req,
             status: newStatus,
-            actionedBy: user?.userName || "Admin",
+            actionedBy: approverName,
             actionedAt: formattedActionDate,
-            rejectionReason: remarks || (approve ? "Approved by Admin" : "Rejected"),
+            rejectionReason: remarks || (approve ? `Approved by ${approverName}` : `Rejected by ${approverName}`),
             approvedHours: approvedHours !== undefined && approvedHours !== null ? approvedHours : req.approvedHours,
             approvedDays: approvedDays !== undefined && approvedDays !== null ? approvedDays : req.approvedDays,
           };
@@ -214,6 +271,8 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
     );
 
     setSelectedRequestIds((prev) => prev.filter((id) => id !== targetRequestId));
+    if (highlightId === targetRequestId) setHighlightId(null);
+    loadCounts();
   };
 
   // Submit Modal Action
@@ -228,8 +287,8 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
 
       const payload = {
         approved: isApproved,
-        adminName: user?.userName || "Admin",
-        remarks: adminRemarks || (isApproved ? "Approved by Admin" : "Rejected by Policy"),
+        adminName: approverName,
+        remarks: adminRemarks || (isApproved ? `Approved by ${approverName}` : `Rejected by ${approverName}`),
         approvedHours: customHours ? parseFloat(customHours) : null,
         approvedDays: customDays ? parseFloat(customDays) : null,
         approvedAmount: customAmount ? parseFloat(customAmount) : null
@@ -268,8 +327,8 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
 
       const payload = {
         approved: approve,
-        adminName: user?.userName || "Admin",
-        remarks: approve ? "Approved by Admin" : "Rejected by Admin",
+        adminName: approverName,
+        remarks: approve ? `Approved by ${approverName}` : `Rejected by ${approverName}`,
         approvedHours: item.requestedHours || null,
         approvedDays: item.requestedDays || null
       };
@@ -317,8 +376,8 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 approved: true,
-                adminName: user?.userName || "Admin",
-                remarks: "Bulk Approved"
+                adminName: approverName,
+                remarks: `Bulk approved by ${approverName}`
               })
             }
           );
@@ -334,7 +393,7 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
       setRequests((prev) =>
         prev.map((req) =>
           ids.includes(req.id)
-            ? { ...req, status: "APPROVED", actionedBy: user?.userName || "Admin", actionedAt: nowStr }
+            ? { ...req, status: "APPROVED", actionedBy: approverName, actionedAt: nowStr }
             : req
         )
       );
@@ -363,8 +422,14 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
   };
 
   // Filtering & Sorting
+  // Admin sees one group at a time; employees see everything of their own
+  const groupRequests = useMemo(
+    () => (userRole === "ADMIN" ? requests.filter((r) => groupOfCategory(r.category) === group) : requests),
+    [requests, group, userRole]
+  );
+
   const filteredRequests = useMemo(() => {
-    return requests
+    return groupRequests
       .filter((r) => {
         const status = r.status?.toUpperCase();
 
@@ -383,28 +448,41 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
         }
         return true;
       })
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [requests, activeFilter, searchQuery]);
+      .sort((a, b) => {
+        if (highlightId) {
+          if (a.id === highlightId) return -1;   // the request from the notification goes to the top
+          if (b.id === highlightId) return 1;
+        }
+        return new Date(b.date).getTime() - new Date(a.date).getTime();
+      });
+  }, [groupRequests, activeFilter, searchQuery, highlightId]);
+
+  // If the request from the notification is already decided, show it under History
+  useEffect(() => {
+    if (!highlightId || loading || activeFilter !== "PENDING") return;
+    const hit = requests.find((r) => r.id === highlightId);
+    if (hit && hit.status?.toUpperCase() !== "PENDING") setActiveFilter("HISTORY");
+  }, [requests, highlightId, loading]);
 
   // Tab Counters
   const pendingCount = useMemo(() => 
-    requests.filter((r) => r.status?.toUpperCase() === "PENDING").length, 
-    [requests]
+    groupRequests.filter((r) => r.status?.toUpperCase() === "PENDING").length, 
+    [groupRequests]
   );
   const rejectCount = useMemo(() => 
-    requests.filter((r) => r.status?.toUpperCase() === "REJECTED").length, 
-    [requests]
+    groupRequests.filter((r) => r.status?.toUpperCase() === "REJECTED").length, 
+    [groupRequests]
   );
   const approvedCount = useMemo(() => 
-    requests.filter((r) => r.status?.toUpperCase() === "APPROVED").length, 
-    [requests]
+    groupRequests.filter((r) => r.status?.toUpperCase() === "APPROVED").length, 
+    [groupRequests]
   );
   const historyCount = useMemo(() => 
-    requests.filter((r) => {
+    groupRequests.filter((r) => {
       const s = r.status?.toUpperCase();
       return s === "APPROVED" || s === "REJECTED";
     }).length, 
-    [requests]
+    [groupRequests]
   );
 
   const getCategoryIcon = (category: string) => {
@@ -472,36 +550,35 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
         </View>
       </View>
 
-      {/* Admin view switch: normal requests / missed check-outs */}
+      {/* Admin: category tabs with pending counts */}
       {userRole === "ADMIN" && (
         <View className="flex-row bg-white border border-[#E7E4F5] p-1 rounded-2xl mb-4">
-          <TouchableOpacity
-            onPress={() => setAdminView("WORKFLOW")}
-            className={`flex-1 py-2.5 rounded-xl items-center ${adminView === "WORKFLOW" ? "bg-[#5B4FD1]" : ""}`}
-          >
-            <Text className={`text-[11px] font-black ${adminView === "WORKFLOW" ? "text-white" : "text-[#7A76A6]"}`}>
-              Leave • Expense • OT • Advance
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => { setAdminView("CHECKOUT"); loadCheckoutPending(); }}
-            className={`flex-1 py-2.5 rounded-xl items-center flex-row justify-center ${adminView === "CHECKOUT" ? "bg-[#5B4FD1]" : ""}`}
-          >
-            <Text className={`text-[11px] font-black ${adminView === "CHECKOUT" ? "text-white" : "text-[#7A76A6]"}`}>
-              Check-Out Requests
-            </Text>
-            {coPending > 0 && (
-              <View className="ml-1.5 min-w-[18px] px-1 h-[18px] rounded-full bg-[#E4453C] items-center justify-center">
-                <Text className="text-[10px] font-black text-white">{coPending}</Text>
-              </View>
-            )}
-          </TouchableOpacity>
+          {GROUP_TABS.map((t) => {
+            const active = group === t.id;
+            const n = counts[t.id] || 0;
+            return (
+              <TouchableOpacity
+                key={t.id}
+                onPress={() => { setGroup(t.id); setHighlightId(null); setSelectedRequestIds([]); loadCounts(); }}
+                className={`flex-1 py-2.5 px-1 rounded-xl items-center justify-center ${active ? "bg-[#5B4FD1]" : ""}`}
+              >
+                <Text numberOfLines={2} style={{ textAlign: "center" }} className={`text-[10px] font-black ${active ? "text-white" : "text-[#7A76A6]"}`}>
+                  {t.label}
+                </Text>
+                {n > 0 && (
+                  <View className={`mt-1 min-w-[18px] px-1 h-[18px] rounded-full items-center justify-center ${active ? "bg-white" : "bg-[#E4453C]"}`}>
+                    <Text className={`text-[10px] font-black ${active ? "text-[#5B4FD1]" : "text-white"}`}>{n}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
         </View>
       )}
 
-      {userRole === "ADMIN" && adminView === "CHECKOUT" ? (
+      {userRole === "ADMIN" && group === "checkout" ? (
         <CheckoutApprovalsPanel
-          adminId={String(user?.empId || user?.userId || user?.userName || "Admin")}
+          adminId={approverName}
           onChanged={loadCheckoutPending}
         />
       ) : (
@@ -693,9 +770,14 @@ export default function ApprovalsScreen({ navigation }: ApprovalsScreenProps) {
               <View 
                 key={item.id} 
                 className={`border rounded-2xl p-4 shadow-xs mb-3 ${
-                  isSelected ? "bg-[#EEECFA]/40 border-[#5B4FD1]" : "bg-white border-[#E7E4F5]"
+                  item.id === highlightId
+                    ? "bg-[#FFFBEB] border-[#F59E0B] border-2"
+                    : isSelected ? "bg-[#EEECFA]/40 border-[#5B4FD1]" : "bg-white border-[#E7E4F5]"
                 }`}
               >
+                {item.id === highlightId && (
+                  <Text className="text-[10px] font-black text-[#B45309] uppercase tracking-wider mb-1.5">From your notification</Text>
+                )}
                 {/* Header */}
                 <View className="flex-row justify-between items-start mb-2.5">
                   <View className="flex-row items-center gap-2.5">

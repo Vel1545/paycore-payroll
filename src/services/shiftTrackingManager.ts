@@ -2,11 +2,13 @@ import * as TaskManager from "expo-task-manager";
 import * as Location from "expo-location";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Battery from "expo-battery";
-import { Platform } from "react-native";
+import * as Notifications from "expo-notifications";
+import { AppState, Platform } from "react-native";
 import Constants, { ExecutionEnvironment } from "expo-constants";
 import { BASE_HOST } from "../constants/config";
 
 export const SHIFT_LOCATION_TASK = "BACKGROUND_HOURLY_LOCATION_TASK";
+export const PING_PUSH_TASK = "PING_PUSH_TASK";
 const API_URL = `${BASE_HOST}/api/attendance/location-ping`;
 
 // ------------------------------- tuning -------------------------------
@@ -114,6 +116,20 @@ function enqueue(p: PingPayload) {
   });
 }
 
+// Diagnostics only: remembers why tracking stopped or a point was refused, so "Phone status" can show it.
+// Never changes what is sent or when tracking stops. Failures here are ignored.
+const KEY_DIAG = "tracking_diag";
+async function noteDiag(kind: "stop" | "drop", detail: string) {
+  try {
+    const raw = await AsyncStorage.getItem(KEY_DIAG);
+    const cur = raw ? JSON.parse(raw) : {};
+    cur[kind] = { at: Date.now(), detail };
+    await AsyncStorage.setItem(KEY_DIAG, JSON.stringify(cur));
+  } catch {
+    /* diagnostics must never break tracking */
+  }
+}
+
 async function sendOnce(p: PingPayload): Promise<SendResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
@@ -133,9 +149,16 @@ async function sendOnce(p: PingPayload): Promise<SendResult> {
       /* body was not JSON */
     }
     // Only these two explicit server codes stop tracking
-    if (res.status === 403 && code === "ROLE_NOT_ELIGIBLE") return "STOP";
-    if (res.status === 409 && code === "SHIFT_NOT_ACTIVE") return "STOP";
+    if (res.status === 403 && code === "ROLE_NOT_ELIGIBLE") {
+      await noteDiag("stop", "Server said ROLE_NOT_ELIGIBLE (work mode is not sales)");
+      return "STOP";
+    }
+    if (res.status === 409 && code === "SHIFT_NOT_ACTIVE") {
+      await noteDiag("stop", "Server said SHIFT_NOT_ACTIVE (no active check-in)");
+      return "STOP";
+    }
     if (res.status >= 500 || res.status === 408 || res.status === 429) return "RETRY";
+    await noteDiag("drop", `Server refused a point (HTTP ${res.status}${code ? " " + code : ""})`);
     return "DROP"; // other 4xx: this payload will never be accepted
   } catch {
     return "RETRY"; // offline, timeout, DNS...
@@ -395,6 +418,173 @@ if (Platform.OS !== "web") TaskManager.defineTask(SHIFT_LOCATION_TASK, async ({ 
     console.warn("Tracking cycle failed:", e?.message);
   }
 });
+
+// ------------------------------- "Ping now" from the admin -------------------------------
+// The admin taps "Ping now" -> the server sends a silent push -> this takes a position the same way as a normal
+// shift point and sends it through the same outbox, so it lands in route_data_json. Only during a checked-in shift.
+const handledPings = new Set<string>();
+
+export async function respondToPing(requestId: string) {
+  if (requestId) {
+    if (handledPings.has(requestId)) return;
+    handledPings.add(requestId);
+  }
+  const empId = await AsyncStorage.getItem(KEY.empId);
+  const active = await AsyncStorage.getItem(KEY.active);
+  if (!empId || active !== "true") return; // not checked in: never share location
+
+  const battery = await readBattery();
+  const point = await buildPoint(empId, null, battery, true); // always builds a point; remarks explain a weak/missing position
+  point.pingId = `${point.pingId}-REQ${Date.now().toString(36)}`; // unique, so it is never treated as a duplicate
+  point.remarks = point.remarks ? `Manager ping - ${point.remarks}` : "Manager ping";
+  await enqueue(point);
+
+  if (point.latitude != null && point.longitude != null && point.quality !== "STALE") {
+    await AsyncStorage.setItem(
+      KEY.lastSent,
+      JSON.stringify({ lat: point.latitude, lng: point.longitude, ts: point.capturedAtMs })
+    );
+  }
+  await flushOutbox();
+
+  // Tell the employee, so a location request is never invisible
+  Notifications.scheduleNotificationAsync({
+    content: { title: "Location shared", body: "Your manager requested your current location." },
+    trigger: null,
+  }).catch(() => {});
+}
+
+// "Phone status" from the admin: reply with the phone's own settings. No location is sent and nothing is saved.
+export async function respondToStatus(requestId: string, empId: string) {
+  if (!requestId || !empId || handledPings.has(`S${requestId}`)) return;
+  handledPings.add(`S${requestId}`);
+
+  let gpsEnabled: boolean | null = null;
+  let permission: "GRANTED" | "FOREGROUND_ONLY" | "DENIED" | "NOT_ASKED" = "NOT_ASKED";
+  let preciseLocation: boolean | null = null;
+  try {
+    gpsEnabled = await Location.hasServicesEnabledAsync();
+  } catch {
+    /* unknown */
+  }
+  try {
+    const fg = await Location.getForegroundPermissionsAsync();
+    if (fg.status === "granted") {
+      const bg = await Location.getBackgroundPermissionsAsync();
+      permission = bg.status === "granted" ? "GRANTED" : "FOREGROUND_ONLY";
+      const acc = (fg as any).android?.accuracy;
+      preciseLocation = acc ? acc === "fine" : null;
+    } else if (fg.status === "denied") {
+      permission = "DENIED";
+    }
+  } catch {
+    /* unknown */
+  }
+  const trackingRunning = await Location.hasStartedLocationUpdatesAsync(SHIFT_LOCATION_TASK).catch(() => false);
+  const shiftActive = (await AsyncStorage.getItem(KEY.active)) === "true";
+
+  let lastStop: any = null;
+  let lastDrop: any = null;
+  let outboxPending: number | null = null;
+  try {
+    const raw = await AsyncStorage.getItem(KEY_DIAG);
+    const d = raw ? JSON.parse(raw) : {};
+    lastStop = d.stop ?? null;
+    lastDrop = d.drop ?? null;
+    outboxPending = (await loadOutbox()).length;
+  } catch {
+    /* optional extras */
+  }
+
+  const body = JSON.stringify({
+    requestId,
+    empId,
+    lastStop,
+    lastDrop,
+    outboxPending,
+    gpsEnabled,
+    permission,
+    preciseLocation,
+    trackingRunning,
+    shiftActive,
+    battery: await readBattery(),
+    appState: AppState.currentState === "active" ? "OPEN" : "BACKGROUND",
+    platform: Platform.OS,
+  });
+  for (const wait of SEND_BACKOFF_MS) {
+    if (wait) await sleep(wait);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${BASE_HOST}/api/tracking/status-reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: controller.signal,
+      });
+      if (res.ok) return;
+    } catch {
+      /* try again */
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+// The push payload differs between phones and can hold JSON inside a string: look for the marker anywhere in it
+interface PushRequest {
+  type: "PING_REQUEST" | "STATUS_REQUEST";
+  requestId: string;
+  empId?: string;
+}
+
+function findRequest(node: any, depth = 0): PushRequest | null {
+  if (node == null || depth > 5) return null;
+  if (typeof node === "string") {
+    const t = node.trim();
+    if (t.startsWith("{") || t.startsWith("[")) {
+      try {
+        return findRequest(JSON.parse(t), depth + 1);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+  if (typeof node !== "object") return null;
+  if ((node.type === "PING_REQUEST" || node.type === "STATUS_REQUEST") && typeof node.requestId === "string") {
+    return { type: node.type, requestId: node.requestId, empId: typeof node.empId === "string" ? node.empId : undefined };
+  }
+  for (const k of Object.keys(node)) {
+    const found = findRequest(node[k], depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function handleRequest(req: PushRequest | null) {
+  if (!req) return Promise.resolve();
+  return req.type === "STATUS_REQUEST"
+    ? respondToStatus(req.requestId, req.empId ?? "")
+    : respondToPing(req.requestId);
+}
+
+// Runs when a ping / status push arrives while the app is closed or in the background
+if (Platform.OS !== "web") TaskManager.defineTask(PING_PUSH_TASK, async ({ data, error }: any) => {
+  if (error) return;
+  await handleRequest(findRequest(data));
+});
+
+// Call once from a screen that is always open after login (for example Home):
+//     useEffect(() => registerPingListeners(), []);
+export function registerPingListeners(): () => void {
+  if (Platform.OS !== "android") return () => {};
+  const sub = Notifications.addNotificationReceivedListener((n) => {
+    handleRequest(findRequest(n?.request?.content?.data)).catch(() => {}); // push while the app is open
+  });
+  Notifications.registerTaskAsync(PING_PUSH_TASK).catch(() => {}); // ping push while the app is closed
+  return () => sub.remove();
+}
 
 // ------------------------------- public API -------------------------------
 async function teardownTracking() {

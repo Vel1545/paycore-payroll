@@ -20,7 +20,7 @@ import {
   Search, Navigation, ChevronRight,
   DollarSign, Landmark,  Edit3,
   UserPlus, X, ClipboardList, BarChart3, FileSpreadsheet, ShieldCheck,
-  ChevronDown
+  ChevronDown,CalendarOff 
 } from "lucide-react-native";
 import { BASE_HOST } from "../constants/config";
 
@@ -394,10 +394,21 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                 <ChevronLeft size={20} color="#FFFFFF" />
               </TouchableOpacity>
 
-              <View className="bg-emerald-500/20 border border-emerald-400/30 px-3.5 py-1.5 rounded-full flex-row items-center gap-1.5">
-                <ShieldCheck size={13} color="#34D399" />
-                <Text className="text-[10px] font-black text-emerald-200 uppercase tracking-wider">ADMIN ROLE</Text>
-              </View>
+              <View className="flex-row items-center gap-2">
+  <TouchableOpacity
+    onPress={() => navigation?.navigate("AdminHolidays")}
+    activeOpacity={0.85}
+    className="bg-white/15 border border-white/25 px-3.5 py-1.5 rounded-full flex-row items-center gap-1.5 active:opacity-80"
+  >
+    <CalendarOff size={13} color="#FFFFFF" />
+    <Text className="text-[10px] font-black text-white uppercase tracking-wider">Announce Holiday</Text>
+  </TouchableOpacity>
+
+  <View className="bg-emerald-500/20 border border-emerald-400/30 px-3.5 py-1.5 rounded-full flex-row items-center gap-1.5">
+    <ShieldCheck size={13} color="#34D399" />
+    <Text className="text-[10px] font-black text-emerald-200 uppercase tracking-wider">ADMIN ROLE</Text>
+  </View>
+</View>
             </View>
 
             <View className="mt-1">

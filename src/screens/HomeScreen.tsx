@@ -3,6 +3,7 @@ import {
   View, 
   Text, 
   TouchableOpacity, 
+  Image, 
   ScrollView, 
   useWindowDimensions,
   ActivityIndicator,
@@ -22,6 +23,8 @@ import { clearActiveSessionOnly } from "../utils/authStorage";
 import { LinearGradient } from "expo-linear-gradient";
 import { UserSession } from "../services/UserSession";
 import { BASE_HOST } from "../constants/config";
+import { can } from "../services/Access";
+import { useChatUnread } from "../utils/Usechatunread";
 
 interface HomeScreenProps {
   navigation: any;
@@ -42,6 +45,10 @@ export default function HomeScreen({ navigation, userSession, onLogout }: HomeSc
 
   const isAdmin = userSession?.isAdmin ?? false;
   const empId = userSession?.empId || UserSession.empId || "EMP1042";
+  // role-based pages (role comes from UserSession): super admin = admin pages only, sales head = live tracking only
+  const allow = (f: Parameters<typeof can>[0]) => can(f, isAdmin);
+  const showUserHome = allow("HOME");
+  const { total: chatUnread } = useChatUnread(empId, showUserHome);   // number on the Chats icon
 
   // Dynamic Date Initialization
   const today = useMemo(() => new Date(), []);
@@ -120,6 +127,18 @@ useFocusEffect(
     fetchAttendanceOverview(true);
   }, [currentDate, empId])
 );
+
+// profile photo saved on the server for this employee (404 / error -> initials)
+const [photoFailed, setPhotoFailed] = useState(false);
+const [photoV, setPhotoV] = useState<number>((UserSession as any).photoVersion || 0);
+useFocusEffect(
+  useCallback(() => {
+    // picks up a photo changed in My Hub when this screen is shown again
+    setPhotoV((UserSession as any).photoVersion || 0);
+    setPhotoFailed(false);
+  }, [])
+);
+const initials = String(UserSession.name || "").split(/\s+/).filter(Boolean).slice(0, 2).map((w: string) => w[0]).join("").toUpperCase() || "?";
 
 const [isPullRefreshing, setIsPullRefreshing] = useState(false);
 const onPullRefresh = async () => {
@@ -269,10 +288,17 @@ const handleLogoutPress = async () => {
 
             <View className="items-center justify-center" style={{ marginTop: 0, marginBottom: 16 }}>
               <View className="relative" style={{ marginBottom: 12 }}>
-                <View className="w-24 h-24 rounded-full bg-indigo-900/40 border-2 border-white/60 items-center justify-center shadow-xl">
-                  <Text className="text-3xl font-black text-white">
-                    {isAdmin ? "A" : "MS"}
-                  </Text>
+                <View className="w-24 h-24 rounded-full bg-indigo-900/40 border-2 border-white/60 items-center justify-center shadow-xl overflow-hidden">
+                  {!photoFailed ? (
+                    <Image
+                      source={{ uri: `${BASE_HOST}/api/profile/${encodeURIComponent(empId)}/photo?v=${photoV}` }}
+                      onError={() => setPhotoFailed(true)}
+                      className="w-full h-full"
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <Text className="text-3xl font-black text-white">{initials}</Text>
+                  )}
                 </View>
                 <View className="absolute -inset-1 rounded-full border border-white/30 pointer-events-none" />
               </View>
@@ -290,57 +316,59 @@ const handleLogoutPress = async () => {
         {/* 2. BODY CONTENT */}
         <View className="max-w-6xl mx-auto w-full px-5 md:px-10">
           
-          {/* Today Attendance Floating Card */}
-          <View 
-            className="bg-white rounded-[18px] p-5 md:p-6 shadow-2xl border border-slate-100 z-10"
-            style={{ marginTop: -60, marginBottom: 40 }}
-          >
-            <View className="flex-row justify-between items-center mb-4">
-              <View className="flex-row items-center gap-2.5">
-                <View className="w-9 h-9 rounded-xl bg-[#EEECFA] items-center justify-center">
-                  <Clock size={18} color="#5B4FD1" />
+          {/* Today Attendance Floating Card (employee / admin only) */}
+          {allow("ATTENDANCE") ? (
+            <View 
+              className="bg-white rounded-[18px] p-5 md:p-6 shadow-2xl border border-slate-100 z-10"
+              style={{ marginTop: -60, marginBottom: 40 }}
+            >
+              <View className="flex-row justify-between items-center mb-4">
+                <View className="flex-row items-center gap-2.5">
+                  <View className="w-9 h-9 rounded-xl bg-[#EEECFA] items-center justify-center">
+                    <Clock size={18} color="#5B4FD1" />
+                  </View>
+                  <Text className="text-sm md:text-base font-black text-[#1F1B3D]">Today Attendance Status</Text>
                 </View>
-                <Text className="text-sm md:text-base font-black text-[#1F1B3D]">Today Attendance Status</Text>
+                <View className="bg-[#EEECFA] px-3.5 py-1 rounded-full border border-[#5B4FD1]/10">
+                  <Text className="text-[10px] font-black text-[#5B4FD1] uppercase tracking-wider">
+                    ID #{empId.replace(/[^0-9]/g, "") || "1042"}
+                  </Text>
+                </View>
               </View>
-              <View className="bg-[#EEECFA] px-3.5 py-1 rounded-full border border-[#5B4FD1]/10">
-                <Text className="text-[10px] font-black text-[#5B4FD1] uppercase tracking-wider">
-                  ID #{empId.replace(/[^0-9]/g, "") || "1042"}
-                </Text>
+
+              <View className="flex-row justify-between items-stretch gap-2 pt-2">
+                <View className="flex-1 bg-white border border-slate-200 rounded-2xl py-3 px-0.5 items-center justify-center shadow-sm">
+                  <Text className="text-sm md:text-xl font-black text-[#1F1B3D]" numberOfLines={1} adjustsFontSizeToFit>
+                    {todaySummary.checkIn}
+                  </Text>
+                  <Text className="text-[9px] font-bold text-[#7A76A6] mt-1 tracking-wide uppercase">
+                    CHECK-IN
+                  </Text>
+                </View>
+
+                <View className="flex-1 bg-white border border-slate-200 rounded-2xl py-3 px-0.5 items-center justify-center shadow-sm">
+                  <Text className="text-sm md:text-xl font-black text-[#1F1B3D]" numberOfLines={1} adjustsFontSizeToFit>
+                    {todaySummary.checkOut}
+                  </Text>
+                  <Text className="text-[9px] font-bold text-[#7A76A6] mt-1 tracking-wide uppercase">
+                    CHECK-OUT
+                  </Text>
+                </View>
+
+                <View className="flex-1 bg-emerald-50 border border-emerald-200/90 rounded-2xl py-3 px-0.5 items-center justify-center shadow-sm">
+                  <Text className="text-sm md:text-xl font-black text-emerald-700" numberOfLines={1} adjustsFontSizeToFit>
+                    {todaySummary.totalHours}
+                  </Text>
+                  <Text className="text-[9px] font-bold text-emerald-800 mt-1 tracking-wide uppercase">
+                    TOTAL HOURS
+                  </Text>
+                </View>
               </View>
             </View>
-
-            <View className="flex-row justify-between items-stretch gap-2 pt-2">
-              <View className="flex-1 bg-white border border-slate-200 rounded-2xl py-3 px-0.5 items-center justify-center shadow-sm">
-                <Text className="text-sm md:text-xl font-black text-[#1F1B3D]" numberOfLines={1} adjustsFontSizeToFit>
-                  {todaySummary.checkIn}
-                </Text>
-                <Text className="text-[9px] font-bold text-[#7A76A6] mt-1 tracking-wide uppercase">
-                  CHECK-IN
-                </Text>
-              </View>
-
-              <View className="flex-1 bg-white border border-slate-200 rounded-2xl py-3 px-0.5 items-center justify-center shadow-sm">
-                <Text className="text-sm md:text-xl font-black text-[#1F1B3D]" numberOfLines={1} adjustsFontSizeToFit>
-                  {todaySummary.checkOut}
-                </Text>
-                <Text className="text-[9px] font-bold text-[#7A76A6] mt-1 tracking-wide uppercase">
-                  CHECK-OUT
-                </Text>
-              </View>
-
-              <View className="flex-1 bg-emerald-50 border border-emerald-200/90 rounded-2xl py-3 px-0.5 items-center justify-center shadow-sm">
-                <Text className="text-sm md:text-xl font-black text-emerald-700" numberOfLines={1} adjustsFontSizeToFit>
-                  {todaySummary.totalHours}
-                </Text>
-                <Text className="text-[9px] font-bold text-emerald-800 mt-1 tracking-wide uppercase">
-                  TOTAL HOURS
-                </Text>
-              </View>
-            </View>
-          </View>
+          ) : null}
 
           {/* 3. 4-CARD SERVICE GRID */}
-          <View className="mb-10">
+          <View className="mb-10" style={allow("ATTENDANCE") ? undefined : { marginTop: -60 }}>
             <View className="flex-row justify-between items-center mb-3 px-1">
               <Text className="text-xs md:text-sm font-black text-[#1F1B3D] uppercase tracking-wider">
                 Please Choose Services
@@ -352,183 +380,191 @@ const handleLogoutPress = async () => {
 
             <View className="flex-row flex-wrap justify-between gap-3">
               {/* Requests */}
-              <TouchableOpacity 
-                onPress={() => navigation.navigate("Approvals")}
-                activeOpacity={0.85}
-                className="overflow-hidden rounded-[22px] border border-emerald-100"
-                style={{ 
-                  minHeight: 150, 
-                  width: isDesktop ? "23.5%" : "48%",
-                  elevation: 3
-                }}
-              >
-                <LinearGradient
-                  colors={["#FFFFFF", "#ECFDF5", "#D1FAE5"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={{ minHeight: 150, padding: 16 }}
-                  className="items-start justify-between relative rounded-[22px] overflow-hidden"
+              {(allow("LEAVE_APPROVALS") || allow("APPLY")) ? (
+                <TouchableOpacity 
+                  onPress={() => navigation.navigate("Approvals")}
+                  activeOpacity={0.85}
+                  className="overflow-hidden rounded-[22px] border border-emerald-100"
+                  style={{ 
+                    minHeight: 150, 
+                    width: isDesktop ? "23.5%" : "48%",
+                    elevation: 3
+                  }}
                 >
-                  <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
-                    <Mail size={100} color="#059669" />
-                  </View>
-                  <View 
-                    className="items-center justify-center pointer-events-none"
-                    style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#059669" }}
+                  <LinearGradient
+                    colors={["#FFFFFF", "#ECFDF5", "#D1FAE5"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={{ minHeight: 150, padding: 16 }}
+                    className="items-start justify-between relative rounded-[22px] overflow-hidden"
                   >
-                    <Mail size={20} color="#FFFFFF" />
-                  </View>
-                  <View 
-                    className="absolute bg-emerald-500/15 rounded-full border border-emerald-500/25" 
-                    style={{ top: 14, right: 14, paddingHorizontal: 10, paddingVertical: 4, maxWidth: 84 }}
-                  >
-                    <Text className="text-[9px] font-black text-emerald-700 uppercase tracking-wider text-center" numberOfLines={1}>
-                      {isAdmin ? "04 Active" : "100"}
-                    </Text>
-                  </View>
-                  <View style={{ marginTop: 20 }}>
-                    <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Requests</Text>
-                    <Text className="text-[11px] font-semibold text-emerald-700/80" style={{ marginTop: 3 }}>
-                      Manage requests
-                    </Text>
-                  </View>
-                </LinearGradient>
-              </TouchableOpacity>
+                    <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
+                      <Mail size={100} color="#059669" />
+                    </View>
+                    <View 
+                      className="items-center justify-center pointer-events-none"
+                      style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#059669" }}
+                    >
+                      <Mail size={20} color="#FFFFFF" />
+                    </View>
+                    <View 
+                      className="absolute bg-emerald-500/15 rounded-full border border-emerald-500/25" 
+                      style={{ top: 14, right: 14, paddingHorizontal: 10, paddingVertical: 4, maxWidth: 84 }}
+                    >
+                      <Text className="text-[9px] font-black text-emerald-700 uppercase tracking-wider text-center" numberOfLines={1}>
+                        {isAdmin ? "04 Active" : "100"}
+                      </Text>
+                    </View>
+                    <View style={{ marginTop: 20 }}>
+                      <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Requests</Text>
+                      <Text className="text-[11px] font-semibold text-emerald-700/80" style={{ marginTop: 3 }}>
+                        Manage requests
+                      </Text>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+              ) : null}
 
               {/* Leaves */}
-              <TouchableOpacity 
-                onPress={() => navigation.navigate("Apply", { tab: "leave" })}
-                activeOpacity={0.85}
-                className="overflow-hidden rounded-[22px] border border-rose-100"
-                style={{ 
-                  minHeight: 150, 
-                  width: isDesktop ? "23.5%" : "48%",
-                  elevation: 3
-                }}
-              >
-                <LinearGradient
-                  colors={["#FFFFFF", "#FFF1F2", "#FFE4E6"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={{ minHeight: 150, padding: 16 }}
-                  className="items-start justify-between relative rounded-[22px] overflow-hidden"
+              {allow("APPLY") ? (
+                <TouchableOpacity 
+                  onPress={() => navigation.navigate("Apply", { tab: "leave" })}
+                  activeOpacity={0.85}
+                  className="overflow-hidden rounded-[22px] border border-rose-100"
+                  style={{ 
+                    minHeight: 150, 
+                    width: isDesktop ? "23.5%" : "48%",
+                    elevation: 3
+                  }}
                 >
-                  <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
-                    <CalendarIcon size={100} color="#E11D48" />
-                  </View>
-                  <View 
-                    className="items-center justify-center pointer-events-none"
-                    style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#E11D48" }}
+                  <LinearGradient
+                    colors={["#FFFFFF", "#FFF1F2", "#FFE4E6"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={{ minHeight: 150, padding: 16 }}
+                    className="items-start justify-between relative rounded-[22px] overflow-hidden"
                   >
-                    <CalendarIcon size={20} color="#FFFFFF" />
-                  </View>
-                  <View 
-                    className="absolute bg-rose-500/15 rounded-full border border-rose-500/25" 
-                    style={{ top: 14, right: 14, paddingHorizontal: 10, paddingVertical: 4, maxWidth: 84 }}
-                  >
-                    <Text className="text-[9px] font-black text-rose-700 uppercase tracking-wider text-center" numberOfLines={1}>
-                      12 Left
-                    </Text>
-                  </View>
-                  <View style={{ marginTop: 20 }}>
-                    <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Leaves</Text>
-                    <Text className="text-[11px] font-semibold text-rose-700/80" style={{ marginTop: 3 }}>
-                      Apply & track
-                    </Text>
-                  </View>
-                </LinearGradient>
-              </TouchableOpacity>
+                    <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
+                      <CalendarIcon size={100} color="#E11D48" />
+                    </View>
+                    <View 
+                      className="items-center justify-center pointer-events-none"
+                      style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#E11D48" }}
+                    >
+                      <CalendarIcon size={20} color="#FFFFFF" />
+                    </View>
+                    <View 
+                      className="absolute bg-rose-500/15 rounded-full border border-rose-500/25" 
+                      style={{ top: 14, right: 14, paddingHorizontal: 10, paddingVertical: 4, maxWidth: 84 }}
+                    >
+                      <Text className="text-[9px] font-black text-rose-700 uppercase tracking-wider text-center" numberOfLines={1}>
+                        12 Left
+                      </Text>
+                    </View>
+                    <View style={{ marginTop: 20 }}>
+                      <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Leaves</Text>
+                      <Text className="text-[11px] font-semibold text-rose-700/80" style={{ marginTop: 3 }}>
+                        Apply & track
+                      </Text>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+              ) : null}
 
               {/* Pay Slip */}
-              <TouchableOpacity 
-                   onPress={() => navigation.navigate(isAdmin ? "SalaryView" : "MyHub", { initialTab: "payslip" })}
-                activeOpacity={0.85}
-                className="overflow-hidden rounded-[22px] border border-amber-100"
-                style={{ 
-                  minHeight: 150, 
-                  width: isDesktop ? "23.5%" : "48%",
-                  elevation: 3
-                }}
-              >
-                <LinearGradient
-                  colors={["#FFFFFF", "#FFF7E6", "#FEF0CC"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={{ minHeight: 150, padding: 16 }}
-                  className="items-start justify-between relative rounded-[22px] overflow-hidden"
+              {(allow("PAYSLIP") || allow("SALARY_VIEW")) ? (
+                <TouchableOpacity 
+                     onPress={() => navigation.navigate(isAdmin ? "SalaryView" : "MyHub", { initialTab: "payslip" })}
+                  activeOpacity={0.85}
+                  className="overflow-hidden rounded-[22px] border border-amber-100"
+                  style={{ 
+                    minHeight: 150, 
+                    width: isDesktop ? "23.5%" : "48%",
+                    elevation: 3
+                  }}
                 >
-                  <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
-                    <DollarSign size={100} color="#D97706" />
-                  </View>
-                  <View 
-                    className="items-center justify-center pointer-events-none"
-                    style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#D97706" }}
+                  <LinearGradient
+                    colors={["#FFFFFF", "#FFF7E6", "#FEF0CC"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={{ minHeight: 150, padding: 16 }}
+                    className="items-start justify-between relative rounded-[22px] overflow-hidden"
                   >
-                    <DollarSign size={20} color="#FFFFFF" />
-                  </View>
-                  <View 
-                    className="absolute bg-amber-500/15 rounded-full border border-amber-500/25" 
-                    style={{ top: 14, right: 14, paddingHorizontal: 10, paddingVertical: 4, maxWidth: 84 }}
-                  >
-                    <Text className="text-[9px] font-black text-amber-700 uppercase tracking-wider text-center" numberOfLines={1}>
-                      Available
-                    </Text>
-                  </View>
-                  <View style={{ marginTop: 20 }}>
-                    <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Pay Slip</Text>
-                    <Text className="text-[11px] font-semibold text-amber-700/80" style={{ marginTop: 3 }}>
-                      View & download
-                    </Text>
-                  </View>
-                </LinearGradient>
-              </TouchableOpacity>
+                    <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
+                      <DollarSign size={100} color="#D97706" />
+                    </View>
+                    <View 
+                      className="items-center justify-center pointer-events-none"
+                      style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#D97706" }}
+                    >
+                      <DollarSign size={20} color="#FFFFFF" />
+                    </View>
+                    <View 
+                      className="absolute bg-amber-500/15 rounded-full border border-amber-500/25" 
+                      style={{ top: 14, right: 14, paddingHorizontal: 10, paddingVertical: 4, maxWidth: 84 }}
+                    >
+                      <Text className="text-[9px] font-black text-amber-700 uppercase tracking-wider text-center" numberOfLines={1}>
+                        Available
+                      </Text>
+                    </View>
+                    <View style={{ marginTop: 20 }}>
+                      <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Pay Slip</Text>
+                      <Text className="text-[11px] font-semibold text-amber-700/80" style={{ marginTop: 3 }}>
+                        View & download
+                      </Text>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+              ) : null}
 
               {/* Punch Entry */}
-              <TouchableOpacity 
-                onPress={() => navigation.navigate("PunchClock")}
-                activeOpacity={0.85}
-                className="overflow-hidden rounded-[22px] border border-indigo-100"
-                style={{ 
-                  minHeight: 150, 
-                  width: isDesktop ? "23.5%" : "48%",
-                  elevation: 3
-                }}
-              >
-                <LinearGradient
-                  colors={["#FFFFFF", "#F5F3FF", "#EDE9FE"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={{ minHeight: 150, padding: 16 }}
-                  className="items-start justify-between relative rounded-[22px] overflow-hidden"
+              {allow("ATTENDANCE") ? (
+                <TouchableOpacity 
+                  onPress={() => navigation.navigate("PunchClock")}
+                  activeOpacity={0.85}
+                  className="overflow-hidden rounded-[22px] border border-indigo-100"
+                  style={{ 
+                    minHeight: 150, 
+                    width: isDesktop ? "23.5%" : "48%",
+                    elevation: 3
+                  }}
                 >
-                  <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
-                    <Fingerprint size={100} color="#5B4FD1" />
-                  </View>
-                  <View 
-                    className="items-center justify-center pointer-events-none"
-                    style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#5B4FD1" }}
+                  <LinearGradient
+                    colors={["#FFFFFF", "#F5F3FF", "#EDE9FE"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={{ minHeight: 150, padding: 16 }}
+                    className="items-start justify-between relative rounded-[22px] overflow-hidden"
                   >
-                    <Fingerprint size={20} color="#FFFFFF" />
-                  </View>
-                  <View 
-                    className="absolute bg-indigo-500/15 rounded-full border border-indigo-500/25" 
-                    style={{ top: 14, right: 14, paddingHorizontal: 10, paddingVertical: 4, maxWidth: 84 }}
-                  >
-                    <Text className="text-[9px] font-black text-[#5B4FD1] uppercase tracking-wider text-center" numberOfLines={1}>
-                      In-Office
-                    </Text>
-                  </View>
-                  <View style={{ marginTop: 20 }}>
-                    <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Punch Entry</Text>
-                    <Text className="text-[11px] font-semibold text-indigo-700/80" style={{ marginTop: 3 }}>
-                      Time & attendance
-                    </Text>
-                  </View>
-                </LinearGradient>
-              </TouchableOpacity>
+                    <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
+                      <Fingerprint size={100} color="#5B4FD1" />
+                    </View>
+                    <View 
+                      className="items-center justify-center pointer-events-none"
+                      style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#5B4FD1" }}
+                    >
+                      <Fingerprint size={20} color="#FFFFFF" />
+                    </View>
+                    <View 
+                      className="absolute bg-indigo-500/15 rounded-full border border-indigo-500/25" 
+                      style={{ top: 14, right: 14, paddingHorizontal: 10, paddingVertical: 4, maxWidth: 84 }}
+                    >
+                      <Text className="text-[9px] font-black text-[#5B4FD1] uppercase tracking-wider text-center" numberOfLines={1}>
+                        In-Office
+                      </Text>
+                    </View>
+                    <View style={{ marginTop: 20 }}>
+                      <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Punch Entry</Text>
+                      <Text className="text-[11px] font-semibold text-indigo-700/80" style={{ marginTop: 3 }}>
+                        Time & attendance
+                      </Text>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+              ) : null}
 
               {/* Admin Hub */}
-              {isAdmin ? (
+              {isAdmin && allow("LEAVE_APPROVALS") ? (
                 <TouchableOpacity 
                   onPress={() => navigation.navigate("AdminHub")}
                   activeOpacity={0.85}
@@ -572,10 +608,37 @@ const handleLogoutPress = async () => {
                   </LinearGradient>
                 </TouchableOpacity>
               ) : null}
+
+              {/* Live Tracking: the only page of a sales head (admins reach it from Admin Hub) */}
+              {allow("LIVE_TRACKING") && !allow("LEAVE_APPROVALS") ? (
+                <TouchableOpacity
+                  onPress={() => navigation.navigate("LiveTracking")}
+                  activeOpacity={0.85}
+                  className="overflow-hidden rounded-[22px] border border-sky-100"
+                  style={{ minHeight: 150, width: isDesktop ? "23.5%" : "48%", elevation: 3 }}
+                >
+                  <LinearGradient
+                    colors={["#FFFFFF", "#F0F9FF", "#E0F2FE"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={{ minHeight: 150, padding: 16 }}
+                    className="items-start justify-between relative rounded-[22px] overflow-hidden"
+                  >
+                    <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#0284C7" }} className="items-center justify-center">
+                      <Users size={20} color="#FFFFFF" />
+                    </View>
+                    <View style={{ marginTop: 20 }}>
+                      <Text className="text-base font-black text-[#1F1B3D] tracking-wide">Live Tracking</Text>
+                      <Text className="text-[11px] font-semibold text-sky-700/80" style={{ marginTop: 3 }}>Team locations</Text>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+              ) : null}
             </View>
           </View>
 
           {/* 4. CALENDAR MATRIX */}
+          {allow("ATTENDANCE") ? (
           <View className="bg-white rounded-[32px] border border-slate-100 shadow-xl overflow-hidden mb-10">
             {/* Header: Month Selector */}
             <View className="flex-row items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
@@ -772,7 +835,11 @@ const handleLogoutPress = async () => {
             </View>
           </View>
 
+          ) : null}
+
           {/* 5. QUICK MODULES */}
+          {showUserHome ? (
+          <>
           <Text className="text-xs md:text-sm font-black text-[#1F1B3D] uppercase tracking-wider mb-3 px-1">
             Other Details & Quick Modules
           </Text>
@@ -823,10 +890,20 @@ const handleLogoutPress = async () => {
             <TouchableOpacity onPress={() => navigation.navigate("Chat")} className="items-center flex-1 py-1.5 active:opacity-75">
               <View className="w-11 h-11 rounded-2xl bg-[#EEECFA] items-center justify-center mb-1.5 mx-auto">
                 <MessageSquare size={20} color="#5B4FD1" />
+                {chatUnread > 0 ? (
+                  <View
+                    style={{ position: "absolute", top: -6, right: -6, minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5, backgroundColor: "#16A34A", borderWidth: 2, borderColor: "#FFFFFF" }}
+                    className="items-center justify-center"
+                  >
+                    <Text className="text-[10px] font-black text-white">{chatUnread > 99 ? "99+" : chatUnread}</Text>
+                  </View>
+                ) : null}
               </View>
               <Text className="text-xs font-bold text-[#1F1B3D] text-center">Chats</Text>
             </TouchableOpacity>
           </View>
+          </>
+          ) : null}
 
         </View>
       </ScrollView>

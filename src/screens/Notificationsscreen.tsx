@@ -3,7 +3,8 @@ import { View, Text, TouchableOpacity, ScrollView, Switch, Platform } from "reac
 import { ChevronLeft, Megaphone, MessageSquare, CheckCircle2, XCircle, Bell, BellOff, Volume2, CheckCheck } from "lucide-react-native";
 import ScreenContainer from "../components/ScreenContainer";
 import { NOTIFY_API, playBeep } from "../constants/Usenotifications";
-import { setAlertSoundPreference } from "../constants/Notifications";
+import { BASE_HOST } from "../constants/config";
+import { setAlertSoundPreference } from "../constants/Notifications"; 
 
 const C = { primary: "#5B4FD1", ink: "#1F1B3D", muted: "#7A76A6", faint: "#A6A2CE", border: "#E7E4F5", soft: "#EEECFA", bg: "#F6F5FC" };
 
@@ -47,6 +48,28 @@ const parseData = (s?: string | null): Record<string, string> => {
   }
 };
 
+// Approvals page tabs (4 groups). The Approvals screen reads route.params.tab with one of these ids.
+const APPROVAL_TABS = [
+  { id: "leave", label: "Leave / Permission / Half Day" },
+  { id: "otod", label: "OT & OD" },
+  { id: "money", label: "Advance & Claim" },
+  { id: "checkout", label: "Check-out" },
+] as const;
+
+// Which tab each kind of request notification opens (kind comes from the server alert).
+const KIND_TAB: Record<string, string> = {
+  LEAVE: "leave", PERMISSION: "leave", HALF_DAY: "leave",
+  OD: "otod", OVERTIME: "otod",
+  ADVANCE: "money", CLAIM: "money",
+  CHECKOUT: "checkout",
+};
+
+// Employee's "My Requests & Tracker" page (the same Approvals screen shows an employee's own requests). Change if yours has another name.
+const USER_REQUESTS_SCREEN = "Approvals";
+
+const openApprovals = (navigation: any, tab?: string, extra: Record<string, any> = {}) =>
+  navigation.navigate("Approvals", { ...(tab ? { tab } : {}), ...extra });
+
 export default function NotificationsScreen({ navigation, userSession }: { navigation: any; userSession?: { empId: string; isAdmin: boolean } }) {
   const empId = (userSession?.empId || "").trim();
   const q = encodeURIComponent(empId);
@@ -55,6 +78,7 @@ export default function NotificationsScreen({ navigation, userSession }: { navig
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
   const [loading, setLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [pending, setPending] = useState<Record<string, number> | null>(null);   // admin: pending approvals per tab
 
   const load = useCallback(async () => {
     if (!empId) return;
@@ -111,11 +135,29 @@ export default function NotificationsScreen({ navigation, userSession }: { navig
     }
   };
 
+  // Admin banner: how many requests are waiting for approval, per tab
+  const loadPending = useCallback(async () => {
+    if (!userSession?.isAdmin) return;
+    try {
+      const r = await fetch(`${BASE_HOST}/api/admin/workflow/pending-counts`, { cache: "no-store" });
+      if (r.ok) setPending(await r.json());
+    } catch {
+      /* banner just stays hidden */
+    }
+  }, [userSession?.isAdmin]);
+  useEffect(() => {
+    loadPending();
+    const t = setInterval(loadPending, 30000);
+    return () => clearInterval(t);
+  }, [loadPending]);
+  const pendingTotal = pending ? APPROVAL_TABS.reduce((n, t) => n + (pending[t.id] || 0), 0) : 0;
+
   const unreadCount = items.filter((i) => !i.isRead).length;
 
   const iconFor = (it: Item) => {
     if (it.type === "ANNOUNCEMENT") return { Icon: Megaphone, bg: C.soft, fg: C.primary };
     if (it.type === "CHAT") return { Icon: MessageSquare, bg: "#E0F2FE", fg: "#0369A1" };
+    if (it.type === "REQUEST") return { Icon: Bell, bg: "#FEF3C7", fg: "#B45309" };
     if (it.type === "APPROVAL") {
       const rejected = parseData(it.data).status === "REJECTED";
       return rejected
@@ -173,6 +215,39 @@ export default function NotificationsScreen({ navigation, userSession }: { navig
 
         <ScrollView className="flex-1 min-h-0" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}>
           <View style={{ width: "100%", maxWidth: 720, alignSelf: "center" }}>
+            {/* Admin: pending approvals summary, each chip opens its Approvals tab */}
+            {userSession?.isAdmin && pending && (
+              <View style={{ borderColor: pendingTotal > 0 ? "#F59E0B" : C.border, backgroundColor: pendingTotal > 0 ? "#FFFBEB" : "#FFFFFF" }} className="border rounded-3xl p-4 mb-3">
+                <TouchableOpacity activeOpacity={0.8} onPress={() => openApprovals(navigation)} className="flex-row items-center justify-between">
+                  <View className="flex-1 mr-2">
+                    <Text style={{ color: C.ink }} className="text-sm font-black">
+                      {pendingTotal > 0 ? `${pendingTotal} approval${pendingTotal === 1 ? " is" : "s are"} pending for your approval` : "No approvals pending"}
+                    </Text>
+                    <Text style={{ color: C.muted }} className="text-[11px] font-semibold mt-0.5">Tap a group to review</Text>
+                  </View>
+                  <Text style={{ color: C.primary }} className="text-xs font-black">Open ›</Text>
+                </TouchableOpacity>
+                <View className="flex-row flex-wrap mt-2.5">
+                  {APPROVAL_TABS.map((t) => {
+                    const n = pending[t.id] || 0;
+                    return (
+                      <TouchableOpacity
+                        key={t.id}
+                        onPress={() => openApprovals(navigation, t.id)}
+                        style={{ backgroundColor: n > 0 ? "#FEF3C7" : C.soft, marginRight: 8, marginBottom: 8 }}
+                        className="flex-row items-center px-3 py-2 rounded-full"
+                      >
+                        <Text style={{ color: n > 0 ? "#B45309" : C.muted }} className="text-[11px] font-black">{t.label}</Text>
+                        <View style={{ backgroundColor: n > 0 ? "#F59E0B" : "#CBD5E1" }} className="ml-2 px-1.5 rounded-full min-w-[18px] items-center">
+                          <Text className="text-[10px] font-black text-white">{n}</Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
+
             {/* Settings */}
             {showSettings && (
               <View style={{ borderColor: C.border }} className="bg-white border rounded-3xl px-4 py-2 mb-3">
@@ -216,7 +291,19 @@ export default function NotificationsScreen({ navigation, userSession }: { navig
                   <TouchableOpacity
                     key={it.id}
                     activeOpacity={0.8}
-                    onPress={() => !it.isRead && markRead(it.id)}
+                    onPress={() => {
+                      if (!it.isRead) markRead(it.id);
+                      if (it.type === "APPROVAL") {
+                        // employee: open "My Requests" on the decided request
+                        const d = parseData(it.data);
+                        navigation.navigate(USER_REQUESTS_SCREEN, { requestId: d.requestId, kind: d.kind });
+                      }
+                      if (it.type === "REQUEST") {
+                        // admin: open the matching approval tab, with the request id so it can be highlighted
+                        const d = parseData(it.data);
+                        openApprovals(navigation, KIND_TAB[d.kind], { requestId: d.requestId, kind: d.kind });
+                      }
+                    }}
                     style={{ borderColor: it.isRead ? C.border : C.primary + "55", backgroundColor: it.isRead ? "#FFFFFF" : "#FBFAFF" }}
                     className="border rounded-2xl p-3.5 mb-2 flex-row"
                   >
@@ -235,7 +322,7 @@ export default function NotificationsScreen({ navigation, userSession }: { navig
                           {it.body}
                         </Text>
                       )}
-                      <Text style={{ color: C.faint }} className="text-[10px] font-semibold mt-1.5">{timeAgo(it.createdAt)}</Text>
+                      <Text style={{ color: C.faint }} className="text-[10px] font-semibold mt-1.5">{timeAgo(it.createdAt)}{it.type === "REQUEST" ? "  •  Tap to review in Approvals ›" : ""}</Text>
                     </View>
                   </TouchableOpacity>
                 );

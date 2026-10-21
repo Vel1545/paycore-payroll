@@ -39,6 +39,9 @@ import {
 import * as DocumentPicker from "expo-document-picker";
 import ScreenContainer from "../components/ScreenContainer";
 import { BASE_HOST } from "../constants/config";
+import { useChatUnread } from "../utils/Usechatunread";
+import { playChatSound } from "../utils/chatSound";
+import { setActiveChatRoom } from "../constants/Notifications";
 
 interface ChatScreenProps {
   navigation: {
@@ -50,6 +53,7 @@ interface ChatScreenProps {
     empId: string;
     isAdmin: boolean;
   };
+  route?: { params?: { roomId?: string } }; // set when the user taps a chat push notification
 }
 
 interface Message {
@@ -122,12 +126,16 @@ const readError = async (res: Response, fallback: string) => {
   }
 };
 
-export default function ChatScreen({ navigation, userSession }: ChatScreenProps) {
+export default function ChatScreen({ navigation, userSession, route }: ChatScreenProps) {
   const isFocused = useIsFocused();
 
   const isAdmin = userSession?.isAdmin ?? false;
   const currentEmpId = (userSession?.empId || "").trim();
   const empQuery = encodeURIComponent(currentEmpId);
+
+  // unread numbers per room (also the Chats icon and the phone's app icon)
+  const { rooms: unreadRooms, refresh: refreshUnread } = useChatUnread(currentEmpId, isFocused);
+  const lastMsgId = useRef<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<"channels" | "announcements">("channels");
   const [chatType, setChatType] = useState<"groups" | "direct">("groups");
@@ -135,6 +143,7 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
   const [activeDirectUser, setActiveDirectUser] = useState<Person | null>(null);
 
   const [inputText, setInputText] = useState("");
+  const [inputHeight, setInputHeight] = useState(40); // grows with the lines typed, up to 5 lines
   const scrollViewRef = useRef<ScrollView>(null);
 
   // Real data from the server
@@ -287,6 +296,11 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
       }));
 
       setRoomError(null);
+      // a new message from someone else in the open room: soft sound
+      const newest = formatted[formatted.length - 1];
+      if (newest && lastMsgId.current !== null && newest.id !== lastMsgId.current && !newest.isSelf) playChatSound();
+      lastMsgId.current = newest ? newest.id : null;
+      refreshUnread(); // this room is now read
       // keep the same array when nothing is new, so the screen does not jump every 5 seconds
       setMessages((prev) =>
         prev.length === formatted.length && prev[prev.length - 1]?.id === formatted[formatted.length - 1]?.id
@@ -355,6 +369,7 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
   useEffect(() => {
     if (activeTab !== "channels" || !currentEmpId) return;
     setMessages([]);
+    lastMsgId.current = null;
     setRoomError(null);
     setShowMemberList(false);
     setShowMentionSuggestions(false);
@@ -366,6 +381,26 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
       setRoomMembers([]);
     }
   }, [activeConversation, activeTab, currentEmpId]);
+
+  // tell the push handler which room is open (no banner for it); cleared when leaving
+  useEffect(() => {
+    setActiveChatRoom(isFocused && activeTab === "channels" ? activeConversation : "");
+    return () => setActiveChatRoom("");
+  }, [activeConversation, activeTab, isFocused]);
+
+  // opened from a chat push notification: go straight to that room
+  useEffect(() => {
+    const id = route?.params?.roomId;
+    if (!id || !currentEmpId) return;
+    setActiveTab("channels");
+    if (id.includes("_")) {
+      const other = id.split("_").find((x) => x !== currentEmpId) || "";
+      const person = directory.find((p) => p.empId === other);
+      if (person) handleSelectDirectUser(person);
+    } else {
+      handleSelectChannel(id);
+    }
+  }, [route?.params?.roomId, currentEmpId, directory.length]);
 
   // Live refresh of the open chat
   useEffect(() => {
@@ -473,6 +508,7 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
     const room = activeConversation;
 
     setInputText("");
+    setInputHeight(40);
     setPendingAttachment(null);
     setShowMentionSuggestions(false);
 
@@ -877,6 +913,14 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
                           {last || person.department || person.empId}
                         </Text>
                       </View>
+                      {(unreadRooms[dmRoomId(currentEmpId, person.empId)] || 0) > 0 && !isSelected && (
+                        <View
+                          style={{ backgroundColor: "#16A34A", minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5 }}
+                          className="items-center justify-center ml-2"
+                        >
+                          <Text className="text-[9px] font-black text-white">{(unreadRooms[dmRoomId(currentEmpId, person.empId)] || 0) > 99 ? "99+" : (unreadRooms[dmRoomId(currentEmpId, person.empId)] || 0)}</Text>
+                        </View>
+                      )}
                     </TouchableOpacity>
                   );
                 })}
@@ -900,6 +944,14 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
                       <Text className={`text-xs font-bold ml-1 ${isSelected ? "text-white" : "text-[#1F1B3D]"}`}>
                         {ch.name}
                       </Text>
+                      {(unreadRooms[ch.id] || 0) > 0 && !isSelected && (
+                        <View
+                          style={{ backgroundColor: "#16A34A", minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5 }}
+                          className="items-center justify-center ml-2"
+                        >
+                          <Text className="text-[9px] font-black text-white">{(unreadRooms[ch.id] || 0) > 99 ? "99+" : (unreadRooms[ch.id] || 0)}</Text>
+                        </View>
+                      )}
                     </TouchableOpacity>
                   );
                 })}
@@ -1114,7 +1166,7 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
               )}
 
               {/* Composer */}
-              <View className="flex-row items-center pt-2 shrink-0">
+              <View className="flex-row items-end pt-2 shrink-0">
                 <TouchableOpacity
                   onPress={handlePickDeviceDocument}
                   disabled={!!roomError}
@@ -1138,7 +1190,19 @@ export default function ChatScreen({ navigation, userSession }: ChatScreenProps)
                   }
                   placeholderTextColor="#A6A2CE"
                   className="flex-1 bg-white border border-[#E7E4F5] rounded-2xl px-4 py-2.5 text-xs font-semibold text-[#1F1B3D] mr-2 shadow-xs"
-                  onSubmitEditing={handleSendMessage}
+                  multiline
+                  blurOnSubmit={false}
+                  style={{ height: inputHeight, maxHeight: 120, ...(Platform.OS === "web" ? ({ resize: "none" } as any) : {}) }}
+                  onContentSizeChange={(e) =>
+                    setInputHeight(Math.min(120, Math.max(40, Math.ceil(e.nativeEvent.contentSize.height) + 20)))
+                  }
+                  // web / keyboard: Enter sends, Shift+Enter makes a new line. On a phone the Enter key makes a new line and the send button sends.
+                  onKeyPress={(e: any) => {
+                    if (Platform.OS === "web" && e.nativeEvent.key === "Enter" && !e.nativeEvent.shiftKey) {
+                      e.preventDefault?.();
+                      handleSendMessage();
+                    }
+                  }}
                 />
 
                 <TouchableOpacity

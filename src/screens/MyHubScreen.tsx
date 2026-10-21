@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { View, Text, TouchableOpacity, Image, ScrollView, Alert, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../context/AuthContext";
@@ -6,9 +6,11 @@ import { Platform } from "react-native";
 import { 
   ArrowLeft, Mail, Calendar, Briefcase, 
   ShieldCheck, Building, Award, Download, 
-  ChevronRight, UserCheck, CreditCard
+  ChevronRight, UserCheck, CreditCard, Camera
 } from "lucide-react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import * as ImagePicker from "expo-image-picker";
+import { BASE_HOST } from "../constants/config";
 import { UserSession } from "../services/UserSession";
 import { downloadPayslipPdf } from "../services/Payslipdownload";
 import PayslipView, { MonthStepper, monthKey, monthLabel } from "../components/Payslipview";
@@ -36,18 +38,94 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
   // last month first: the current month is usually not finalized yet
   const [payMonth, setPayMonth] = useState(() => monthKey(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1)));
 
+  // ---- real records from the server (users / user_configs) ----
+  type Profile = {
+    name?: string; empId?: string; designation?: string; department?: string; officialEmail?: string;
+    dob?: string; doj?: string; tenure?: string; workLocation?: string; employmentType?: string;
+    reportingManager?: string; bloodGroup?: string; status?: string; photoUrl?: string | null;
+  };
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileError, setProfileError] = useState("");
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoFailed, setPhotoFailed] = useState(false);
+  const [photoV, setPhotoV] = useState((UserSession as any).photoVersion || 0);
+
+  const loadProfile = useCallback(async () => {
+    if (!currentUserId) return;
+    setProfileLoading(true);
+    setProfileError("");
+    try {
+      const res = await fetch(`${BASE_HOST}/api/profile/${encodeURIComponent(currentUserId)}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.message || "Could not load your profile");
+      setProfile(await res.json());
+    } catch (e: any) {
+      setProfileError(e?.message || "Could not load your profile");
+    } finally {
+      setProfileLoading(false);
+    }
+  }, [currentUserId]);
+
+  useEffect(() => { loadProfile(); }, [loadProfile]);
+
+  const say = (title: string, msg: string) =>
+    Platform.OS === "web" ? window.alert(`${title}\n${msg}`) : Alert.alert(title, msg);
+
+  // the person picks a new photo of their own and it is uploaded
+  const changePhoto = async () => {
+    if (!currentUserId || photoBusy) return;
+    try {
+      if (Platform.OS !== "web") {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) return say("Permission needed", "Allow photo access to change your picture.");
+      }
+      const picked = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true, aspect: [1, 1], quality: 0.7,   // square, compressed
+      });
+      if (picked.canceled || !picked.assets?.length) return;
+      const a = picked.assets[0];
+
+      setPhotoBusy(true);
+      const form = new FormData();
+      const type = a.mimeType || "image/jpeg";
+      if (Platform.OS === "web") {
+        const blob = await (await fetch(a.uri)).blob();
+        form.append("file", blob, `photo.${type.split("/")[1] || "jpg"}`);
+      } else {
+        form.append("file", { uri: a.uri, name: `photo.${type.split("/")[1] || "jpg"}`, type } as any);
+      }
+      const res = await fetch(`${BASE_HOST}/api/profile/${encodeURIComponent(currentUserId)}/photo`, { method: "POST", body: form });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.message || "Could not save the photo");
+      const v = Date.now();
+      (UserSession as any).photoVersion = v;   // Home and Profile read this when they show
+      setPhotoV(v);
+      setPhotoFailed(false);
+    } catch (e: any) {
+      say("Photo not changed", e?.message || "Try again");
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
+
+  // the photo saved on the server for this employee (404 -> initials)
+  const photoUri = `${BASE_HOST}/api/profile/${encodeURIComponent(currentUserId || "")}/photo?v=${photoV}`;
+  const dash = (v?: string | null) => (v && String(v).trim() ? String(v) : "—");
+  const initials = String(profile?.name || user?.name || "").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
   const userProfile = {
-    name: "Marcus Vance Sterling",
-    empId: "EMP-1042",
-    designation: "Principal Software Lead",
-    department: "Core Platform & Infrastructure",
-    officialEmail: "marcus.sterling@paycore.io",
-    dob: "14 Aug 1994",
-    doj: "15 Mar 2024",
-    workLocation: "Bangalore HQ • Tech Park",
-    employmentType: "Full-Time Regular",
-    reportingManager: "Sarah Jenkins (Director of Eng)",
-    bloodGroup: "O +ve",
+    name: profile?.name || user?.name || "—",
+    empId: profile?.empId || currentUserId || "—",
+    designation: dash(profile?.designation),
+    department: dash(profile?.department),
+    officialEmail: dash(profile?.officialEmail),
+    dob: dash(profile?.dob),
+    doj: dash(profile?.doj),
+    tenure: profile?.tenure || "",
+    workLocation: dash(profile?.workLocation),
+    employmentType: dash(profile?.employmentType),
+    reportingManager: dash(profile?.reportingManager),
+    bloodGroup: dash(profile?.bloodGroup),
   };
 
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -99,7 +177,7 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
 
               <View className="bg-emerald-500/20 border border-emerald-400/30 px-3.5 py-1.5 rounded-full flex-row items-center gap-1.5">
                 <ShieldCheck size={13} color="#34D399" />
-                <Text className="text-[10px] font-black text-emerald-200 uppercase tracking-wider">ACTIVE</Text>
+                <Text className="text-[10px] font-black text-emerald-200 uppercase tracking-wider">{profile?.status || "ACTIVE"}</Text>
               </View>
             </View>
 
@@ -160,21 +238,40 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
           {/* ========================================================================= */}
           {activeTab === "profile" && (
             <View className="gap-y-6 mb-10">
+              {profileLoading && !profile && <ActivityIndicator color="#5B4FD1" style={{ marginTop: 8 }} />}
+              {!!profileError && (
+                <TouchableOpacity onPress={loadProfile} className="bg-rose-50 border border-rose-200 rounded-2xl p-4">
+                  <Text className="text-xs font-bold text-rose-700">{profileError} — tap to retry</Text>
+                </TouchableOpacity>
+              )}
               <View className="bg-white border border-slate-100 rounded-[28px] p-6 shadow-xl shadow-slate-200/50 items-center relative overflow-hidden">
                 <View className="absolute top-0 left-0 right-0 h-20 bg-indigo-50/50 pointer-events-none" />
                 
-                <View className="relative mb-3 mt-2">
-                  <Image 
-                    source={{ uri: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=400&auto=format&fit=crop" }}
-                    className="w-24 h-24 rounded-full border-4 border-white shadow-md"
-                  />
+                <TouchableOpacity onPress={changePhoto} activeOpacity={0.85} disabled={photoBusy} className="relative mb-3 mt-2">
+                  {!photoFailed ? (
+                    <Image
+                      source={{ uri: photoUri }}
+                      onError={() => setPhotoFailed(true)}
+                      className="w-24 h-24 rounded-full border-4 border-white shadow-md bg-slate-100"
+                    />
+                  ) : (
+                    <View className="w-24 h-24 rounded-full border-4 border-white shadow-md bg-[#EEECFA] items-center justify-center">
+                      <Text className="text-2xl font-black text-[#5B4FD1]">{initials}</Text>
+                    </View>
+                  )}
+                  {photoBusy && (
+                    <View className="absolute inset-0 rounded-full bg-black/40 items-center justify-center">
+                      <ActivityIndicator color="#FFFFFF" />
+                    </View>
+                  )}
                   <View className="absolute bottom-0 right-0 bg-[#5B4FD1] p-1.5 rounded-full border-2 border-white shadow-xs">
-                    <Award size={14} color="#FFFFFF" />
+                    <Camera size={14} color="#FFFFFF" />
                   </View>
-                </View>
+                </TouchableOpacity>
 
                 <Text className="text-xl font-black text-[#1F1B3D] text-center">{userProfile.name}</Text>
                 <Text className="text-xs font-bold text-[#7A76A6] mt-0.5 text-center">{userProfile.designation}</Text>
+                <Text className="text-[10px] font-bold text-[#5B4FD1] mt-1 text-center">Tap the photo to change it</Text>
                 
                 <View className="flex-row items-center gap-2 mt-4 flex-wrap justify-center">
                   <View className="bg-[#EEECFA] px-3.5 py-1 rounded-full border border-[#5B4FD1]/10">
@@ -213,9 +310,9 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
                         <Text className="text-xs md:text-sm font-black text-[#1F1B3D] mt-0.5">{userProfile.doj}</Text>
                       </View>
                     </View>
-                    <View className="bg-amber-100/70 border border-amber-200 px-3 py-1 rounded-full shrink-0">
-                      <Text className="text-[10px] font-black text-amber-900 uppercase tracking-wider">2+ Yrs Tenured</Text>
-                    </View>
+                    {!!userProfile.tenure && <View className="bg-amber-100/70 border border-amber-200 px-3 py-1 rounded-full shrink-0">
+                      <Text className="text-[10px] font-black text-amber-900 uppercase tracking-wider">{userProfile.tenure}</Text>
+                    </View>}
                   </View>
 
                   <View className="py-3.5 flex-row items-center justify-between">

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   View, 
   Text, 
@@ -26,6 +26,7 @@ import {
 } from "lucide-react-native";
 import { clearActiveSessionOnly } from "../utils/authStorage";
 import { UserSession } from "../services/UserSession";
+import { BASE_HOST } from "../constants/config";
 
 interface ProfileScreenProps {
   navigation: {
@@ -40,15 +41,18 @@ interface ProfileScreenProps {
 export default function ProfileScreen({ navigation, onLogout }: ProfileScreenProps) {
   const [activeModal, setActiveModal] = useState<string | null>(null);
 
-  const userProfile = {
-    name: "Marcus Smith",
-    role: "HR Manager",
-    empId: "EMP-1042",
-    email: "marcus.smith@paycore.io",
-    phone: "+91 98450 12345",
-    department: "Human Resources",
-    avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=400&auto=format&fit=crop"
-  };
+  const [photoFailed, setPhotoFailed] = useState(false);
+  const [info, setInfo] = useState<any>(null);
+
+  // real records from the server
+  useEffect(() => {
+    if (!UserSession.empId) return;
+    fetch(`${BASE_HOST}/api/profile/${encodeURIComponent(UserSession.empId)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setInfo(d))
+      .catch(() => {});
+  }, []);
+  const dash = (v?: string | null) => (v && String(v).trim() ? String(v) : "—");
 
   const menuItems = [
     { id: "personal", title: "Personal Information", icon: User },
@@ -92,20 +96,27 @@ const handleLogoutPress = () => {
       {/* ========================================================================= */}
       <View className="pt-12 pb-8 px-6 max-w-xl mx-auto w-full">
         <View className="flex-row items-center gap-4">
-          <View className="w-16 h-16 rounded-full border-2 border-white/80 overflow-hidden shadow-sm bg-white">
-            <Image 
-              source={{ uri: userProfile.avatar }} 
-              className="w-full h-full"
-              resizeMode="cover"
-            />
+          <View className="w-16 h-16 rounded-full border-2 border-white/80 overflow-hidden shadow-sm bg-white items-center justify-center">
+            {!photoFailed ? (
+              <Image
+                source={{ uri: `${BASE_HOST}/api/profile/${encodeURIComponent(UserSession.empId || "")}/photo?v=${(UserSession as any).photoVersion || 0}` }}
+                onError={() => setPhotoFailed(true)}
+                className="w-full h-full"
+                resizeMode="cover"
+              />
+            ) : (
+              <Text className="text-lg font-black text-[#5B4FD1]">
+                {String(UserSession.name || "").split(/\s+/).filter(Boolean).slice(0, 2).map((w: string) => w[0]).join("").toUpperCase() || "?"}
+              </Text>
+            )}
           </View>
 
           <View>
             <Text className="text-xl font-black text-white tracking-tight">
-              {UserSession.name}
+              {info?.name || UserSession.name}
             </Text>
             <Text className="text-xs font-semibold text-purple-200 mt-0.5">
-              {UserSession.role}
+              {info?.designation || UserSession.designation || UserSession.role}
             </Text>
           </View>
         </View>
@@ -190,15 +201,15 @@ const handleLogoutPress = () => {
                 </View>
                 <View className="flex-row justify-between py-1.5 border-b border-slate-50">
                   <Text className="text-xs font-bold text-[#7A76A6]">Department</Text>
-                  <Text className="text-xs font-black text-[#1F1B3D]">{UserSession.designation}</Text>
+                  <Text className="text-xs font-black text-[#1F1B3D]">{dash(info?.department)}</Text>
                 </View>
                 <View className="flex-row justify-between py-1.5 border-b border-slate-50">
                   <Text className="text-xs font-bold text-[#7A76A6]">Official Email</Text>
-                  <Text className="text-xs font-black text-[#1F1B3D]">{UserSession.email}</Text>
+                  <Text className="text-xs font-black text-[#1F1B3D]">{dash(info?.officialEmail || UserSession.email)}</Text>
                 </View>
                 <View className="flex-row justify-between py-1.5">
                   <Text className="text-xs font-bold text-[#7A76A6]">Phone</Text>
-                  <Text className="text-xs font-black text-[#1F1B3D]">{userProfile.phone}</Text>
+                  <Text className="text-xs font-black text-[#1F1B3D]">{dash(info?.phone)}</Text>
                 </View>
               </View>
             )}
@@ -206,8 +217,13 @@ const handleLogoutPress = () => {
             {activeModal === "bank" && (
               <View className="space-y-2 py-2">
                 <Text className="text-xs font-bold text-[#7A76A6]">Salary Credit Account</Text>
-                <Text className="text-sm font-black text-[#1F1B3D]">HDFC Bank •••• 8842</Text>
-                <Text className="text-[11px] text-emerald-600 font-bold">✓ Active Direct Deposit</Text>
+                {info?.bankName || info?.bankAccount ? (
+                  <Text className="text-sm font-black text-[#1F1B3D]">
+                    {dash(info?.bankName)}{info?.bankAccount ? ` •••• ${info.bankAccount}` : ""}
+                  </Text>
+                ) : (
+                  <Text className="text-sm font-black text-[#1F1B3D]">Not added yet</Text>
+                )}
               </View>
             )}
 

@@ -12,6 +12,8 @@ import {
   Linking,
   AppState,
   RefreshControl,
+  Alert,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useIsFocused } from "@react-navigation/native";
@@ -31,8 +33,16 @@ import {
   ExternalLink,
   List as ListIcon,
   Map as MapIcon,
+  LocateFixed,
+  Smartphone,
+  Clock,
+  Navigation,
+  Battery,
+  RotateCcw,
 } from "lucide-react-native";
 import { BASE_HOST } from "../constants/config";
+import { UserSession } from "../services/UserSession";
+import { can } from "../services/Access";
 
 // ---------------------------------------------------------------------------
 // Native map (Google Maps) - used in development / release builds with a key
@@ -67,6 +77,7 @@ if (Platform.OS !== "web") {
 // ---------------------------------------------------------------------------
 const API_ATTENDANCE = `${BASE_HOST}/api/attendance`;
 const API_ADMIN = `${BASE_HOST}/api/admin`;
+const API_TRACKING = `${BASE_HOST}/api/tracking`;
 const POLL_MS = 60_000; // auto-refresh, today only
 const STAY_RADIUS_M = 100; // consecutive points within this are one "stay"
 const STOP_MIN_MINUTES = 5; // a stay at least this long counts as a stop (shorter ones are just passing by)
@@ -439,6 +450,101 @@ const Stat = ({ label, value, sub }: { label: string; value: string; sub?: strin
 );
 
 // ---------------------------------------------------------------------------
+// Look & feel: small building blocks used by the page
+// ---------------------------------------------------------------------------
+// Content never stretches wider than this on big screens (web / tablet)
+const CONTENT = { width: "100%", maxWidth: 980, alignSelf: "center" } as const;
+
+const CARD: any = Platform.select({
+  web: { boxShadow: "0 1px 2px rgba(31,27,61,0.05), 0 8px 22px rgba(31,27,61,0.06)" },
+  default: {
+    elevation: 2,
+    shadowColor: "#1F1B3D",
+    shadowOpacity: 0.07,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+  },
+});
+
+const TONES: Record<string, [string, string]> = {
+  green: ["bg-emerald-100", "text-emerald-800"],
+  amber: ["bg-amber-100", "text-amber-800"],
+  red: ["bg-rose-100", "text-rose-800"],
+  slate: ["bg-slate-100", "text-slate-600"],
+  purple: ["bg-[#EEECFA]", "text-[#5B4FD1]"],
+};
+
+const Pill = ({ text, tone = "slate" }: { text: string; tone?: keyof typeof TONES }) => (
+  <View className={`px-2.5 py-1 rounded-full ${TONES[tone][0]}`}>
+    <Text className={`text-[10px] font-black ${TONES[tone][1]}`}>{text}</Text>
+  </View>
+);
+
+const Card = ({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) => (
+  <View className={`bg-white rounded-3xl border border-[#E7E4F5] ${className}`} style={CARD}>
+    {children}
+  </View>
+);
+
+const Avatar = ({ name, dot, size = 44 }: { name: string; dot?: string; size?: number }) => (
+  <View
+    style={{ width: size, height: size, borderRadius: size * 0.34 }}
+    className="bg-[#EEECFA] items-center justify-center"
+  >
+    <Text className="font-black text-[#5B4FD1]" style={{ fontSize: size * 0.4 }}>
+      {(name || "?").charAt(0).toUpperCase()}
+    </Text>
+    {dot ? <View className={`absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white ${dot}`} /> : null}
+  </View>
+);
+
+const MiniStat = ({
+  icon,
+  label,
+  value,
+  sub,
+  basis,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub?: string;
+  basis: string;
+}) => (
+  <View
+    style={{ flexBasis: basis as any, flexGrow: 1 }}
+    className="bg-white border border-[#E7E4F5] rounded-2xl p-3.5"
+  >
+    <View className="flex-row items-center">
+      <View className="w-6 h-6 rounded-lg bg-[#EEECFA] items-center justify-center mr-2">{icon}</View>
+      <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider">{label}</Text>
+    </View>
+    <Text className="text-lg font-black text-[#1F1B3D] mt-2" numberOfLines={1}>
+      {value}
+    </Text>
+    {sub ? (
+      <Text className="text-[10px] font-semibold text-[#7A76A6]" numberOfLines={1}>
+        {sub}
+      </Text>
+    ) : null}
+  </View>
+);
+
+const EmptyState = ({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) => (
+  <View className="items-center justify-center px-8 py-14">
+    <View className="w-16 h-16 rounded-full bg-[#EEECFA] items-center justify-center">{icon}</View>
+    <Text className="text-sm font-black text-[#1F1B3D] mt-4 text-center">{title}</Text>
+    <Text className="text-xs text-[#7A76A6] text-center mt-1.5 leading-5">{text}</Text>
+  </View>
+);
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 export default function LiveTrackingScreen({ navigation, route }: any) {
@@ -471,6 +577,18 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
   const [searchFocused, setSearchFocused] = useState(false);
   const [editing, setEditing] = useState(false); // true while the admin is typing a new search
 
+  // "Ping now": ask the selected employee's phone for its location right now
+  const canPing = can("LIVE_TRACKING");
+  const adminEmpId = String((UserSession as any).empId ?? "");
+  const [ping, setPing] = useState<{ phase: "idle" | "sending" | "waiting" | "done" | "timeout" | "error"; msg?: string; point?: TracePoint }>({ phase: "idle" });
+  const [statusCheck, setStatusCheck] = useState<{
+    phase: "idle" | "sending" | "waiting" | "done" | "timeout" | "error";
+    msg?: string;
+    status?: any;
+  }>({ phase: "idle" });
+  const pingTimers = useRef<any[]>([]);
+  useEffect(() => () => pingTimers.current.forEach((t) => clearInterval(t)), []);
+
   // Refs so polling always sees the latest selection/date (no stale closures)
   const selectedRef = useRef(selected);
   const dateRef = useRef(dateStr);
@@ -500,6 +618,133 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
       console.warn("Could not load staff:", e);
     } finally {
       if (my === staffReq.current) setStaffLoaded(true);
+    }
+  };
+
+  // "Phone status": is the phone reachable, is location on, is shift tracking running (sales staff only)
+  const checkStatus = async () => {
+    if (!selected || !adminEmpId || statusCheck.phase === "sending" || statusCheck.phase === "waiting") return;
+    const empId = selected.empId;
+    const same = () => selectedRef.current?.empId === empId;
+    setStatusCheck({ phase: "sending" });
+    try {
+      const res = await fetch(`${API_TRACKING}/status-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adminEmpId, empId }),
+      });
+      if (!res.ok) {
+        setStatusCheck({ phase: "error", msg: res.status === 403 ? "You are not allowed to do this." : "Could not send the request." });
+        return;
+      }
+      const d = await res.json();
+      if (!d.requestId) {
+        setStatusCheck({
+          phase: "error",
+          msg:
+            d.reason === "NOT_SALES"
+              ? "Phone status is available for sales staff only."
+              : d.reason === "NO_DEVICE"
+              ? "No phone is registered for this employee (they must log in on the app once)."
+              : d.reason === "RECENT"
+              ? "A request was just sent. Wait a few seconds."
+              : "Could not reach the push service. Try again.",
+        });
+        return;
+      }
+      setStatusCheck({ phase: "waiting" });
+      let tries = 0;
+      const id = setInterval(async () => {
+        tries += 1;
+        try {
+          const r = await fetch(
+            `${API_TRACKING}/status-result?adminEmpId=${encodeURIComponent(adminEmpId)}&requestId=${encodeURIComponent(d.requestId)}`,
+            { cache: "no-store" }
+          );
+          const j = r.ok ? await r.json() : null;
+          if (j?.replied) {
+            clearInterval(id);
+            if (same()) setStatusCheck({ phase: "done", status: j.status });
+            return;
+          }
+        } catch {
+          /* try again on the next tick */
+        }
+        if (tries >= 10) {
+          clearInterval(id);
+          if (same()) setStatusCheck({ phase: "timeout" });
+        }
+      }, 3000);
+      pingTimers.current.push(id);
+    } catch {
+      setStatusCheck({ phase: "error", msg: "Check your connection and try again." });
+    }
+  };
+
+  const pingNow = async () => {
+    if (!selected || !adminEmpId || ping.phase === "sending" || ping.phase === "waiting") return;
+    const empId = selected.empId;
+    const clickMs = Date.now();
+    const same = () => selectedRef.current?.empId === empId;
+    setPing({ phase: "sending" });
+    try {
+      const res = await fetch(`${API_TRACKING}/ping-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adminEmpId, empId }),
+      });
+      if (!res.ok) {
+        setPing({ phase: "error", msg: res.status === 403 ? "You are not allowed to do this." : "Could not send the ping." });
+        return;
+      }
+      const d = await res.json();
+      if (!d.sent) {
+        setPing({
+          phase: "error",
+          msg:
+            d.reason === "NO_DEVICE"
+              ? "No phone is registered for this employee (they must log in on the app once)."
+              : d.reason === "RECENT"
+              ? "A ping was just sent. Wait a few seconds."
+              : "Could not reach the push service. Try again.",
+        });
+        return;
+      }
+      setPing({ phase: "waiting" });
+      let tries = 0;
+      const id = setInterval(async () => {
+        tries += 1;
+        try {
+          const ymd = toYmd(new Date());
+          const r = await fetch(`${API_ATTENDANCE}/traces?empId=${encodeURIComponent(empId)}&date=${ymd}`, { cache: "no-store" });
+          const raw = r.ok ? await r.json() : [];
+          const pts: TracePoint[] = Array.isArray(raw) ? raw : typeof raw === "string" ? JSON.parse(raw) : [];
+          // the answer is the newest point whose remarks start with "Manager ping", made after the tap
+          const hit = [...pts].reverse().find((p) => (p.remarks || "").includes("Manager ping") && toMs(p, ymd) >= clickMs - 60000);
+          if (hit) {
+            clearInterval(id);
+            if (same()) {
+              setPing({ phase: "done", point: hit });
+              loadDay(empId, dateRef.current, true);
+            }
+            return;
+          }
+        } catch {
+          /* try again on the next tick */
+        }
+        if (tries >= 15) {
+          clearInterval(id);
+          if (same()) {
+            setPing({
+              phase: "timeout",
+              msg: "No reply in 45 seconds. The person may not be checked in, or the phone is off, offline or has notifications blocked.",
+            });
+          }
+        }
+      }, 3000);
+      pingTimers.current.push(id);
+    } catch {
+      setPing({ phase: "error", msg: "Check your connection and try again." });
     }
   };
 
@@ -550,6 +795,11 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
     dateRef.current = dateStr;
     loadStaff(dateStr);
   }, [dateStr]);
+
+  useEffect(() => {
+    setPing({ phase: "idle" });
+    setStatusCheck({ phase: "idle" });
+  }, [selected?.empId]);
 
   useEffect(() => {
     selectedRef.current = selected;
@@ -789,10 +1039,42 @@ DateTimePickerAndroid.open({
   const mapBlocked = !MapView || Platform.OS === "web" || (IS_EXPO_GO && Platform.OS === "android");
 
   // ----------------------------- render -----------------------------
+  const { width: winW } = useWindowDimensions();
+  const statBasis = winW >= 720 ? "23.5%" : "47.5%";
+
+  // How recent the last point is: this decides the coloured dot / badge
+  const freshInfo = (lastTime?: string | null) => {
+    if (!isToday) return { label: "History", dot: "bg-slate-300", tone: "slate" as const };
+    const mins = minutesSinceHHmm(lastTime);
+    if (mins == null) return { label: "No data", dot: "bg-slate-300", tone: "slate" as const };
+    if (mins <= 90) return { label: "Active", dot: "bg-emerald-500", tone: "green" as const };
+    if (mins <= 180) return { label: "Idle", dot: "bg-amber-400", tone: "amber" as const };
+    return { label: "No signal", dot: "bg-rose-500", tone: "red" as const };
+  };
+
+  const kpi = useMemo(() => {
+    let active = 0;
+    let idle = 0;
+    let off = 0;
+    staff.forEach((s) => {
+      const m = minutesSinceHHmm(s.lastTime);
+      if (m == null) return;
+      if (m <= 90) active += 1;
+      else if (m <= 180) idle += 1;
+      else off += 1;
+    });
+    return { active, idle, off };
+  }, [staff]);
+
+  const selectedFresh = freshInfo(
+    (selected && staffMap.get(selected.empId)?.lastTime) || (summary.last !== "--:--" ? summary.last : null)
+  );
+
+  // ----- map -----
   const renderMapPanel = () => (
     <View
-      className="flex-1 mx-4 rounded-3xl overflow-hidden bg-slate-200 border border-[#E7E4F5]"
-      style={{ marginBottom: 120 }} // keeps the panel clear of the floating tab bar
+      className="mx-4 mt-3 rounded-3xl overflow-hidden bg-slate-200 border border-[#E7E4F5]"
+      style={[{ height: 480 }, CARD]}
     >
       {!mapBlocked ? (
         <MapView
@@ -832,15 +1114,16 @@ DateTimePickerAndroid.open({
                 />
               ))}
         </MapView>
-) : Platform.OS === "web" ? (
-  <iframe title="Route map" srcDoc={leafletHtml} style={{ border: 0, width: "100%", height: "100%" }} />
-) : WebView ? (
+      ) : Platform.OS === "web" ? (
+        <iframe title="Route map" srcDoc={leafletHtml} style={{ border: 0, width: "100%", height: "100%" }} />
+      ) : WebView ? (
         <WebView
           originWhitelist={["*"]}
           source={{ html: leafletHtml, baseUrl: MAP_REFERRER_URL }}
           style={{ flex: 1 }}
           javaScriptEnabled
           domStorageEnabled
+          nestedScrollEnabled
         />
       ) : (
         <View className="flex-1 items-center justify-center p-6">
@@ -855,7 +1138,7 @@ DateTimePickerAndroid.open({
       {hasCoords && (
         <TouchableOpacity
           onPress={() => openRoute(mapCoords)}
-          className="absolute bottom-3 left-3 right-3 bg-[#150F38] rounded-2xl py-3 flex-row items-center justify-center active:opacity-90"
+          className="absolute bottom-3 left-3 right-3 bg-[#150F38] rounded-2xl py-3.5 flex-row items-center justify-center active:opacity-90"
         >
           <ExternalLink size={14} color="#FFFFFF" />
           <Text className="text-white text-xs font-black ml-2 uppercase tracking-wider">
@@ -866,91 +1149,77 @@ DateTimePickerAndroid.open({
     </View>
   );
 
-  const renderTimeline = () => {
+  // ----- one person's day -----
+  const renderTimelineBody = () => {
     if (loadingDay && points.length === 0 && events.length === 0) {
       return (
-        <View className="flex-1 items-center justify-center">
+        <View className="items-center justify-center py-16">
           <ActivityIndicator size="large" color="#5B4FD1" />
-          <Text className="text-xs font-bold text-[#7A76A6] mt-2">Loading {fmtDateLong(selectedDate)}...</Text>
+          <Text className="text-xs font-bold text-[#7A76A6] mt-3">Loading {fmtDateLong(selectedDate)}...</Text>
         </View>
       );
     }
     if (timeline.length === 0) {
       return (
-        <ScrollView
-          contentContainerStyle={{ flexGrow: 1 }}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#5B4FD1"]} />}
-        >
-          <View className="flex-1 items-center justify-center p-8">
-            <MapPinOff size={36} color="#A6A2CE" />
-            <Text className="text-sm font-black text-[#1F1B3D] mt-3 text-center">
-              No location data for {fmtDateLong(selectedDate)}
-            </Text>
-            <Text className="text-xs text-[#7A76A6] text-center mt-1">
-              {selectedName} has no recorded locations on this date. Field staff are tracked only while checked in.
-            </Text>
-          </View>
-        </ScrollView>
+        <EmptyState
+          icon={<MapPinOff size={30} color="#7A76A6" />}
+          title={`No location data for ${fmtDateLong(selectedDate)}`}
+          text={`${selectedName} has no recorded locations on this date. Field staff are tracked only while checked in.`}
+        />
       );
     }
 
     const coordText = (lat: number, lng: number) => `Lat: ${lat.toFixed(5)}, Lng: ${lng.toFixed(5)}`;
 
-    const rail = (key: string, dot: string, isLast: boolean, children: React.ReactNode) => (
+    // left rail: a dot inside a soft ring, joined by a line
+    const rail = (key: string, dot: string, ring: string, isLast: boolean, children: React.ReactNode) => (
       <View key={key} className="flex-row">
-        <View className="items-center mr-3" style={{ width: 16 }}>
-          <View className={`w-3 h-3 rounded-full mt-4 ${dot}`} />
-          {!isLast && <View className="w-0.5 flex-1 bg-slate-200 mt-1" />}
+        <View className="items-center mr-3" style={{ width: 22 }}>
+          <View
+            className="w-[22px] h-[22px] rounded-full items-center justify-center mt-3.5"
+            style={{ backgroundColor: ring }}
+          >
+            <View className={`w-2.5 h-2.5 rounded-full ${dot}`} />
+          </View>
+          {!isLast && <View className="w-0.5 flex-1 bg-[#E7E4F5] mt-1" />}
         </View>
         <View className="flex-1 pb-3">{children}</View>
       </View>
     );
 
-    const eventDot = (status: string) => (EVENT_META[status]?.tone === "red" ? "bg-rose-500" : "bg-amber-400");
+    const eventTone = (status: string) => EVENT_META[status]?.tone === "red";
+    const eventDot = (status: string) => (eventTone(status) ? "bg-rose-500" : "bg-amber-400");
+    const eventRing = (status: string) => (eventTone(status) ? "#FFE4E6" : "#FEF3C7");
 
     const eventCard = (item: EventItem) => (
       <View
         className={`border rounded-2xl p-3.5 flex-row items-start ${
-          EVENT_META[item.status]?.tone === "red" ? "bg-rose-50 border-rose-200" : "bg-amber-50 border-amber-200"
+          eventTone(item.status) ? "bg-rose-50 border-rose-200" : "bg-amber-50 border-amber-200"
         }`}
       >
-        <AlertTriangle size={16} color={EVENT_META[item.status]?.tone === "red" ? "#E11D48" : "#D97706"} />
+        <AlertTriangle size={16} color={eventTone(item.status) ? "#E11D48" : "#D97706"} />
         <View className="ml-2.5 flex-1">
           <Text className="text-xs font-black text-[#1F1B3D]">
             {item.timeLabel}  ·  {EVENT_META[item.status]?.label ?? item.status}
           </Text>
-          {item.reason ? (
-            <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5">{item.reason}</Text>
-          ) : null}
+          {item.reason ? <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5">{item.reason}</Text> : null}
         </View>
       </View>
     );
 
-    // One GPS ping: time, location name, latitude / longitude, accuracy, battery
+    // One GPS ping: time, place, coordinates, accuracy, battery
     const pingRow = (p: PingRow, compact: boolean, latest: boolean) => {
       const tag = pingTags.get(p.key);
       return (
         <View key={p.key} className={`flex-row items-start ${compact ? "py-2.5 border-t border-[#F1EFFB]" : ""}`}>
           <View className="flex-1 pr-2">
             <View className="flex-row flex-wrap items-center gap-1.5">
-              <Text className="text-xs font-black text-[#1F1B3D]">{p.time}</Text>
-              {latest && (
-                <View className="bg-emerald-100 px-2 py-0.5 rounded-full">
-                  <Text className="text-[9px] font-black text-emerald-800">LATEST</Text>
-                </View>
-              )}
-              {tag ? (
-                <View className="bg-[#EEECFA] px-2 py-0.5 rounded-full">
-                  <Text className="text-[9px] font-black text-[#5B4FD1]">{tag}</Text>
-                </View>
-              ) : null}
-              {p.approx ? (
-                <View className="bg-amber-100 px-2 py-0.5 rounded-full">
-                  <Text className="text-[9px] font-black text-amber-800">{p.stale ? "Last known" : "Approximate"}</Text>
-                </View>
-              ) : null}
+              <Text className="text-xs font-black text-[#5B4FD1]">{p.time}</Text>
+              {latest && <Pill text="LATEST" tone="green" />}
+              {tag ? <Pill text={tag} tone="purple" /> : null}
+              {p.approx ? <Pill text={p.stale ? "Last known" : "Approximate"} tone="amber" /> : null}
             </View>
-            <Text className="text-[11px] font-semibold text-[#1F1B3D] mt-0.5" numberOfLines={2}>
+            <Text className="text-[12px] font-bold text-[#1F1B3D] mt-1" numberOfLines={2}>
               {p.place}
             </Text>
             <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5">
@@ -958,13 +1227,11 @@ DateTimePickerAndroid.open({
               {p.accuracy != null ? `  ·  ±${p.accuracy}m` : ""}
               {p.battery != null ? `  ·  ${p.battery}% bat` : ""}
             </Text>
-            {p.remarks ? (
-              <Text className="text-[10px] font-semibold text-amber-700 mt-0.5">Remarks: {p.remarks}</Text>
-            ) : null}
+            {p.remarks ? <Text className="text-[10px] font-semibold text-amber-700 mt-1">Remarks: {p.remarks}</Text> : null}
           </View>
           <TouchableOpacity
             onPress={() => openPin(p.lat, p.lng)}
-            className="w-8 h-8 rounded-xl bg-[#EEECFA] items-center justify-center active:opacity-75"
+            className="w-9 h-9 rounded-xl bg-[#EEECFA] items-center justify-center active:opacity-75"
           >
             <ExternalLink size={14} color="#5B4FD1" />
           </TouchableOpacity>
@@ -976,72 +1243,57 @@ DateTimePickerAndroid.open({
     const stayCard = (item: StayItem, isLast: boolean) => {
       const open = !!expanded[item.key];
       const firstRemark = item.pings.find((x) => x.remarks)?.remarks;
+      const mins = Math.round((item.endMs - item.startMs) / 60000);
       return (
-        <View className="bg-white border border-[#E7E4F5] rounded-2xl p-3.5">
+        <View className="bg-white border border-[#E7E4F5] rounded-2xl p-4" style={CARD}>
           <TouchableOpacity
             activeOpacity={0.8}
             onPress={() => setExpanded((e) => ({ ...e, [item.key]: !e[item.key] }))}
           >
             <View className="flex-row items-start justify-between">
               <View className="flex-1 pr-2">
-                <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={2}>
+                <View className="flex-row flex-wrap items-center gap-1.5">
+                  <Text className="text-[11px] font-black text-[#5B4FD1]">
+                    {item.startLabel === item.endLabel ? item.startLabel : `${item.startLabel} – ${item.endLabel}`}
+                  </Text>
+                  {mins >= 1 ? <Pill text={fmtDuration(mins)} tone="purple" /> : null}
+                  {isToday && isLast ? <Pill text="LATEST" tone="green" /> : null}
+                  {item.tags.map((t) => (
+                    <Pill key={t} text={t} tone={t === "Approximate" || t === "Last known" ? "amber" : "purple"} />
+                  ))}
+                </View>
+                <Text className="text-[13px] font-black text-[#1F1B3D] mt-1.5" numberOfLines={2}>
                   {item.place}
-                </Text>
-                <Text className="text-[11px] font-bold text-[#5B4FD1] mt-0.5">
-                  {item.startLabel === item.endLabel ? item.startLabel : `${item.startLabel} – ${item.endLabel}`}
-                  {item.endMs - item.startMs >= 60000
-                    ? `  ·  ${fmtDuration(Math.round((item.endMs - item.startMs) / 60000))}`
-                    : ""}
                 </Text>
                 <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5">
                   {coordText(item.lat, item.lng)}
+                  {item.accuracy != null ? `  ·  ±${item.accuracy}m` : ""}
+                  {item.battery != null ? `  ·  ${item.battery}% battery` : ""}
                 </Text>
               </View>
               <TouchableOpacity
                 onPress={() => openPin(item.lat, item.lng)}
-                className="w-8 h-8 rounded-xl bg-[#EEECFA] items-center justify-center active:opacity-75"
+                className="w-9 h-9 rounded-xl bg-[#EEECFA] items-center justify-center active:opacity-75"
               >
                 <ExternalLink size={14} color="#5B4FD1" />
               </TouchableOpacity>
             </View>
 
-            <View className="flex-row flex-wrap items-center gap-1.5 mt-2">
-              {isToday && isLast && (
-                <View className="bg-emerald-100 px-2 py-0.5 rounded-full">
-                  <Text className="text-[9px] font-black text-emerald-800">LATEST</Text>
-                </View>
-              )}
-              {item.tags.map((t) => (
-                <View
-                  key={t}
-                  className={`px-2 py-0.5 rounded-full ${(t === "Approximate" || t === "Last known") ? "bg-amber-100" : "bg-[#EEECFA]"}`}
-                >
-                  <Text className={`text-[9px] font-black ${(t === "Approximate" || t === "Last known") ? "text-amber-800" : "text-[#5B4FD1]"}`}>
-                    {t}
-                  </Text>
-                </View>
-              ))}
-              <Text className="text-[10px] font-semibold text-[#7A76A6]">
-                {item.accuracy != null ? `±${item.accuracy}m` : ""}
-                {item.battery != null ? `${item.accuracy != null ? "  ·  " : ""}${item.battery}% battery` : ""}
-              </Text>
-            </View>
-
             {firstRemark ? (
-              <Text className="text-[10px] font-semibold text-amber-700 mt-1.5" numberOfLines={2}>
+              <Text className="text-[10px] font-semibold text-amber-700 mt-2" numberOfLines={2}>
                 Remarks: {firstRemark}
               </Text>
             ) : null}
 
-            <View className="flex-row items-center mt-2">
-              <Text className="text-[10px] font-black text-[#5B4FD1]">
+            <View className="flex-row items-center mt-2.5 pt-2.5 border-t border-[#F1EFFB]">
+              <Text className="text-[11px] font-black text-[#5B4FD1]">
                 {open ? "Hide" : "Show"} all {item.count} location{item.count === 1 ? "" : "s"}
               </Text>
-              {open ? <ChevronUp size={12} color="#5B4FD1" /> : <ChevronDown size={12} color="#5B4FD1" />}
+              {open ? <ChevronUp size={13} color="#5B4FD1" /> : <ChevronDown size={13} color="#5B4FD1" />}
             </View>
           </TouchableOpacity>
 
-          {open && <View className="mt-2">{item.pings.map((p) => pingRow(p, true, false))}</View>}
+          {open && <View className="mt-1">{item.pings.map((p) => pingRow(p, true, false))}</View>}
         </View>
       );
     };
@@ -1055,7 +1307,7 @@ DateTimePickerAndroid.open({
     const stopStays = stays.filter(isStopItem);
 
     const compactStay = (st: StayItem) => (
-      <View className="flex-row items-center justify-between py-1">
+      <View className="flex-row items-center justify-between py-1.5">
         <Text className="text-[10px] font-semibold text-[#7A76A6] flex-1" numberOfLines={1}>
           {st.startLabel}  ·  passing  ·  {st.place}
         </Text>
@@ -1073,26 +1325,29 @@ DateTimePickerAndroid.open({
       const km = distM(st.lat, st.lng, next.lat, next.lng) / 1000;
       const mins = Math.max(0, Math.round((next.startMs - st.endMs) / 60000));
       return (
-        <Text className="text-[10px] font-bold text-[#7A76A6] mt-1.5 ml-1">
-          ↓ {km.toFixed(1)} km  ·  {fmtDuration(mins)} to the next stop
-        </Text>
+        <View className="flex-row items-center mt-2 ml-1">
+          <Navigation size={11} color="#7A76A6" />
+          <Text className="text-[10px] font-bold text-[#7A76A6] ml-1.5">
+            {km.toFixed(1)} km  ·  {fmtDuration(mins)} to the next stop
+          </Text>
+        </View>
       );
     };
 
     const pingCount = flatItems.filter((i) => i.kind === "ping").length;
 
     return (
-      <View className="flex-1">
-        <View className="flex-row mx-4 mb-2 bg-white border border-[#E7E4F5] rounded-xl p-0.5">
+      <View className="px-4 pt-3">
+        <View className="flex-row self-start mb-3 bg-white border border-[#E7E4F5] rounded-full p-1">
           {(["grouped", "all"] as const).map((m) => {
             const active = viewMode === m;
             return (
               <TouchableOpacity
                 key={m}
                 onPress={() => setViewMode(m)}
-                className={`flex-1 py-2 rounded-lg items-center ${active ? "bg-[#EEECFA]" : ""}`}
+                className={`px-4 py-1.5 rounded-full ${active ? "bg-[#5B4FD1]" : ""}`}
               >
-                <Text className={`text-[11px] font-black ${active ? "text-[#5B4FD1]" : "text-[#7A76A6]"}`}>
+                <Text className={`text-[11px] font-black ${active ? "text-white" : "text-[#7A76A6]"}`}>
                   {m === "grouped" ? "Grouped stops" : `All locations (${pingCount})`}
                 </Text>
               </TouchableOpacity>
@@ -1100,410 +1355,685 @@ DateTimePickerAndroid.open({
           })}
         </View>
 
-        <ScrollView
-          style={{ flex: 1 }}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 120 }}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#5B4FD1"]} />}
-        >
-          {viewMode === "grouped"
-            ? timeline.map((item, i) => {
-                const last = i === timeline.length - 1;
-                if (item.kind === "event") return rail(item.key, eventDot(item.status), last, eventCard(item));
-                const stop = isStopItem(item);
-                return rail(
-                  item.key,
-                  item.approx ? "bg-slate-400" : stop ? "bg-[#5B4FD1]" : "bg-slate-300",
-                  last,
-                  stop ? (
-                    <>
-                      {stayCard(item, last)}
-                      {travelHint(item)}
-                    </>
-                  ) : (
-                    compactStay(item)
+        {viewMode === "grouped"
+          ? timeline.map((item, i) => {
+              const last = i === timeline.length - 1;
+              if (item.kind === "event") {
+                return rail(item.key, eventDot(item.status), eventRing(item.status), last, eventCard(item));
+              }
+              const stop = isStopItem(item);
+              return rail(
+                item.key,
+                item.approx ? "bg-slate-400" : stop ? "bg-[#5B4FD1]" : "bg-slate-300",
+                item.approx ? "#F1F5F9" : stop ? "#EEECFA" : "#F1F5F9",
+                last,
+                stop ? (
+                  <>
+                    {stayCard(item, last)}
+                    {travelHint(item)}
+                  </>
+                ) : (
+                  compactStay(item)
+                )
+              );
+            })
+          : flatItems.map((item, i) => {
+              const last = i === flatItems.length - 1;
+              return item.kind === "ping"
+                ? rail(
+                    item.key,
+                    item.approx ? "bg-slate-400" : "bg-[#5B4FD1]",
+                    item.approx ? "#F1F5F9" : "#EEECFA",
+                    last,
+                    <View className="bg-white border border-[#E7E4F5] rounded-2xl p-3.5" style={CARD}>
+                      {pingRow(item, false, isToday && last)}
+                    </View>
                   )
-                );
-              })
-            : flatItems.map((item, i) => {
-                const last = i === flatItems.length - 1;
-                return item.kind === "ping"
-                  ? rail(
-                      item.key,
-                      item.approx ? "bg-slate-400" : "bg-[#5B4FD1]",
-                      last,
-                      <View className="bg-white border border-[#E7E4F5] rounded-2xl p-3.5">
-                        {pingRow(item, false, isToday && last)}
-                      </View>
-                    )
-                  : rail(item.key, eventDot(item.status), last, eventCard(item));
-              })}
-        </ScrollView>
+                : rail(item.key, eventDot(item.status), eventRing(item.status), last, eventCard(item));
+            })}
       </View>
     );
   };
 
-  const renderOverview = () => {
+  // ----- everyone -----
+  const renderOverviewBody = () => {
     if (!staffLoaded) {
       return (
-        <View className="flex-1 items-center justify-center">
+        <View className="items-center justify-center py-16">
           <ActivityIndicator size="large" color="#5B4FD1" />
         </View>
       );
     }
+    if (staff.length === 0) {
+      return (
+        <EmptyState
+          icon={<MapPinOff size={30} color="#7A76A6" />}
+          title={`No location data for ${fmtDateLong(selectedDate)}`}
+          text="Search an employee above, or pick another date."
+        />
+      );
+    }
     return (
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 120, flexGrow: 1 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#5B4FD1"]} />}
-      >
-        {staff.length === 0 ? (
-          <View className="flex-1 items-center justify-center p-8">
-            <MapPinOff size={36} color="#A6A2CE" />
-            <Text className="text-sm font-black text-[#1F1B3D] mt-3 text-center">
-              No location data for {fmtDateLong(selectedDate)}
-            </Text>
-            <Text className="text-xs text-[#7A76A6] text-center mt-1">
-              Search an employee above, or pick another date.
-            </Text>
-          </View>
-        ) : (
-          staff.map((s) => (
+      <View className="px-4 pt-4">
+        <View className="flex-row items-center justify-between mb-2.5 px-1">
+          <Text className="text-sm font-black text-[#1F1B3D]">
+            Field staff <Text className="text-[#7A76A6]">· {staff.length}</Text>
+          </Text>
+          {isToday && (
+            <View className="flex-row items-center">
+              {[
+                ["bg-emerald-500", "Active"],
+                ["bg-amber-400", "Idle"],
+                ["bg-rose-500", "No signal"],
+              ].map(([c, l]) => (
+                <View key={l} className="flex-row items-center ml-3">
+                  <View className={`w-2 h-2 rounded-full mr-1 ${c}`} />
+                  <Text className="text-[10px] font-bold text-[#7A76A6]">{l}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+
+        {staff.map((s) => {
+          const f = freshInfo(s.lastTime);
+          return (
             <TouchableOpacity
               key={s.empId}
               onPress={() => selectEmployee(s.empId, s.userName)}
               activeOpacity={0.85}
-              className="bg-white border border-[#E7E4F5] rounded-2xl p-3.5 mb-2 flex-row items-center justify-between"
+              className="mb-2.5"
             >
-              <View className="flex-row items-center flex-1 pr-2">
-                <View className="w-10 h-10 rounded-xl bg-[#EEECFA] items-center justify-center mr-3">
-                  <Text className="text-sm font-black text-[#5B4FD1]">
-                    {(s.userName || "?").charAt(0).toUpperCase()}
+              <Card className="p-3.5 flex-row items-center">
+                <Avatar name={s.userName} dot={f.dot} size={46} />
+                <View className="flex-1 ml-3 pr-2">
+                  <Text className="text-[13px] font-black text-[#1F1B3D]" numberOfLines={1}>
+                    {s.userName}
                   </Text>
-                  <View
-                    className={`absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-white ${freshnessDot(s.lastTime)}`}
-                  />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>
-                    {s.userName}  <Text className="text-[10px] text-[#7A76A6]">{s.empId}</Text>
-                  </Text>
-                  <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5" numberOfLines={1}>
-                    {s.firstTime ?? "--:--"} – {s.lastTime ?? "--:--"}
+                  <Text className="text-[10px] font-bold text-[#7A76A6] mt-0.5" numberOfLines={1}>
+                    {s.empId}
                     {s.department ? `  ·  ${s.department}` : ""}
                   </Text>
+                  <View className="flex-row items-center mt-1.5">
+                    <Clock size={11} color="#7A76A6" />
+                    <Text className="text-[10px] font-bold text-[#7A76A6] ml-1">
+                      {s.firstTime ?? "--:--"} – {s.lastTime ?? "--:--"}
+                    </Text>
+                    {s.batteryPercentage != null && s.batteryPercentage > 0 ? (
+                      <>
+                        <Battery size={11} color="#7A76A6" style={{ marginLeft: 10 }} />
+                        <Text className="text-[10px] font-bold text-[#7A76A6] ml-1">{s.batteryPercentage}%</Text>
+                      </>
+                    ) : null}
+                  </View>
                 </View>
-              </View>
-              <View className="items-end">
-                <Text className="text-[11px] font-black text-[#5B4FD1]">
-                  {s.pointCount != null ? `${s.pointCount} pts` : "—"}
-                </Text>
-                {s.batteryPercentage != null && s.batteryPercentage > 0 ? (
-                  <Text className="text-[9px] font-bold text-slate-400">{s.batteryPercentage}% bat</Text>
-                ) : null}
-              </View>
-              <ChevronRight size={16} color="#A6A2CE" />
+                <View className="items-end mr-1">
+                  <Pill text={f.label} tone={f.tone} />
+                  <Text className="text-[10px] font-black text-[#5B4FD1] mt-1.5">
+                    {s.pointCount != null ? `${s.pointCount} pts` : "—"}
+                  </Text>
+                </View>
+                <ChevronRight size={16} color="#A6A2CE" />
+              </Card>
             </TouchableOpacity>
-          ))
+          );
+        })}
+      </View>
+    );
+  };
+
+  // ----- the "Ping now" and "Phone status" answers -----
+  const renderPingResults = () => {
+    const pingBusy = ping.phase === "sending" || ping.phase === "waiting";
+    const statusBusy = statusCheck.phase === "sending" || statusCheck.phase === "waiting";
+    return (
+      <View className="mt-3.5 pt-3.5 border-t border-[#F1EFFB]">
+        <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-2">Live actions</Text>
+        <View className="flex-row gap-2">
+          <TouchableOpacity
+            onPress={pingNow}
+            disabled={pingBusy}
+            activeOpacity={0.85}
+            className="flex-1 h-11 rounded-2xl bg-[#5B4FD1] flex-row items-center justify-center"
+          >
+            {pingBusy ? (
+              <>
+                <ActivityIndicator size="small" color="#FFFFFF" />
+                <Text className="text-[12px] font-black text-white ml-2">Waiting...</Text>
+              </>
+            ) : (
+              <>
+                <LocateFixed size={15} color="#FFFFFF" />
+                <Text className="text-[12px] font-black text-white ml-1.5">Ping now</Text>
+              </>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={checkStatus}
+            disabled={statusBusy}
+            activeOpacity={0.85}
+            className="flex-1 h-11 rounded-2xl bg-white border border-[#5B4FD1] flex-row items-center justify-center"
+          >
+            {statusBusy ? (
+              <>
+                <ActivityIndicator size="small" color="#5B4FD1" />
+                <Text className="text-[12px] font-black text-[#5B4FD1] ml-2">Waiting...</Text>
+              </>
+            ) : (
+              <>
+                <Smartphone size={15} color="#5B4FD1" />
+                <Text className="text-[12px] font-black text-[#5B4FD1] ml-1.5">Phone status</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+        <Text className="text-[10px] font-semibold text-[#7A76A6] mt-2">
+          Ping now gets the current location. Phone status checks network, location switch and shift tracking (sales only).
+        </Text>
+
+        {/* Phone status answer */}
+        {(statusCheck.phase === "error" || statusCheck.phase === "timeout") && (
+          <View
+            className={`mt-3 rounded-2xl p-3 border ${
+              statusCheck.phase === "timeout" ? "bg-rose-50 border-rose-200" : "bg-amber-50 border-amber-200"
+            }`}
+          >
+            {statusCheck.phase === "timeout" ? (
+              <>
+                <Text className="text-[11px] font-black text-rose-800">Network: OFF / not reachable</Text>
+                <Text className="text-[10px] font-semibold text-rose-700 mt-0.5">
+                  No reply in 30 seconds. The phone may be offline, switched off, or have notifications blocked.
+                </Text>
+              </>
+            ) : (
+              <Text className="text-[11px] font-bold text-amber-800">{statusCheck.msg}</Text>
+            )}
+          </View>
         )}
-      </ScrollView>
+
+        {statusCheck.phase === "done" && statusCheck.status && (() => {
+          const st = statusCheck.status;
+          const locOn = st.gpsEnabled !== false && st.permission !== "DENIED" && st.permission !== "NOT_ASKED";
+          const permText =
+            st.permission === "GRANTED"
+              ? "Allowed all the time"
+              : st.permission === "FOREGROUND_ONLY"
+              ? "Only while app is open"
+              : st.permission === "DENIED"
+              ? "Denied"
+              : "Not asked yet";
+          const Row = ({ label, value, ok }: { label: string; value: string; ok: boolean | null }) => (
+            <View className="flex-row items-center justify-between py-2 border-t border-[#F1EFFB]">
+              <Text className="text-[11px] font-bold text-[#7A76A6]">{label}</Text>
+              <Pill text={value} tone={ok === null ? "slate" : ok ? "green" : "red"} />
+            </View>
+          );
+          return (
+            <View className="mt-3 bg-[#FBFAFF] border border-[#E7E4F5] rounded-2xl px-3.5 pt-3 pb-1">
+              <Text className="text-[12px] font-black text-[#1F1B3D] pb-1.5">Phone status</Text>
+              <Row label="Network" value="ON (replied)" ok={true} />
+              <Row
+                label="Phone location"
+                value={st.gpsEnabled === false ? "OFF" : st.gpsEnabled === true ? "ON" : "Unknown"}
+                ok={st.gpsEnabled == null ? null : st.gpsEnabled}
+              />
+              <Row label="App permission" value={permText} ok={st.permission === "GRANTED"} />
+              {st.preciseLocation != null ? (
+                <Row label="Precise location" value={st.preciseLocation ? "ON" : "OFF (about 2 km off)"} ok={st.preciseLocation} />
+              ) : null}
+              <Row
+                label="Shift tracking"
+                value={st.trackingRunning ? "Running" : st.shiftActive ? "Stopped (should run)" : "Not running"}
+                ok={st.trackingRunning ? true : st.shiftActive ? false : null}
+              />
+              <Row label="App" value={st.appState === "OPEN" ? "Open" : "In background"} ok={null} />
+              {st.lastStop ? (
+                <Row
+                  label="Last stop reason"
+                  value={`${st.lastStop.detail} (${new Date(st.lastStop.at).toLocaleString("en-IN")})`}
+                  ok={false}
+                />
+              ) : null}
+              {st.lastDrop ? (
+                <Row
+                  label="Last refused point"
+                  value={`${st.lastDrop.detail} (${new Date(st.lastDrop.at).toLocaleString("en-IN")})`}
+                  ok={false}
+                />
+              ) : null}
+              {st.outboxPending ? (
+                <Row label="Waiting to upload" value={`${st.outboxPending} point(s)`} ok={st.outboxPending < 5} />
+              ) : null}
+              {st.battery != null ? <Row label="Battery" value={`${st.battery}%`} ok={st.battery > 15} /> : null}
+              {!locOn ? (
+                <Text className="text-[10px] font-bold text-rose-700 py-2">
+                  Location is blocked on this phone, so no route points can be recorded.
+                </Text>
+              ) : (
+                <View className="pb-1.5" />
+              )}
+            </View>
+          );
+        })()}
+
+        {/* Ping now answer */}
+        {(ping.phase === "error" || ping.phase === "timeout") && (
+          <View className="mt-3 bg-amber-50 border border-amber-200 rounded-2xl p-3">
+            <Text className="text-[11px] font-bold text-amber-800">{ping.msg}</Text>
+          </View>
+        )}
+
+        {ping.phase === "done" && ping.point && (() => {
+          const p = ping.point;
+          const hasPos = p.latitude != null && p.longitude != null;
+          const note = (p.remarks || "").replace(/^Manager ping( - )?/, "");
+          const stale = p.quality === "STALE";
+          const low = p.quality === "LOW";
+          return (
+            <View className="mt-3 bg-[#FBFAFF] border border-[#E7E4F5] rounded-2xl p-3.5">
+              <View className="flex-row items-center justify-between">
+                <Pill
+                  text={stale ? "Online · no location" : low ? "Online · weak signal" : "Online"}
+                  tone={stale ? "red" : low ? "amber" : "green"}
+                />
+                <Text className="text-[10px] font-bold text-[#7A76A6]">
+                  Replied {p.time}
+                  {p.batteryPercentage ? `  ·  ${p.batteryPercentage}% bat` : ""}
+                </Text>
+              </View>
+              {hasPos ? (
+                <View className="flex-row items-center justify-between mt-2.5">
+                  <View className="flex-1 pr-2">
+                    <Text className="text-[12px] font-black text-[#1F1B3D]" numberOfLines={2}>
+                      {p.locationName || "Current location"}
+                    </Text>
+                    <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5">
+                      Lat: {Number(p.latitude).toFixed(5)}, Lng: {Number(p.longitude).toFixed(5)}
+                      {p.accuracyMeters ? `  ·  ±${p.accuracyMeters}m` : ""}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => openPin(Number(p.latitude), Number(p.longitude))}
+                    className="w-9 h-9 rounded-xl bg-[#EEECFA] items-center justify-center active:opacity-75"
+                  >
+                    <ExternalLink size={14} color="#5B4FD1" />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <Text className="text-[11px] font-semibold text-[#7A76A6] mt-2">No position was sent.</Text>
+              )}
+              {note ? <Text className="text-[10px] font-bold text-amber-700 mt-2">{note}</Text> : null}
+            </View>
+          );
+        })()}
+      </View>
     );
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-[#F4F6F9]" edges={["top"]}>
-      {/* Header */}
-      <View className="bg-[#5B4FD1] px-5 py-3.5 flex-row items-center justify-between">
-        <View className="flex-row items-center gap-3">
-          <TouchableOpacity
-            onPress={() => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Home"))}
-            className="w-9 h-9 bg-white/20 rounded-2xl items-center justify-center active:opacity-75"
-          >
-            <ChevronLeft size={20} color="#FFFFFF" />
-          </TouchableOpacity>
-          <View>
-            <Text className="text-base font-black text-white">Location Tracking</Text>
-            <Text className="text-[10px] font-bold text-purple-200">
-              {isToday ? "Live • auto-refreshes every minute" : `History • ${fmtDateLong(selectedDate)}`}
-            </Text>
+    <SafeAreaView className="flex-1 bg-[#F6F5FC]" edges={["top"]}>
+      {/* ------------------------------ Header ------------------------------ */}
+      <View className="bg-[#5B4FD1]">
+        <View style={CONTENT} className="px-5 pt-3 pb-4">
+          <View className="flex-row items-center justify-between">
+            <View className="flex-row items-center flex-1">
+              <TouchableOpacity
+                onPress={() => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Home"))}
+                className="w-10 h-10 bg-white/20 rounded-2xl items-center justify-center active:opacity-75"
+              >
+                <ChevronLeft size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+              <View className="ml-3 flex-1">
+                <Text className="text-lg font-black text-white" numberOfLines={1}>
+                  Location Tracking
+                </Text>
+                <View className="flex-row items-center mt-0.5">
+                  <View className={`w-2 h-2 rounded-full mr-1.5 ${isToday ? "bg-emerald-400" : "bg-white/50"}`} />
+                  <Text className="text-[11px] font-bold text-purple-100" numberOfLines={1}>
+                    {isToday ? "Live · refreshes every minute" : `History · ${fmtDateLong(selectedDate)}`}
+                  </Text>
+                </View>
+              </View>
+            </View>
+            <TouchableOpacity
+              onPress={onRefresh}
+              className="w-10 h-10 bg-white/20 rounded-2xl items-center justify-center active:opacity-75"
+            >
+              {refreshing ? <ActivityIndicator size="small" color="#FFFFFF" /> : <RefreshCw size={16} color="#FFFFFF" />}
+            </TouchableOpacity>
           </View>
+
+          {/* Day at a glance (everyone view only) */}
+          {!selected && staffLoaded && isToday && (
+            <View className="flex-row gap-2.5 mt-4">
+              {[
+                { label: "Tracked today", value: staff.length, dot: "bg-white" },
+                { label: "Active now", value: kpi.active, dot: "bg-emerald-400" },
+                { label: "Idle / no signal", value: kpi.idle + kpi.off, dot: kpi.off ? "bg-rose-400" : "bg-amber-300" },
+              ].map((k) => (
+                <View key={k.label} className="flex-1 bg-white/15 border border-white/20 rounded-2xl px-3 py-2.5">
+                  <View className="flex-row items-center">
+                    <View className={`w-1.5 h-1.5 rounded-full mr-1.5 ${k.dot}`} />
+                    <Text className="text-[9px] font-bold text-purple-100 uppercase tracking-wider" numberOfLines={1}>
+                      {k.label}
+                    </Text>
+                  </View>
+                  <Text className="text-2xl font-black text-white mt-0.5">{k.value}</Text>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
-        <TouchableOpacity
-          onPress={onRefresh}
-          className="w-9 h-9 bg-white/20 rounded-2xl items-center justify-center active:opacity-75"
-        >
-          {refreshing ? <ActivityIndicator size="small" color="#FFFFFF" /> : <RefreshCw size={16} color="#FFFFFF" />}
-        </TouchableOpacity>
       </View>
 
-      {/* Filters: date, search, staff */}
-      <View className="bg-white border-b border-[#E7E4F5] pb-2.5">
-        <View className="flex-row items-center px-4 pt-3">
-          <TouchableOpacity
-            onPress={() => shiftDay(-1)}
-            className="w-9 h-9 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] items-center justify-center active:bg-[#EEECFA]"
-          >
-            <ChevronLeft size={16} color="#1F1B3D" />
-          </TouchableOpacity>
+      {/* ------------------------------ Scrolling page ------------------------------ */}
+      <ScrollView
+        style={{ flex: 1 }}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ paddingBottom: 130 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#5B4FD1"]} />}
+      >
+        <View style={CONTENT}>
+          {/* Filters: date, search, staff */}
+          <View className="px-4 mt-3">
+            <Card className="p-3">
+              <View className="flex-row flex-wrap items-center" style={{ gap: 8 }}>
+                {/* Date: back, day, forward (and a jump back to today) */}
+                <View className="flex-row items-center">
+                  <TouchableOpacity
+                    onPress={() => shiftDay(-1)}
+                    className="w-8 h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] items-center justify-center active:bg-[#EEECFA]"
+                  >
+                    <ChevronLeft size={15} color="#1F1B3D" />
+                  </TouchableOpacity>
 
-          {Platform.OS === "web" ? (
-            <View className="flex-1 mx-2 h-9 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] flex-row items-center justify-center px-2">
-              <CalendarDays size={14} color="#5B4FD1" />
-              <input
-                type="date"
-                value={dateStr}
-                max={toYmd(new Date())}
-                 onChange={(e) => { const d = parseYmd(e.target.value); if (d) setSelectedDate(d); }}
-                style={{
-                  backgroundColor: "transparent",
-                  border: "none",
-                  outline: "none",
-                  fontFamily: "inherit",
-                  fontSize: 12,
-                  fontWeight: 800,
-                  color: "#1F1B3D",
-                  marginLeft: 8,
-                  cursor: "pointer",
-                }}
-              />
-              {isToday && (
-                <View className="ml-2 bg-emerald-100 px-2 py-0.5 rounded-full">
-                  <Text className="text-[9px] font-black text-emerald-800">TODAY</Text>
+                  {Platform.OS === "web" ? (
+                    <View className="mx-1.5 h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] flex-row items-center px-2.5">
+                      <CalendarDays size={14} color="#5B4FD1" />
+                      <input
+                        type="date"
+                        value={dateStr}
+                        max={toYmd(new Date())}
+                        onChange={(e) => {
+                          const d = parseYmd(e.target.value);
+                          if (d) setSelectedDate(d);
+                        }}
+                        style={{
+                          backgroundColor: "transparent",
+                          border: "none",
+                          outline: "none",
+                          fontFamily: "inherit",
+                          fontSize: 12,
+                          fontWeight: 800,
+                          color: "#1F1B3D",
+                          marginLeft: 6,
+                          width: 112,
+                          cursor: "pointer",
+                        }}
+                      />
+                      {isToday && <View className="w-2 h-2 rounded-full bg-emerald-500 ml-1" />}
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      onPress={openDatePicker}
+                      activeOpacity={0.8}
+                      className="mx-1.5 h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] flex-row items-center px-2.5"
+                    >
+                      <CalendarDays size={14} color="#5B4FD1" />
+                      <Text className="text-xs font-black text-[#1F1B3D] ml-1.5">
+                        {selectedDate.toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}
+                      </Text>
+                      {isToday && <View className="w-2 h-2 rounded-full bg-emerald-500 ml-1.5" />}
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity
+                    onPress={() => shiftDay(1)}
+                    disabled={isToday}
+                    style={{ opacity: isToday ? 0.35 : 1 }}
+                    className="w-8 h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] items-center justify-center active:bg-[#EEECFA]"
+                  >
+                    <ChevronRight size={15} color="#1F1B3D" />
+                  </TouchableOpacity>
+
+                  {!isToday && (
+                    <TouchableOpacity
+                      onPress={() => setSelectedDate(new Date())}
+                      className="ml-1.5 w-9 h-11 rounded-xl bg-[#5B4FD1] items-center justify-center active:opacity-90"
+                    >
+                      <RotateCcw size={14} color="#FFFFFF" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Search, on the same line */}
+                <View
+                  className="flex-1 flex-row items-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 h-11"
+                  style={{ minWidth: 130 }}
+                >
+                  <Search size={15} color="#7A76A6" />
+                  <TextInput
+                    value={inputValue}
+                    onChangeText={(t) => {
+                      setEditing(true);
+                      setQuery(t);
+                    }}
+                    onFocus={() => {
+                      setSearchFocused(true);
+                      if (selected) {
+                        setEditing(true); // start a fresh search; the current employee stays selected until a new one is picked
+                        setQuery("");
+                      }
+                    }}
+                    onBlur={() =>
+                      setTimeout(() => {
+                        setSearchFocused(false);
+                        setEditing(false);
+                        setQuery("");
+                      }, 150)
+                    }
+                    selectTextOnFocus
+                    placeholder="Search staff"
+                    placeholderTextColor="#A6A2CE"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    spellCheck={false}
+                    autoComplete="off"
+                    importantForAutofill="no"
+                    textContentType="none"
+                    className={`flex-1 ml-2 text-xs text-[#1F1B3D] ${selected && !editing ? "font-black" : "font-semibold"}`}
+                    style={Platform.OS === "web" ? ({ outlineStyle: "none", minWidth: 0 } as any) : undefined}
+                  />
+                  {selected || query ? (
+                    <TouchableOpacity onPress={clearSearch} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                      <X size={15} color="#7A76A6" />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              </View>
+
+              {Platform.OS === "ios" && showIosPicker && (
+                <DateTimePicker
+                  value={selectedDate}
+                  mode="date"
+                  display="inline"
+                  maximumDate={new Date()}
+                  onValueChange={(_event: any, d?: Date) => {
+                    setShowIosPicker(false);
+                    if (d) setSelectedDate(d);
+                  }}
+                  onDismiss={() => setShowIosPicker(false)}
+                />
+              )}
+
+              {showSuggestions ? (
+                <View className="mt-2 bg-white border border-[#E7E4F5] rounded-2xl overflow-hidden">
+                  {suggestions.length === 0 ? (
+                    <Text className="text-xs font-semibold text-[#7A76A6] p-3.5">No employee matches “{query.trim()}”</Text>
+                  ) : (
+                    suggestions.map((u, i) => {
+                      const row = staffMap.get(u.empId);
+                      return (
+                        <TouchableOpacity
+                          key={u.empId}
+                          onPressIn={() => selectEmployee(u.empId, u.name)}
+                          className={`px-3.5 py-2.5 flex-row items-center justify-between active:bg-[#F6F5FC] ${
+                            i > 0 ? "border-t border-[#F1EFFB]" : ""
+                          }`}
+                        >
+                          <View className="flex-1 pr-2">
+                            <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>
+                              {u.name}
+                            </Text>
+                            <Text className="text-[10px] font-semibold text-[#7A76A6]">{u.empId}</Text>
+                          </View>
+                          <Pill
+                            text={row ? `${row.pointCount ?? "•"} pts on this date` : "No data on this date"}
+                            tone={row ? "green" : "slate"}
+                          />
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
+                </View>
+              ) : (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ paddingTop: 10, paddingRight: 4 }}
+                >
+                  <TouchableOpacity
+                    onPress={() => setSelected(null)}
+                    className={`mr-2 px-3.5 py-2 rounded-2xl border justify-center ${
+                      !selected ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-[#F6F5FC] border-[#E7E4F5]"
+                    }`}
+                  >
+                    <Text className={`text-xs font-black ${!selected ? "text-white" : "text-[#1F1B3D]"}`}>All staff</Text>
+                    <Text className={`text-[9px] font-bold ${!selected ? "text-purple-200" : "text-[#7A76A6]"}`}>
+                      {staff.length} with data
+                    </Text>
+                  </TouchableOpacity>
+
+                  {chipRows.map((s) => {
+                    const active = selected?.empId === s.empId;
+                    return (
+                      <TouchableOpacity
+                        key={s.empId}
+                        onPress={() => (active ? setSelected(null) : selectEmployee(s.empId, s.userName))}
+                        activeOpacity={0.8}
+                        className={`mr-2 px-3.5 py-2 rounded-2xl border flex-row items-center ${
+                          active ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-[#F6F5FC] border-[#E7E4F5]"
+                        }`}
+                      >
+                        <View className={`w-2.5 h-2.5 rounded-full mr-2 ${freshnessDot(s.lastTime)}`} />
+                        <View>
+                          <Text className={`text-xs font-black ${active ? "text-white" : "text-[#1F1B3D]"}`}>{s.userName}</Text>
+                          <Text className={`text-[9px] font-bold ${active ? "text-purple-200" : "text-[#7A76A6]"}`}>
+                            {s.empId}
+                            {s.pointCount ? `  ·  ${s.pointCount} pts` : ""}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              )}
+            </Card>
+          </View>
+
+          {/* Selected employee: profile, actions, numbers */}
+          {selected && (
+            <View className="px-4 mt-3">
+              <Card className="p-4">
+                <View className="flex-row items-center">
+                  <Avatar name={selectedName} dot={selectedFresh.dot} size={54} />
+                  <View className="flex-1 ml-3 pr-2">
+                    <Text className="text-base font-black text-[#1F1B3D]" numberOfLines={1}>
+                      {selectedName}
+                    </Text>
+                    <Text className="text-[11px] font-bold text-[#7A76A6] mt-0.5" numberOfLines={1}>
+                      {selected.empId}
+                      {selectedDept ? `  ·  ${selectedDept}` : ""}
+                    </Text>
+                  </View>
+                  <View className="items-end">
+                    <Pill text={selectedFresh.label} tone={selectedFresh.tone} />
+                    {lastSeenMins != null && (
+                      <Text className="text-[10px] font-bold text-[#7A76A6] mt-1.5">
+                        Last seen {fmtDuration(lastSeenMins)} ago
+                      </Text>
+                    )}
+                  </View>
+                </View>
+
+                {canPing && isToday ? renderPingResults() : null}
+              </Card>
+
+              <View className="flex-row flex-wrap gap-2 mt-2.5">
+                <MiniStat icon={<Clock size={13} color="#5B4FD1" />} label="First ping" value={summary.first} basis={statBasis} />
+                <MiniStat icon={<Clock size={13} color="#5B4FD1" />} label="Last ping" value={summary.last} basis={statBasis} />
+                <MiniStat icon={<Navigation size={13} color="#5B4FD1" />} label="Distance" value={`${summary.km} km`} basis={statBasis} />
+                <MiniStat
+                  icon={<AlertTriangle size={13} color="#5B4FD1" />}
+                  label="Remarks"
+                  value={String(summary.issues)}
+                  sub={summary.issues ? "see timeline" : "none"}
+                  basis={statBasis}
+                />
+              </View>
+
+              {(summary.battery !== "—" || summary.stops > 0) && (
+                <View className="mt-2.5">
+                  <Card className="px-4 py-3">
+                    {summary.battery !== "—" && (
+                      <View className="flex-row items-center">
+                        <Battery size={13} color="#7A76A6" />
+                        <Text className="text-[11px] font-bold text-[#7A76A6] ml-2">Battery {summary.battery}</Text>
+                      </View>
+                    )}
+                    {summary.stops > 0 && (
+                      <View className={`flex-row items-start ${summary.battery !== "—" ? "mt-2" : ""}`}>
+                        <Navigation size={13} color="#7A76A6" style={{ marginTop: 2 }} />
+                        <Text className="text-[11px] font-bold text-[#7A76A6] ml-2 flex-1">
+                          {summary.stops} stop{summary.stops === 1 ? "" : "s"}  ·  {fmtDuration(summary.stoppedMin)} at stops
+                          {summary.longest
+                            ? `  ·  longest: ${summary.longest.place} (${fmtDuration(
+                                Math.round((summary.longest.endMs - summary.longest.startMs) / 60000)
+                              )})`
+                            : ""}
+                        </Text>
+                      </View>
+                    )}
+                  </Card>
                 </View>
               )}
             </View>
-          ) : (
-            <TouchableOpacity
-              onPress={openDatePicker}
-              activeOpacity={0.8}
-              className="flex-1 mx-2 h-9 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] flex-row items-center justify-center"
-            >
-              <CalendarDays size={14} color="#5B4FD1" />
-              <Text className="text-xs font-black text-[#1F1B3D] ml-2">{fmtDateLong(selectedDate)}</Text>
-              {isToday && (
-                <View className="ml-2 bg-emerald-100 px-2 py-0.5 rounded-full">
-                  <Text className="text-[9px] font-black text-emerald-800">TODAY</Text>
-                </View>
-              )}
-            </TouchableOpacity>
           )}
 
-          <TouchableOpacity
-            onPress={() => shiftDay(1)}
-            disabled={isToday}
-            style={{ opacity: isToday ? 0.35 : 1 }}
-            className="w-9 h-9 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] items-center justify-center active:bg-[#EEECFA]"
-          >
-            <ChevronRight size={16} color="#1F1B3D" />
-          </TouchableOpacity>
-
-          {!isToday && (
-            <TouchableOpacity
-              onPress={() => setSelectedDate(new Date())}
-              className="ml-2 h-9 px-3 rounded-xl bg-[#5B4FD1] items-center justify-center active:opacity-90"
-            >
-              <Text className="text-[10px] font-black text-white">Today</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {Platform.OS === "ios" && showIosPicker && (
-<DateTimePicker
-  value={selectedDate}
-  mode="date"
-  display="inline"
-  maximumDate={new Date()}
-  onValueChange={(_event: any, d?: Date) => {
-    setShowIosPicker(false);
-    if (d) setSelectedDate(d);
-  }}
-  onDismiss={() => setShowIosPicker(false)}
-/>
-        )}
-
-        <View className="px-4 pt-2.5">
-          <View className="flex-row items-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl px-3.5 h-11">
-            <Search size={16} color="#7A76A6" />
-            <TextInput
-              value={inputValue}
-              onChangeText={(t) => {
-                setEditing(true);
-                setQuery(t);
-              }}
-              onFocus={() => {
-                setSearchFocused(true);
-                if (selected) {
-                  setEditing(true); // start a fresh search; the current employee stays selected until a new one is picked
-                  setQuery("");
-                }
-              }}
-              onBlur={() =>
-                setTimeout(() => {
-                  setSearchFocused(false);
-                  setEditing(false);
-                  setQuery("");
-                }, 150)
-              }
-              selectTextOnFocus
-              placeholder="Search employee by name or ID"
-              placeholderTextColor="#A6A2CE"
-              autoCapitalize="none"
-              autoCorrect={false}
-              spellCheck={false}
-              autoComplete="off"
-              importantForAutofill="no"
-              textContentType="none"
-              className={`flex-1 ml-2 text-xs text-[#1F1B3D] ${selected && !editing ? "font-black" : "font-semibold"}`}
-            />
-            {selected || query ? (
-              <TouchableOpacity onPress={clearSearch} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <X size={16} color="#7A76A6" />
-              </TouchableOpacity>
-            ) : null}
-          </View>
-        </View>
-
-        {showSuggestions ? (
-          <View className="mx-4 mt-2 bg-white border border-[#E7E4F5] rounded-2xl overflow-hidden">
-            {suggestions.length === 0 ? (
-              <Text className="text-xs font-semibold text-[#7A76A6] p-3.5">No employee matches “{query.trim()}”</Text>
-            ) : (
-              suggestions.map((u, i) => {
-                const row = staffMap.get(u.empId);
-                return (
-                  <TouchableOpacity
-                    key={u.empId}
-                    onPressIn={() => selectEmployee(u.empId, u.name)}
-                    className={`px-3.5 py-2.5 flex-row items-center justify-between active:bg-[#F6F5FC] ${
-                      i > 0 ? "border-t border-[#F1EFFB]" : ""
-                    }`}
-                  >
-                    <View className="flex-1 pr-2">
-                      <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>
-                        {u.name}
-                      </Text>
-                      <Text className="text-[10px] font-semibold text-[#7A76A6]">{u.empId}</Text>
-                    </View>
-                    <View className={`px-2 py-0.5 rounded-full ${row ? "bg-emerald-100" : "bg-slate-100"}`}>
-                      <Text className={`text-[9px] font-black ${row ? "text-emerald-800" : "text-slate-500"}`}>
-                        {row ? `${row.pointCount ?? "•"} pts on this date` : "No data on this date"}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })
-            )}
-          </View>
-        ) : (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10 }}
-          >
-            <TouchableOpacity
-              onPress={() => setSelected(null)}
-              className={`mr-2 px-3.5 py-2 rounded-2xl border justify-center ${
-                !selected ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-[#F6F5FC] border-[#E7E4F5]"
-              }`}
-            >
-              <Text className={`text-xs font-black ${!selected ? "text-white" : "text-[#1F1B3D]"}`}>All staff</Text>
-              <Text className={`text-[9px] font-bold ${!selected ? "text-purple-200" : "text-[#7A76A6]"}`}>
-                {staff.length} with data
-              </Text>
-            </TouchableOpacity>
-
-            {chipRows.map((s) => {
-              const active = selected?.empId === s.empId;
+          {/* View switch */}
+          <View className="mx-4 mt-4 flex-row bg-[#EEECFA] rounded-2xl p-1">
+            {(["timeline", "map"] as const).map((t) => {
+              const active = tab === t;
+              const Icon = t === "timeline" ? ListIcon : MapIcon;
               return (
                 <TouchableOpacity
-                  key={s.empId}
-                  onPress={() => (active ? setSelected(null) : selectEmployee(s.empId, s.userName))}
-                  activeOpacity={0.8}
-                  className={`mr-2 px-3.5 py-2 rounded-2xl border flex-row items-center ${
-                    active ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-[#F6F5FC] border-[#E7E4F5]"
-                  }`}
+                  key={t}
+                  onPress={() => setTab(t)}
+                  className={`flex-1 py-2.5 rounded-xl flex-row items-center justify-center ${active ? "bg-[#5B4FD1]" : ""}`}
                 >
-                  <View className={`w-2.5 h-2.5 rounded-full mr-2 ${freshnessDot(s.lastTime)}`} />
-                  <View>
-                    <Text className={`text-xs font-black ${active ? "text-white" : "text-[#1F1B3D]"}`}>{s.userName}</Text>
-                    <Text className={`text-[9px] font-bold ${active ? "text-purple-200" : "text-[#7A76A6]"}`}>
-                      {s.empId}
-                      {s.pointCount ? `  ·  ${s.pointCount} pts` : ""}
-                    </Text>
-                  </View>
+                  <Icon size={14} color={active ? "#FFFFFF" : "#7A76A6"} />
+                  <Text className={`text-xs font-black ml-1.5 ${active ? "text-white" : "text-[#7A76A6]"}`}>
+                    {t === "timeline" ? (selected ? "Timeline" : "Staff list") : "Map"}
+                  </Text>
                 </TouchableOpacity>
               );
             })}
-          </ScrollView>
-        )}
-      </View>
-
-      {/* Body */}
-      <View className="flex-1">
-        {selected && (
-          <View className="px-4 pt-3">
-            <View className="flex-row items-center justify-between mb-2 px-1">
-              <Text className="text-sm font-black text-[#1F1B3D]" numberOfLines={1}>
-                {selectedName}  <Text className="text-[11px] font-bold text-[#7A76A6]">{selected.empId}</Text>
-                {selectedDept ? (
-                  <Text className="text-[11px] font-bold text-[#7A76A6]">  ·  {selectedDept}</Text>
-                ) : null}
-              </Text>
-              {lastSeenMins != null && (
-                <Text
-                  className={`text-[10px] font-black ${
-                    lastSeenMins <= 90 ? "text-emerald-600" : lastSeenMins <= 180 ? "text-amber-600" : "text-rose-600"
-                  }`}
-                >
-                  Last seen {fmtDuration(lastSeenMins)} ago
-                </Text>
-              )}
-            </View>
-            <View className="flex-row gap-2">
-              <Stat label="First ping" value={summary.first} />
-              <Stat label="Last ping" value={summary.last} />
-              <Stat label="Distance" value={`${summary.km} km`} />
-              <Stat label="Remarks" value={String(summary.issues)} sub={summary.issues ? "see timeline" : "none"} />
-            </View>
-            {summary.battery !== "—" && (
-              <Text className="text-[10px] font-semibold text-[#7A76A6] mt-1.5 px-1">Battery {summary.battery}</Text>
-            )}
-            {summary.stops > 0 && (
-              <Text className="text-[10px] font-semibold text-[#7A76A6] mt-1 px-1">
-                {summary.stops} stop{summary.stops === 1 ? "" : "s"}  ·  {fmtDuration(summary.stoppedMin)} at stops
-                {summary.longest
-                  ? `  ·  longest: ${summary.longest.place} (${fmtDuration(
-                      Math.round((summary.longest.endMs - summary.longest.startMs) / 60000)
-                    )})`
-                  : ""}
-              </Text>
-            )}
           </View>
-        )}
 
-        <View className="flex-row mx-4 mt-3 mb-2 bg-[#EEECFA] rounded-2xl p-1">
-          {(["timeline", "map"] as const).map((t) => {
-            const active = tab === t;
-            const Icon = t === "timeline" ? ListIcon : MapIcon;
-            return (
-              <TouchableOpacity
-                key={t}
-                onPress={() => setTab(t)}
-                className={`flex-1 py-2.5 rounded-xl flex-row items-center justify-center ${active ? "bg-[#5B4FD1]" : ""}`}
-              >
-                <Icon size={14} color={active ? "#FFFFFF" : "#7A76A6"} />
-                <Text className={`text-xs font-black ml-1.5 ${active ? "text-white" : "text-[#7A76A6]"}`}>
-                  {t === "timeline" ? (selected ? "Timeline" : "Staff list") : "Map"}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
+          {tab === "map" ? renderMapPanel() : selected ? renderTimelineBody() : renderOverviewBody()}
         </View>
-
-        <View className="flex-1">
-          {tab === "map" ? renderMapPanel() : selected ? renderTimeline() : renderOverview()}
-        </View>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }

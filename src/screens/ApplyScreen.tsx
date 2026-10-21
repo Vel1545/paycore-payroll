@@ -249,8 +249,17 @@ export default function ApplyScreen({ route, navigation }: any) {
   const [toDate, setToDate] = useState<Date>(new Date());
   const [halfDayDate, setHalfDayDate] = useState<Date>(new Date());
   const [permDate, setPermDate] = useState<Date>(new Date());
-  const [permTimeSlot, setPermTimeSlot] = useState("");
-  const [permHours, setPermHours] = useState("2.0");
+  // Short permission: pick start and end time, the hours and time window are worked out automatically
+  const [permStart, setPermStart] = useState<Date>(() => {
+    const d = new Date();
+    d.setMinutes(0, 0, 0);
+    return d;
+  });
+  const [permEnd, setPermEnd] = useState<Date>(() => {
+    const d = new Date();
+    d.setHours(d.getHours() + 1, 0, 0, 0);
+    return d;
+  });
   // Hourly OD: pick start and end time, the hours and time window are worked out automatically
   const [odStart, setOdStart] = useState<Date>(() => {
     const d = new Date();
@@ -274,10 +283,20 @@ export default function ApplyScreen({ route, navigation }: any) {
   // Overtime State
   const [otProject, setOtProject] = useState("PRJ-8092 • Core Banking Migration");
   const [otDate, setOtDate] = useState<Date>(new Date());
-  const [otHours, setOtHours] = useState("1.5");
+  // Overtime: pick start and end time, the hours are worked out automatically
+  const [otStart, setOtStart] = useState<Date>(() => {
+    const d = new Date();
+    d.setMinutes(0, 0, 0);
+    return d;
+  });
+  const [otEnd, setOtEnd] = useState<Date>(() => {
+    const d = new Date();
+    d.setHours(d.getHours() + 1, 0, 0, 0);
+    return d;
+  });
 
   // Advance State
-  const [advanceAmount, setAdvanceAmount] = useState("1,500.00");
+  const [advanceAmount, setAdvanceAmount] = useState("");
   const [advanceType, setAdvanceType] = useState("Salary Advance");
   const [advanceReason, setAdvanceReason] = useState("Personal Requirements");
   const [repaymentType, setRepaymentType] = useState("Monthly Deduction");
@@ -337,12 +356,12 @@ export default function ApplyScreen({ route, navigation }: any) {
 const [submittingOt, setSubmittingOt] = useState(false);
 
 const handleSubmitOvertime = async () => {
-    const hours = parseFloat(otHours) || 0;
-    if (hours <= 0) {
-      const msg = "Please enter valid overtime hours logged.";
-      Platform.OS === "web" ? window.alert(msg) : Alert.alert("Invalid Input", msg);
+    if (!otValid) {
+      const msg = `End time must be after the start time, and overtime can be at most ${OT_MAX_MIN / 60} hours.`;
+      Platform.OS === "web" ? window.alert(msg) : Alert.alert("Invalid Time", msg);
       return;
     }
+    const hours = otHoursPicked;
 
     if (!otDate) {
       const msg = "Please select the overtime date.";
@@ -374,7 +393,8 @@ const handleSubmitOvertime = async () => {
         empId: UserSession.empId,
         overtimeDate: formattedDate,
         hours: hours,
-        reason: otProject?.trim() || "Project Overtime Work",
+        timeSlot: otSlotText,   // saved in overtime_requests.time_slot
+        reason: `${otProject?.trim() || "Project Overtime Work"} [OT Slot: ${otSlotText} • ${otHoursPicked}h]`,
       };
 
       const res = await fetch(`${API_BASE_URL}/users/${UserSession.empId}/overtime`, {
@@ -392,7 +412,6 @@ const handleSubmitOvertime = async () => {
         const msg = `Overtime request for ${hours} hr(s) submitted successfully!${refId}`;
         Platform.OS === "web" ? window.alert(msg) : Alert.alert("Success", msg);
 
-        setOtHours("");
         setOtProject("");
       } else {
         const errText = await res.text();
@@ -435,6 +454,39 @@ const odSlotText = `${formatTime12(odStart)} - ${formatTime12(odEnd)}`;
 const formatHoursLabel = (mins: number) =>
   mins <= 0 ? "-" : `${Math.floor(mins / 60)}h ${pad2(mins % 60)}m`;
 
+// Short permission: duration and time window come from the start / end time
+const PERM_MAX_MIN = 4 * 60;   // longest short permission (4 hours). Change to your policy.
+const permMinutes = permEnd.getHours() * 60 + permEnd.getMinutes() - (permStart.getHours() * 60 + permStart.getMinutes());
+const permHoursPicked = Math.round((permMinutes / 60) * 100) / 100;
+const permSlotText = `${formatTime12(permStart)} - ${formatTime12(permEnd)}`;
+const permValid = permMinutes > 0 && permMinutes <= PERM_MAX_MIN;
+
+// Overtime: duration comes from the start / end time
+const OT_MAX_MIN = 16 * 60;
+const otMinutes = otEnd.getHours() * 60 + otEnd.getMinutes() - (otStart.getHours() * 60 + otStart.getMinutes());
+const otHoursPicked = Math.round((otMinutes / 60) * 100) / 100;
+const otSlotText = `${formatTime12(otStart)} - ${formatTime12(otEnd)}`;
+const otValid = otMinutes > 0 && otMinutes <= OT_MAX_MIN;
+
+// Advance limit from the server (50% of the salary earned for the working days so far, Sundays excluded)
+const [advLimit, setAdvLimit] = useState<any>(null);
+useEffect(() => {
+  if (activeTab !== "advance") return;
+  let alive = true;
+  (async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/users/${UserSession.empId}/advance-limit`, { cache: "no-store" });
+      if (res.ok && alive) setAdvLimit(await res.json());
+    } catch {
+      /* keep the last value; the server still checks on submit */
+    }
+  })();
+  return () => {
+    alive = false;
+  };
+}, [activeTab]);
+const inr = (n: any) => `₹${Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 const handleSubmitLeave = async () => {
   const isOd = requestType === "OD";
   const isOdHourly = isOd && odMode === "HOURLY";
@@ -444,6 +496,11 @@ const handleSubmitLeave = async () => {
       Platform.OS === "web" ? window.alert(msg) : Alert.alert("Invalid Time", msg);
       return;
     }
+  }
+  if (requestType === "PERMISSION" && !permValid) {
+    const msg = `End time must be after the start time, and a short permission can be at most ${PERM_MAX_MIN / 60} hours.`;
+    Platform.OS === "web" ? window.alert(msg) : Alert.alert("Invalid Time", msg);
+    return;
   }
   if (!reason.trim()) {
     const msg = "Please enter a reason or handover note.";
@@ -472,15 +529,15 @@ const handleSubmitLeave = async () => {
       // Full-day OD is sent as a normal leave request with the OD category.
       // Hourly OD is sent as an hourly request ("PERMISSION") with the OD category and the hours.
       requestType: isOdHourly ? "PERMISSION" : isOd ? "LEAVE" : requestType, // "LEAVE", "HALF_DAY", "PERMISSION"
-      hours: isOdHourly ? odHoursPicked : requestType === "PERMISSION" ? parseFloat(permHours) || 0 : null,
-      session: requestType === "HALF_DAY" ? halfDaySession : null, // "FIRST_HALF", "SECOND_HALF", or null
+      hours: isOdHourly ? odHoursPicked : requestType === "PERMISSION" ? permHoursPicked : null,
+      session: requestType === "HALF_DAY" ? halfDaySession : requestType === "PERMISSION" ? permSlotText : isOdHourly ? odSlotText : null, // half day: "FIRST_HALF"/"SECOND_HALF"; permission / hourly OD: the time slot
       startDate: targetStartDate, // "2026-09-15"
       endDate: targetEndDate,     // "2026-09-15"
       days: calculateLeaveDays(), // 0.5 for HALF_DAY, 0 for PERMISSION, or full days
       reason: isOdHourly
         ? `[OD Slot: ${odSlotText} • ${odHoursPicked}h] ${reason.trim()}`
         : requestType === "PERMISSION"
-        ? `[Slot: ${permTimeSlot} • ${permHours}h] ${reason}`
+        ? `[Slot: ${permSlotText} • ${permHoursPicked}h] ${reason.trim()}`
         : reason.trim(),
     };
 
@@ -519,6 +576,16 @@ const handleSubmitLeave = async () => {
 };
 
   const handleSubmitExpense = async () => {
+    if (!attachedFile) {
+      const msg = "Please attach the bill / receipt. A claim cannot be raised without it.";
+      Platform.OS === "web" ? window.alert(msg) : Alert.alert("Bill required", msg);
+      return;
+    }
+    if ((parseFloat(expenseAmount.replace(/[^0-9.]/g, "")) || 0) <= 0) {
+      const msg = "Please enter a valid claim amount.";
+      Platform.OS === "web" ? window.alert(msg) : Alert.alert("Invalid Amount", msg);
+      return;
+    }
     setSubmitting(true);
     try {
       const payload = {
@@ -566,6 +633,11 @@ const handleSubmitAdvance = async () => {
       Platform.OS === "web" ? window.alert(msg) : Alert.alert("Invalid Amount", msg);
       return;
     }
+    if (advLimit && cleanAmt > Number(advLimit.available || 0)) {
+      const msg = `You can request at most ${inr(advLimit.available)} now (per-day salary × days worked so far, Sundays excluded).`;
+      Platform.OS === "web" ? window.alert(msg) : Alert.alert("Above your limit", msg);
+      return;
+    }
 
     try {
       setSubmitting(true);
@@ -596,6 +668,11 @@ const handleSubmitAdvance = async () => {
         // Reset form inputs
         setAdvanceAmount("");
         setAdvanceReason("");
+        setAdvLimit(null);
+        fetch(`${API_BASE_URL}/users/${UserSession.empId}/advance-limit`, { cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((j) => j && setAdvLimit(j))
+          .catch(() => {});
       } else {
         // Parse backend rejection or exception message
         const errData = await res.json().catch(() => null);
@@ -873,36 +950,29 @@ const handleSubmitAdvance = async () => {
               </View>
             )}
 
-            {/* CASE 3b: PERMISSION */}
+            {/* CASE 3b: PERMISSION - pick start and end time, hours are calculated */}
             {requestType === "PERMISSION" && (
               <View className="mb-3">
+                <View className="mb-2">
+                  <DatePickerField label="Permission Date" value={permDate} onChange={setPermDate} />
+                </View>
                 <View className="flex-row mb-2">
                   <View className="flex-1 mr-2">
-                    <DatePickerField label="Permission Date" value={permDate} onChange={setPermDate} />
+                    <TimePickerField label="From Time" value={permStart} onChange={setPermStart} />
                   </View>
                   <View className="flex-1">
-                    <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">
-                      Hours
-                    </Text>
-                    <TextInput
-                      value={permHours}
-                      onChangeText={setPermHours}
-                      keyboardType="numeric"
-                      className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-xs font-bold text-[#1F1B3D]"
-                    />
+                    <TimePickerField label="To Time" value={permEnd} onChange={setPermEnd} />
                   </View>
                 </View>
-                <View className="mb-3">
-                  <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">
-                    Time Window Slot
+                <View className="bg-[#EEECFA] rounded-xl p-2.5 flex-row justify-between items-center">
+                  <Text className="text-[11px] font-bold text-[#7A76A6]">Permission Hours (auto)</Text>
+                  <Text className={`text-xs font-black ${permValid ? "text-[#5B4FD1]" : "text-[#E4453C]"}`}>
+                    {permValid
+                      ? `${formatHoursLabel(permMinutes)}  •  ${permSlotText}`
+                      : permMinutes > PERM_MAX_MIN
+                      ? `Max ${PERM_MAX_MIN / 60} hours allowed`
+                      : "End time must be after start"}
                   </Text>
-                  <TextInput
-                    value={permTimeSlot}
-                    onChangeText={setPermTimeSlot}
-                    placeholder="e.g. 02:00 PM - 04:00 PM"
-                    placeholderTextColor="#A6A2CE"
-                    className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-xs font-bold text-[#1F1B3D]"
-                  />
                 </View>
               </View>
             )}
@@ -1003,7 +1073,7 @@ const handleSubmitAdvance = async () => {
               </View>
             ) : (
               <View className="items-center mt-1">
-                <Text className="text-xs font-bold text-[#1F1B3D]">Upload Bill Receipt / Document</Text>
+                <Text className="text-xs font-bold text-[#1F1B3D]">Upload Bill Receipt / Document (required)</Text>
                 <Text className="text-[10px] font-medium text-[#7A76A6] mt-0.5">PDF, PNG, JPG up to 10MB</Text>
               </View>
             )}
@@ -1011,14 +1081,16 @@ const handleSubmitAdvance = async () => {
 
           <TouchableOpacity
             onPress={handleSubmitExpense}
-            disabled={submitting}
-            className="bg-[#5B4FD1] rounded-xl py-3.5 items-center active:opacity-90 shadow-sm"
+            disabled={submitting || !attachedFile}
+            className={`rounded-xl py-3.5 items-center shadow-sm ${
+              attachedFile ? "bg-[#5B4FD1] active:opacity-90" : "bg-slate-300 opacity-80"
+            }`}
           >
             {submitting ? (
               <ActivityIndicator size="small" color="#FFFFFF" />
             ) : (
               <Text className="text-white font-black text-xs uppercase tracking-wider">
-                Submit Claim
+                {attachedFile ? "Submit Claim" : "Attach Bill to Submit"}
               </Text>
             )}
           </TouchableOpacity>
@@ -1043,30 +1115,33 @@ const handleSubmitAdvance = async () => {
             />
           </View>
 
-          <View className="flex-row mb-4">
+          <View className="mb-2">
+            <DatePickerField label="OT Date" value={otDate} onChange={setOtDate} />
+          </View>
+          <View className="flex-row mb-2">
             <View className="flex-1 mr-2">
-              <DatePickerField label="OT Date" value={otDate} onChange={setOtDate} />
+              <TimePickerField label="From Time" value={otStart} onChange={setOtStart} />
             </View>
             <View className="flex-1">
-              <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">
-                Hours Logged
-              </Text>
-              <TextInput
-                value={otHours}
-                onChangeText={setOtHours}
-                keyboardType="numeric"
-                placeholder="e.g. 2.5"
-                placeholderTextColor="#A6A2CE"
-                className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-sm font-black text-[#5B4FD1]"
-              />
+              <TimePickerField label="To Time" value={otEnd} onChange={setOtEnd} />
             </View>
+          </View>
+          <View className="bg-[#EEECFA] rounded-xl p-2.5 flex-row justify-between items-center mb-4">
+            <Text className="text-[11px] font-bold text-[#7A76A6]">OT Hours (auto)</Text>
+            <Text className={`text-xs font-black ${otValid ? "text-[#5B4FD1]" : "text-[#E4453C]"}`}>
+              {otValid
+                ? `${formatHoursLabel(otMinutes)}  •  ${otSlotText}`
+                : otMinutes > OT_MAX_MIN
+                ? `Max ${OT_MAX_MIN / 60} hours allowed`
+                : "End time must be after start"}
+            </Text>
           </View>
 
           <TouchableOpacity
             onPress={handleSubmitOvertime}
-            disabled={submittingOt}
+            disabled={submittingOt || !otValid}
             className={`rounded-xl py-3.5 items-center shadow-sm ${
-              submittingOt ? "bg-[#5B4FD1]/70" : "bg-[#5B4FD1] active:opacity-90"
+              submittingOt || !otValid ? "bg-[#5B4FD1]/50" : "bg-[#5B4FD1] active:opacity-90"
             }`}
           >
             {submittingOt ? (
@@ -1101,14 +1176,22 @@ const handleSubmitAdvance = async () => {
                 <ChevronRight size={16} color="#FFFFFF" />
               </View>
 
-              <Text className="text-3xl font-black text-white tracking-tight mt-2">₹5,000.00</Text>
+              <Text className="text-3xl font-black text-white tracking-tight mt-2">
+                {advLimit ? inr(advLimit.available) : "..."}
+              </Text>
 
               <View className="flex-row items-center mt-2">
-                <Text className="text-xs font-semibold text-white/80">of ₹10,000.00</Text>
-                <View className="w-24 h-1.5 bg-white/25 rounded-full overflow-hidden ml-2">
-                  <View className="w-1/2 h-full bg-white rounded-full" />
-                </View>
+                <Text className="text-xs font-semibold text-white/80">
+                  {advLimit
+                    ? `${advLimit.workedDays} days worked × ${inr(advLimit.perDay)} = ${inr(advLimit.earned)} earned (Sundays excluded)`
+                    : "Checking your limit..."}
+                </Text>
               </View>
+              {!!advLimit && Number(advLimit.alreadyRequested) > 0 && (
+                <Text className="text-[10px] font-semibold text-white/80 mt-1">
+                  Already requested this month: {inr(advLimit.alreadyRequested)}
+                </Text>
+              )}
             </View>
 
             {/* Policy Window Status Notice */}
@@ -1171,7 +1254,7 @@ const handleSubmitAdvance = async () => {
                   onChangeText={(val) => setAdvanceAmount(val.replace(/[^0-9.]/g, ""))}
                   keyboardType="decimal-pad"
                   editable={isAdvanceWindowOpen}
-                  placeholder="0.00"
+                  placeholder={advLimit ? `Up to ${inr(advLimit.available)}` : "0.00"}
                   placeholderTextColor="#A6A2CE"
                   className={`border rounded-xl p-3 text-sm font-black ${
                     isAdvanceWindowOpen
