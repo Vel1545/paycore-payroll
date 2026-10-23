@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, Alert, TextInput, Modal, Platform } from "react-native";
-import { Search, RotateCw, X, Calculator, Download, Pencil } from "lucide-react-native";
+import { Search, RotateCw, X, Calculator, Download, Pencil, History } from "lucide-react-native";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import ScreenContainer from "../components/ScreenContainer";
@@ -80,6 +80,9 @@ export default function SalaryViewScreen() {
   const [adjReason, setAdjReason] = useState("");
   const [adjPresent0, setAdjPresent0] = useState("");
   const [adjLog, setAdjLog] = useState<any[]>([]);
+  const [dayLog, setDayLog] = useState<any[]>([]);
+  const [histOpen, setHistOpen] = useState(false);
+  const [histLoading, setHistLoading] = useState(false);
 
   const [detailKey, setDetailKey] = useState<{ empId: string; month: string } | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -190,6 +193,57 @@ export default function SalaryViewScreen() {
   };
 
   // ---- Admin correction of a month ----
+  // Short names for the edited fields (the edit form labels are long)
+  const FIELD_NAMES: Record<string, string> = {
+    presentDays: "Present days", adjWorkingDays: "Working days", adjLopDays: "LOP days", adjPenaltyInr: "Penalty ₹",
+    adjOtHours: "Overtime hours", adjAllowance: "Allowance ₹", bonus: "Bonus ₹", gift: "Gift ₹",
+    otherDeductions: "Other deductions ₹", advance: "Advance ₹",
+  };
+  const logDate = (v: any) => String(v ?? "").slice(0, 10);
+  // "13:39 (01:39 PM)"
+  const logTime = (v: any) => {
+    const t = String(v ?? "").replace("T", " ").slice(11, 16);
+    const [h, m] = t.split(":").map(Number);
+    if (isNaN(h) || isNaN(m)) return t;
+    return `${t} (${String(h % 12 || 12).padStart(2, "0")}:${String(m).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"})`;
+  };
+  // who / when / why lines, the same under every edit
+  const renderMeta = (g: any) => (
+    <>
+      <Text className="text-[10px] font-bold text-[#7A76A6] mt-1">Date: {logDate(g.edited_at)}</Text>
+      <Text className="text-[10px] font-bold text-[#7A76A6]">Time: {logTime(g.edited_at)}</Text>
+      <Text className="text-[10px] font-bold text-[#7A76A6]">Edited by: {g.editor_name || g.edited_by}</Text>
+      {!!g.reason && <Text className="text-[10px] font-bold text-[#7A76A6]">Reason: {g.reason}</Text>}
+    </>
+  );
+  const mins = (m: any) => (m === null || m === undefined ? "-" : `${Math.floor(Number(m) / 60)}h ${Number(m) % 60}m`);
+  // "Worked 7h 30m → 8h 0m, Penalty ₹50 → ₹0": only what really changed
+  const dayChange = (g: any) => {
+    const parts: string[] = [];
+    if (g.old_net_minutes !== g.new_net_minutes) parts.push(`Worked ${mins(g.old_net_minutes)} → ${mins(g.new_net_minutes)}`);
+    if (g.old_penalty_inr !== g.new_penalty_inr) parts.push(`Penalty ₹${g.old_penalty_inr ?? 0} → ₹${g.new_penalty_inr ?? 0}`);
+    if (g.old_ot_minutes !== g.new_ot_minutes) parts.push(`Overtime ${mins(g.old_ot_minutes)} → ${mins(g.new_ot_minutes)}`);
+    if (Number(g.old_payable_days) !== Number(g.new_payable_days)) parts.push(`Pay day ${g.old_payable_days ?? 0} → ${g.new_payable_days ?? 0}`);
+    return parts.join(", ") || "No change";
+  };
+
+  const openHistory = async () => {
+    if (!detailKey) return;
+    setHistOpen(true);
+    setHistLoading(true);
+    try {
+      const q = `empId=${encodeURIComponent(detailKey.empId)}&month=${detailKey.month}`;
+      const [a, d] = await Promise.all([fetch(`${API}/adjust/log?${q}`), fetch(`${API}/day-edit/log?${q}`)]);
+      setAdjLog(a.ok ? await a.json().catch(() => []) : []);
+      setDayLog(d.ok ? await d.json().catch(() => []) : []);
+    } catch {
+      setAdjLog([]);
+      setDayLog([]);
+    } finally {
+      setHistLoading(false);
+    }
+  };
+
   const openAdjust = async () => {
     if (!detailKey) return;
     try {
@@ -644,6 +698,13 @@ export default function SalaryViewScreen() {
                 <Text className="text-xs font-black text-[#5B4FD1]">Check</Text>
               </TouchableOpacity>
               <TouchableOpacity
+                onPress={openHistory}
+                className="px-3.5 h-10 rounded-2xl bg-white border border-[#E7E4F5] flex-row items-center justify-center mr-2"
+              >
+                <History size={14} color="#5B4FD1" />
+                <Text className="text-xs font-black text-[#5B4FD1] ml-1.5">History</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
                 onPress={openAdjust}
                 className="px-3.5 h-10 rounded-2xl bg-white border border-[#E7E4F5] flex-row items-center justify-center mr-2"
               >
@@ -768,6 +829,59 @@ export default function SalaryViewScreen() {
             </View>
           )}
 
+          {/* Edit history: salary edits + day-wise attendance edits */}
+          {histOpen && (
+            <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(31,27,61,0.45)" }}>
+              <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
+                <View className="bg-white rounded-3xl p-4 border border-[#E7E4F5]">
+                  <View className="flex-row items-center justify-between mb-3">
+                    <Text className="text-base font-black text-[#1F1B3D]">Edit history • {detailKey?.month}</Text>
+                    <TouchableOpacity onPress={() => setHistOpen(false)}>
+                      <X size={18} color="#1F1B3D" />
+                    </TouchableOpacity>
+                  </View>
+
+                  {histLoading ? (
+                    <ActivityIndicator size="small" color="#5B4FD1" />
+                  ) : (
+                    <>
+                      <Text className="text-[11px] font-black text-[#7A76A6] uppercase mb-1.5">Salary edits ({adjLog.length})</Text>
+                      {adjLog.length === 0 ? (
+                        <Text className="text-[11px] font-bold text-[#A6A2CE] mb-3">No salary edits this month.</Text>
+                      ) : (
+                        adjLog.map((g, i) => (
+                          <View key={`a${i}`} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-2.5 mb-1.5">
+                            <Text className="text-[11px] font-black text-[#1F1B3D]">
+                              {FIELD_NAMES[g.field_name] || g.field_name}: {g.old_value} → {g.new_value}
+                            </Text>
+                            {renderMeta(g)}
+                          </View>
+                        ))
+                      )}
+
+                      <Text className="text-[11px] font-black text-[#7A76A6] uppercase mb-1.5 mt-3">Day-wise attendance edits ({dayLog.length})</Text>
+                      {dayLog.length === 0 ? (
+                        <Text className="text-[11px] font-bold text-[#A6A2CE]">No day edits this month.</Text>
+                      ) : (
+                        dayLog.map((g, i) => (
+                          <View key={`d${i}`} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-2.5 mb-1.5">
+                            <Text className="text-[11px] font-black text-[#1F1B3D]">Attendance day: {g.date}</Text>
+                            <Text className="text-[11px] font-black text-[#1F1B3D]">{dayChange(g)}</Text>
+                            {renderMeta(g)}
+                          </View>
+                        ))
+                      )}
+                    </>
+                  )}
+
+                  <TouchableOpacity onPress={() => setHistOpen(false)} className="h-11 rounded-2xl bg-[#EEECFA] items-center justify-center mt-4">
+                    <Text className="text-sm font-black text-[#5B4FD1]">Close</Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
+            </View>
+          )}
+
           {/* Admin correction form */}
           {adjOpen && (
             <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(31,27,61,0.45)" }}>
@@ -803,9 +917,12 @@ export default function SalaryViewScreen() {
                     <View className="mt-3">
                       <Text className="text-[11px] font-black text-[#7A76A6] mb-1">Previous edits</Text>
                       {adjLog.slice(0, 5).map((g, i) => (
-                        <Text key={i} className="text-[11px] font-bold text-[#7A76A6]">
-                          {String(g.edited_at).slice(0, 16).replace("T", " ")} • {g.edited_by} • {g.field_name}: {g.old_value} → {g.new_value} ({g.reason})
-                        </Text>
+                        <View key={i} className="mb-2">
+                          <Text className="text-[11px] font-black text-[#1F1B3D]">
+                            {FIELD_NAMES[g.field_name] || g.field_name}: {g.old_value} → {g.new_value}
+                          </Text>
+                          {renderMeta(g)}
+                        </View>
                       ))}
                     </View>
                   )}

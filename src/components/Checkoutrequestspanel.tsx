@@ -30,11 +30,13 @@ type Filter = "PENDING" | "APPROVED" | "REJECTED" | "ALL";
 export default function CheckoutRequestsPanel({
   empId,
   onOpenAttendance,
+  highlightId,
 }: {
   empId: string;
   onOpenAttendance?: () => void;
+  highlightId?: string | null;   // request opened from a bell alert
 }) {
-  const [filter, setFilter] = useState<Filter>("PENDING");
+  const [filter, setFilter] = useState<Filter>(highlightId ? "ALL" : "PENDING");
   const [items, setItems] = useState<CheckoutReq[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -119,7 +121,7 @@ export default function CheckoutRequestsPanel({
           const ok = r.status === "APPROVED";
           const pending = r.status === "PENDING";
           return (
-            <View key={r.requestId} className="bg-white border border-[#E7E4F5] rounded-2xl p-4 shadow-xs mb-3">
+            <View key={r.requestId} className={`bg-white border rounded-2xl p-4 shadow-xs mb-3 ${highlightId && highlightId === r.requestId ? "border-[#5B4FD1] border-2" : "border-[#E7E4F5]"}`}>
               <View className="flex-row justify-between items-start mb-2.5">
                 <View>
                   <Text className="text-xs font-black text-[#1F1B3D]">Missed Check-Out • {r.dateLabel}</Text>

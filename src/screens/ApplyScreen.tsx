@@ -19,13 +19,11 @@ import {
   FileText,
   Wallet,
   AlertCircle,
-  LogOut,
   Home,
 } from "lucide-react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
 import ScreenContainer from "../components/ScreenContainer";
-import CheckoutRequestsPanel from "../components/Checkoutrequestspanel";
 import WfhCard from "../components/Wfhcard";
 import { UserSession } from "../services/UserSession";
 import { BASE_HOST } from "../constants/config";
@@ -208,8 +206,9 @@ function TimePickerField({ label, value, onChange }: TimePickerFieldProps) {
 }
 
 export default function ApplyScreen({ route, navigation }: any) {
-  const [activeTab, setActiveTab] = useState<"leave" | "expense" | "overtime" | "advance" | "checkout" | "wfh">(
-    route?.params?.tab || "leave"
+  const [activeTab, setActiveTab] = useState<"leave" | "expense" | "overtime" | "advance" | "wfh">(
+    // check-out / late punch requests now live in "My Requests & Tracker" (Approvals screen), not here
+    route?.params?.tab && route.params.tab !== "checkout" ? route.params.tab : "leave"
   );
 
   // WFH tab is shown only when the server says this person has regular WFH days (wfhDaysPerWeek > 0 or fixed
@@ -714,7 +713,6 @@ const handleSubmitAdvance = async () => {
           { id: "expense", label: "Expense", icon: FileText },
           { id: "overtime", label: "Overtime", icon: Clock },
           { id: "advance", label: "Advance", icon: Wallet },
-          { id: "checkout", label: "Check-Out", icon: LogOut },
           { id: "wfh", label: "WFH", icon: Home },
         ]
           .filter((tab) => tab.id !== "wfh" || wfhVisible)
@@ -1321,16 +1319,6 @@ const handleSubmitAdvance = async () => {
           </View>
         );
       })()}
-
-      {/* ========================================================================= */}
-      {/* TAB 5: MISSED CHECK-OUT REQUESTS (view only; requests are sent from Attendance) */}
-      {/* ========================================================================= */}
-      {activeTab === "checkout" && (
-        <CheckoutRequestsPanel
-          empId={String(UserSession.empId || "")}
-          onOpenAttendance={() => navigation?.navigate?.("Attendance")}
-        />
-      )}
 
       {/* ========================================================================= */}
       {/* TAB 6: WORK FROM HOME (regular WFH days, or emergency WFH like CL/ML)      */}

@@ -80,6 +80,8 @@ interface Announcement {
   date: string;
   priority: "High" | "Normal" | "Urgent";
   pinned?: boolean;
+  teams?: { id: string; name: string }[];       // empty = sent to everyone
+  tagged?: { empId: string; name: string }[];   // people tagged with @
 }
 
 // A real employee, loaded from the server (user_configs)
@@ -141,6 +143,8 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
   const [chatType, setChatType] = useState<"groups" | "direct">("groups");
   const [activeConversation, setActiveConversation] = useState<string>("general");
   const [activeDirectUser, setActiveDirectUser] = useState<Person | null>(null);
+  // false = the list (groups and people), true = one full chat open (like WhatsApp)
+  const [chatOpen, setChatOpen] = useState(false);
 
   const [inputText, setInputText] = useState("");
   const [inputHeight, setInputHeight] = useState(40); // grows with the lines typed, up to 5 lines
@@ -185,6 +189,10 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
   const [newContent, setNewContent] = useState("");
   const [newPriority, setNewPriority] = useState<"Normal" | "High" | "Urgent">("Normal");
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  // Who the notice is for: no team and no tag = everyone
+  const [annTeamIds, setAnnTeamIds] = useState<string[]>([]);
+  const [annTagged, setAnnTagged] = useState<Person[]>([]);
+  const [annMentionQuery, setAnnMentionQuery] = useState<string | null>(null);
 
   // Newest request wins: an older, slower response can never replace the room that is open now
   const roomSeq = useRef(0);
@@ -314,7 +322,7 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
 
   const fetchAnnouncementsFromDb = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/announcements`);
+      const res = await fetch(`${API_BASE_URL}/announcements?empId=${encodeURIComponent(currentEmpId)}`);
       const data = await res.json();
       if (Array.isArray(data)) {
         const formatted: Announcement[] = data.map((a: any) => ({
@@ -333,6 +341,8 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
               : "Today",
           priority: a.category === "URGENT" ? "Urgent" : a.category === "POLICY" ? "High" : "Normal",
           pinned: a.pinned || a.is_pinned || false,
+          teams: Array.isArray(a.targetChannels) ? a.targetChannels : [],
+          tagged: Array.isArray(a.mentions) ? a.mentions : [],
         }));
         setAnnouncements(formatted);
       }
@@ -367,7 +377,7 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
 
   // Switching room: clear the old room at once (never show the previous room's messages) and load the new one
   useEffect(() => {
-    if (activeTab !== "channels" || !currentEmpId) return;
+    if (activeTab !== "channels" || !currentEmpId || !chatOpen) return;
     setMessages([]);
     lastMsgId.current = null;
     setRoomError(null);
@@ -380,13 +390,13 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
     } else {
       setRoomMembers([]);
     }
-  }, [activeConversation, activeTab, currentEmpId]);
+  }, [activeConversation, activeTab, currentEmpId, chatOpen]);
 
   // tell the push handler which room is open (no banner for it); cleared when leaving
   useEffect(() => {
-    setActiveChatRoom(isFocused && activeTab === "channels" ? activeConversation : "");
+    setActiveChatRoom(isFocused && activeTab === "channels" && chatOpen ? activeConversation : "");
     return () => setActiveChatRoom("");
-  }, [activeConversation, activeTab, isFocused]);
+  }, [activeConversation, activeTab, isFocused, chatOpen]);
 
   // opened from a chat push notification: go straight to that room
   useEffect(() => {
@@ -404,12 +414,12 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
 
   // Live refresh of the open chat
   useEffect(() => {
-    if (activeTab !== "channels" || !currentEmpId || !isFocused) return;
+    if (activeTab !== "channels" || !currentEmpId || !isFocused || !chatOpen) return;
     const id = setInterval(() => {
       if (AppState.currentState === "active") fetchRoomMessages(activeConversation);
     }, POLL_MESSAGES_MS);
     return () => clearInterval(id);
-  }, [activeConversation, activeTab, currentEmpId, isFocused]);
+  }, [activeConversation, activeTab, currentEmpId, isFocused, chatOpen]);
 
   useEffect(() => {
     if (activeTab === "channels") {
@@ -460,6 +470,7 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
     setActiveDirectUser(person);
     setExtraDmPartners((prev) => (prev.some((x) => x.empId === person.empId) ? prev : [person, ...prev]));
     setActiveConversation(dmRoomId(currentEmpId, person.empId));
+    setChatOpen(true);
     setShowDmModal(false);
     setDmSearch("");
   };
@@ -468,6 +479,15 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
     setChatType("groups");
     setActiveDirectUser(null);
     setActiveConversation(channelId);
+    setChatOpen(true);
+  };
+
+  const closeChat = () => {
+    setChatOpen(false);
+    setShowMemberList(false);
+    setShowMentionSuggestions(false);
+    refreshUnread();
+    loadInbox();
   };
 
   const handlePickDeviceDocument = async () => {
@@ -653,6 +673,7 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
         }
         await loadChannels();
         handleSelectChannel("general");
+        setChatOpen(false);
       } catch (e) {
         notify("Error", "Failed to delete the group.");
       }
@@ -669,6 +690,57 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
   };
 
   // ----------------------------- announcements -----------------------------
+  // Teams an admin can send to: department groups and private groups (not "General" - that is "Everyone")
+  const teamChoices = channels.filter((c) => c.type !== "GENERAL");
+  const toggleTeam = (id: string) =>
+    setAnnTeamIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  // typing @ in the notice text opens the people list (everyone, not only one group)
+  const handleAnnContentChange = (text: string) => {
+    setNewContent(text);
+    const m = text.match(/(?:^|\s)@([^\s@]*)$/);
+    setAnnMentionQuery(m ? m[1].toLowerCase() : null);
+  };
+  const pickAnnMention = (p: Person) => {
+    setNewContent((prev) => prev.replace(/(^|\s)@[^\s@]*$/, `$1@${p.name} `));
+    setAnnTagged((prev) => (prev.some((x) => x.empId === p.empId) ? prev : [...prev, p]));
+    setAnnMentionQuery(null);
+  };
+  const annMentionList =
+    annMentionQuery === null
+      ? []
+      : directory
+          .filter((p) => p.empId !== currentEmpId)
+          .filter((p) => p.name.toLowerCase().includes(annMentionQuery) || p.empId.toLowerCase().includes(annMentionQuery))
+          .slice(0, 6);
+
+  const broadcastLabel = () => {
+    const tags = annTagged.filter((p) => newContent.includes(`@${p.name}`)).length;
+    if (annTeamIds.length === 0 && tags === 0) return "Broadcast to All Employees";
+    const parts: string[] = [];
+    if (annTeamIds.length) parts.push(`${annTeamIds.length} team${annTeamIds.length === 1 ? "" : "s"}`);
+    if (tags) parts.push(`${tags} tagged`);
+    return `Send to ${parts.join(" + ")}`;
+  };
+
+  // notice text with @Name highlighted
+  const renderAnnouncementText = (text: string) => {
+    const base = "text-xs font-medium text-[#7A76A6] leading-relaxed mb-2.5";
+    if (!mentionRegex || !text.includes("@")) return <Text className={base}>{text}</Text>;
+    const parts = text.split(mentionRegex);
+    return (
+      <Text className={base}>
+        {parts.map((part, i) =>
+          i % 2 === 1 ? (
+            <Text key={i} className="font-black text-[#5B4FD1]">{part}</Text>
+          ) : (
+            part
+          )
+        )}
+      </Text>
+    );
+  };
+
   const handleCreateAnnouncement = async () => {
     if (!newTitle.trim() || !newContent.trim()) {
       notify("Incomplete Form", "Please enter both title and description.");
@@ -686,6 +758,9 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
           content: newContent.trim(),
           category: categoryPayload,
           isPinned: newPriority === "Urgent",
+          targetChannels: annTeamIds,
+          // only people whose @Name is still in the text
+          mentions: annTagged.filter((p) => newContent.includes(`@${p.name}`)).map((p) => p.empId),
         }),
       });
 
@@ -694,6 +769,9 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
         setNewTitle("");
         setNewContent("");
         setNewPriority("Normal");
+        setAnnTeamIds([]);
+        setAnnTagged([]);
+        setAnnMentionQuery(null);
         setShowNewAnnouncementModal(false);
         fetchAnnouncementsFromDb();
       }
@@ -798,7 +876,10 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
         <View className="bg-[#5B4FD1] rounded-3xl p-4 mb-3 shadow-xs flex-row items-center justify-between shrink-0">
           <View className="flex-row items-center gap-2.5">
             <TouchableOpacity
-              onPress={() => (navigation.canGoBack?.() ? navigation.goBack() : navigation.navigate("Home"))}
+              onPress={() => {
+                if (activeTab === "channels" && chatOpen) { closeChat(); return; }
+                navigation.canGoBack?.() ? navigation.goBack() : navigation.navigate("Home");
+              }}
               className="w-9 h-9 bg-white/20 rounded-2xl items-center justify-center active:opacity-80"
             >
               <ChevronLeft size={20} color="#FFFFFF" />
@@ -828,6 +909,7 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
         {/* ========================================================================= */}
         {/* 2. MODE SWITCH: CHATS vs ANNOUNCEMENTS                                    */}
         {/* ========================================================================= */}
+        {!(activeTab === "channels" && chatOpen) && (
         <View className="flex-row bg-white p-1 rounded-2xl mb-3 border border-[#E7E4F5] shadow-xs shrink-0">
           <TouchableOpacity
             onPress={() => setActiveTab("channels")}
@@ -855,124 +937,29 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
             </Text>
           </TouchableOpacity>
         </View>
+        )}
 
         {/* ========================================================================= */}
         {/* TAB 1: GROUPS + DIRECT MESSAGES                                           */}
         {/* ========================================================================= */}
-        {activeTab === "channels" && (
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-            className="flex-1 min-h-0 flex-col"
-          >
-            {/* Direct messages: people you chat with + New chat */}
-            <View className="mb-2 shrink-0">
-              <View className="flex-row items-center justify-between mb-1.5 px-1">
-                <Text className="text-[10px] font-black text-[#1F1B3D] uppercase tracking-wider">Direct Messages</Text>
-                <Text className="text-[9px] font-bold text-[#7A76A6]">{directory.length} colleagues</Text>
-              </View>
-
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row gap-2">
+        {activeTab === "channels" && !chatOpen && (
+          <View className="flex-1 min-h-0 flex-col">
+            <View className="flex-row items-center justify-between mb-2 px-1 shrink-0">
+              <Text className="text-[10px] font-black text-[#1F1B3D] uppercase tracking-wider">
+                Chats ({channels.length + dmPartners.length})
+              </Text>
+              <View className="flex-row items-center">
                 <TouchableOpacity
                   onPress={() => setShowDmModal(true)}
-                  className="flex-row items-center px-3 py-1.5 rounded-2xl border border-[#5B4FD1] bg-[#EEECFA] mr-2"
+                  className="flex-row items-center px-3 py-1.5 rounded-2xl border border-[#5B4FD1] bg-[#EEECFA]"
                 >
                   <Search size={13} color="#5B4FD1" />
                   <Text className="text-xs font-black text-[#5B4FD1] ml-1.5">New chat</Text>
                 </TouchableOpacity>
-
-                {dmPartners.map(({ person, last }) => {
-                  const isSelected = chatType === "direct" && activeDirectUser?.empId === person.empId;
-                  return (
-                    <TouchableOpacity
-                      key={person.empId}
-                      onPress={() => handleSelectDirectUser(person)}
-                      className={`flex-row items-center px-3 py-1.5 rounded-2xl border mr-2 ${
-                        isSelected ? "bg-[#5B4FD1] border-[#5B4FD1] shadow-xs" : "bg-white border-[#E7E4F5]"
-                      }`}
-                    >
-                      <View
-                        className={`w-7 h-7 rounded-full items-center justify-center mr-2 ${
-                          isSelected ? "bg-white/20" : "bg-[#EEECFA]"
-                        }`}
-                      >
-                        <Text className={`text-[10px] font-black ${isSelected ? "text-white" : "text-[#5B4FD1]"}`}>
-                          {initial(person.name)}
-                        </Text>
-                      </View>
-                      <View style={{ maxWidth: 120 }}>
-                        <Text
-                          className={`text-xs font-black ${isSelected ? "text-white" : "text-[#1F1B3D]"}`}
-                          numberOfLines={1}
-                        >
-                          {person.name.split(" ")[0]}
-                        </Text>
-                        <Text
-                          className={`text-[9px] font-medium ${isSelected ? "text-purple-200" : "text-[#7A76A6]"}`}
-                          numberOfLines={1}
-                        >
-                          {last || person.department || person.empId}
-                        </Text>
-                      </View>
-                      {(unreadRooms[dmRoomId(currentEmpId, person.empId)] || 0) > 0 && !isSelected && (
-                        <View
-                          style={{ backgroundColor: "#16A34A", minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5 }}
-                          className="items-center justify-center ml-2"
-                        >
-                          <Text className="text-[9px] font-black text-white">{(unreadRooms[dmRoomId(currentEmpId, person.empId)] || 0) > 99 ? "99+" : (unreadRooms[dmRoomId(currentEmpId, person.empId)] || 0)}</Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            </View>
-
-            {/* Groups: general, department and private groups this person belongs to */}
-            <View className="flex-row items-center justify-between mb-2 shrink-0">
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row gap-1.5 flex-1 mr-2">
-                {channels.map((ch) => {
-                  const isSelected = chatType === "groups" && activeConversation === ch.id;
-                  return (
-                    <TouchableOpacity
-                      key={ch.id}
-                      onPress={() => handleSelectChannel(ch.id)}
-                      className={`px-3 py-1.5 rounded-xl border flex-row items-center mr-1.5 ${
-                        isSelected ? "bg-[#5B4FD1] border-[#5B4FD1] shadow-xs" : "bg-white border-[#E7E4F5]"
-                      }`}
-                    >
-                      {channelIcon(ch, isSelected)}
-                      <Text className={`text-xs font-bold ml-1 ${isSelected ? "text-white" : "text-[#1F1B3D]"}`}>
-                        {ch.name}
-                      </Text>
-                      {(unreadRooms[ch.id] || 0) > 0 && !isSelected && (
-                        <View
-                          style={{ backgroundColor: "#16A34A", minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5 }}
-                          className="items-center justify-center ml-2"
-                        >
-                          <Text className="text-[9px] font-black text-white">{(unreadRooms[ch.id] || 0) > 99 ? "99+" : (unreadRooms[ch.id] || 0)}</Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                  );
-                })}
-                {channelsLoaded && channels.length === 0 && (
-                  <Text className="text-xs font-semibold text-[#7A76A6] py-2">No groups yet</Text>
-                )}
-              </ScrollView>
-
-              <View className="flex-row items-center shrink-0">
-                {isAdmin && currentChannel?.canDelete && chatType === "groups" && (
-                  <TouchableOpacity
-                    onPress={() => handleDeleteChannel(currentChannel.id)}
-                    className="w-7 h-7 bg-rose-50 border border-rose-200 rounded-xl items-center justify-center mr-1"
-                  >
-                    <Trash2 size={13} color="#E11D48" />
-                  </TouchableOpacity>
-                )}
                 {isAdmin && (
                   <TouchableOpacity
                     onPress={openCreateGroup}
-                    className="w-8 h-8 bg-[#5B4FD1] rounded-xl items-center justify-center shadow-xs active:opacity-90"
+                    className="w-8 h-8 bg-[#5B4FD1] rounded-xl items-center justify-center shadow-xs active:opacity-90 ml-2"
                   >
                     <Plus size={15} color="#FFFFFF" />
                   </TouchableOpacity>
@@ -980,9 +967,106 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
               </View>
             </View>
 
+            <ScrollView
+              className="flex-1 min-h-0 bg-white border border-[#E7E4F5] rounded-3xl"
+              contentContainerStyle={{ paddingVertical: 4 }}
+              showsVerticalScrollIndicator={true}
+            >
+              {/* Groups: general, department and private groups */}
+              {channels.map((ch) => {
+                const unread = unreadRooms[ch.id] || 0;
+                return (
+                  <TouchableOpacity
+                    key={ch.id}
+                    onPress={() => handleSelectChannel(ch.id)}
+                    className="flex-row items-center px-4 py-3 border-b border-[#F1EFFA] active:bg-[#F6F5FC]"
+                  >
+                    <View className="w-11 h-11 rounded-full bg-[#EEECFA] items-center justify-center mr-3">
+                      {ch.type === "GENERAL" ? (
+                        <Globe size={18} color="#5B4FD1" />
+                      ) : ch.type === "DEPARTMENT" ? (
+                        <Building2 size={18} color="#5B4FD1" />
+                      ) : (
+                        <Lock size={18} color="#5B4FD1" />
+                      )}
+                    </View>
+                    <View className="flex-1 min-w-0">
+                      <Text className={`text-sm text-[#1F1B3D] ${unread > 0 ? "font-black" : "font-bold"}`} numberOfLines={1}>
+                        {ch.name}
+                      </Text>
+                      <Text className="text-[11px] font-medium text-[#7A76A6]" numberOfLines={1}>
+                        {channelSubtitle(ch, ch.memberCount)}
+                      </Text>
+                    </View>
+                    {unread > 0 && (
+                      <View
+                        style={{ backgroundColor: "#16A34A", minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 6 }}
+                        className="items-center justify-center ml-2"
+                      >
+                        <Text className="text-[10px] font-black text-white">{unread > 99 ? "99+" : unread}</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+              {channelsLoaded && channels.length === 0 && (
+                <Text className="text-xs font-semibold text-[#7A76A6] px-4 py-3">No groups yet</Text>
+              )}
+
+              {/* People you chat with */}
+              {dmPartners.map(({ person, last }) => {
+                const unread = unreadRooms[dmRoomId(currentEmpId, person.empId)] || 0;
+                return (
+                  <TouchableOpacity
+                    key={person.empId}
+                    onPress={() => handleSelectDirectUser(person)}
+                    className="flex-row items-center px-4 py-3 border-b border-[#F1EFFA] active:bg-[#F6F5FC]"
+                  >
+                    <View className="w-11 h-11 rounded-full bg-[#EEECFA] items-center justify-center mr-3">
+                      <Text className="text-sm font-black text-[#5B4FD1]">{initial(person.name)}</Text>
+                    </View>
+                    <View className="flex-1 min-w-0">
+                      <Text className={`text-sm text-[#1F1B3D] ${unread > 0 ? "font-black" : "font-bold"}`} numberOfLines={1}>
+                        {person.name}
+                      </Text>
+                      <Text
+                        className={`text-[11px] ${unread > 0 ? "font-bold text-[#1F1B3D]" : "font-medium text-[#7A76A6]"}`}
+                        numberOfLines={1}
+                      >
+                        {last || person.department || person.empId}
+                      </Text>
+                    </View>
+                    {unread > 0 && (
+                      <View
+                        style={{ backgroundColor: "#16A34A", minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 6 }}
+                        className="items-center justify-center ml-2"
+                      >
+                        <Text className="text-[10px] font-black text-white">{unread > 99 ? "99+" : unread}</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+              {dmPartners.length === 0 && (
+                <Text className="text-[11px] font-semibold text-[#7A76A6] px-4 py-3">
+                  No personal chats yet. Tap New chat to start one.
+                </Text>
+              )}
+            </ScrollView>
+          </View>
+        )}
+
+        {activeTab === "channels" && chatOpen && (
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            className="flex-1 min-h-0 flex-col"
+          >
             {/* Active conversation sub-header */}
             <View className="bg-white border-t border-x border-[#E7E4F5] px-4 py-2.5 rounded-t-3xl flex-row items-center justify-between shrink-0 shadow-xs">
               <View className="flex-row items-center flex-1 mr-2">
+                <TouchableOpacity onPress={closeChat} className="w-8 h-8 items-center justify-center mr-1 active:opacity-70">
+                  <ChevronLeft size={20} color="#5B4FD1" />
+                </TouchableOpacity>
                 <View className="w-8 h-8 rounded-full bg-[#EEECFA] items-center justify-center mr-2.5">
                   {chatType === "direct" ? (
                     <User size={15} color="#5B4FD1" />
@@ -1006,6 +1090,14 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
                 </View>
               </View>
 
+              {isAdmin && currentChannel?.canDelete && chatType === "groups" && (
+                <TouchableOpacity
+                  onPress={() => handleDeleteChannel(currentChannel.id)}
+                  className="w-7 h-7 bg-rose-50 border border-rose-200 rounded-xl items-center justify-center mr-1.5"
+                >
+                  <Trash2 size={13} color="#E11D48" />
+                </TouchableOpacity>
+              )}
               {chatType === "groups" && (
                 <TouchableOpacity
                   onPress={() => setShowMemberList(!showMemberList)}
@@ -1247,13 +1339,70 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
 
                 <TextInput
                   value={newContent}
-                  onChangeText={setNewContent}
+                  onChangeText={handleAnnContentChange}
                   multiline
                   numberOfLines={3}
-                  placeholder="Detailed announcement content..."
+                  placeholder="Detailed announcement content... (type @ to tag a person)"
                   placeholderTextColor="#A6A2CE"
                   className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-xs font-medium text-[#1F1B3D] min-h-[75px]"
                 />
+
+                {/* @tag suggestions: every employee */}
+                {annMentionList.length > 0 && (
+                  <View className="bg-white border border-[#E7E4F5] rounded-2xl p-2 shadow-lg max-h-40">
+                    <ScrollView keyboardShouldPersistTaps="handled">
+                      {annMentionList.map((p) => (
+                        <TouchableOpacity
+                          key={p.empId}
+                          onPress={() => pickAnnMention(p)}
+                          className="flex-row items-center justify-between p-2 rounded-xl"
+                        >
+                          <Text className="text-xs font-bold text-[#1F1B3D]">@{p.name}</Text>
+                          <Text className="text-[9px] font-medium text-[#7A76A6]">{p.department || p.empId}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+
+                {/* Send to: Everyone, or pick teams */}
+                <View>
+                  <Text className="text-[10px] font-bold text-[#7A76A6] uppercase mb-1.5">Send to</Text>
+                  <View className="flex-row flex-wrap">
+                    <TouchableOpacity
+                      onPress={() => setAnnTeamIds([])}
+                      className={`px-3 py-1 rounded-lg border mr-1.5 mb-1.5 ${
+                        annTeamIds.length === 0 ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-[#F6F5FC] border-[#E7E4F5]"
+                      }`}
+                    >
+                      <Text className={`text-[10px] font-black ${annTeamIds.length === 0 ? "text-white" : "text-[#1F1B3D]"}`}>
+                        Everyone
+                      </Text>
+                    </TouchableOpacity>
+                    {teamChoices.map((c) => {
+                      const on = annTeamIds.includes(c.id);
+                      return (
+                        <TouchableOpacity
+                          key={c.id}
+                          onPress={() => toggleTeam(c.id)}
+                          className={`px-3 py-1 rounded-lg border mr-1.5 mb-1.5 ${
+                            on ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-[#F6F5FC] border-[#E7E4F5]"
+                          }`}
+                        >
+                          <Text className={`text-[10px] font-black ${on ? "text-white" : "text-[#1F1B3D]"}`}>
+                            {c.name} ({c.memberCount})
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                  {annTagged.filter((p) => newContent.includes(`@${p.name}`)).length > 0 && (
+                    <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5">
+                      Tagged: {annTagged.filter((p) => newContent.includes(`@${p.name}`)).map((p) => `@${p.name}`).join(", ")}
+                      {annTeamIds.length === 0 ? " (only these people get it)" : ""}
+                    </Text>
+                  )}
+                </View>
 
                 <View className="flex-row items-center justify-between">
                   <Text className="text-[10px] font-bold text-[#7A76A6] uppercase">Priority Level</Text>
@@ -1278,7 +1427,7 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
                   onPress={handleCreateAnnouncement}
                   className="bg-[#5B4FD1] py-3 rounded-2xl items-center shadow-md active:opacity-90"
                 >
-                  <Text className="text-white font-black text-xs uppercase tracking-wider">Broadcast to All Employees</Text>
+                  <Text className="text-white font-black text-xs uppercase tracking-wider">{broadcastLabel()}</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -1331,7 +1480,26 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
                   </View>
 
                   <Text className="text-sm font-black text-[#1F1B3D] mb-1">{item.title}</Text>
-                  <Text className="text-xs font-medium text-[#7A76A6] leading-relaxed mb-2.5">{item.content}</Text>
+                  {renderAnnouncementText(item.content)}
+                  {((item.teams?.length ?? 0) > 0 || (item.tagged?.length ?? 0) > 0) && (
+                    <View className="flex-row flex-wrap mb-2">
+                      {item.teams?.map((t) => (
+                        <View key={t.id} className="bg-[#EEECFA] px-2 py-0.5 rounded-md mr-1.5 mb-1">
+                          <Text className="text-[9px] font-black text-[#5B4FD1]">To: {t.name}</Text>
+                        </View>
+                      ))}
+                      {item.tagged?.map((t) => (
+                        <View
+                          key={t.empId}
+                          className={`px-2 py-0.5 rounded-md mr-1.5 mb-1 ${t.empId === currentEmpId ? "bg-amber-100" : "bg-slate-100"}`}
+                        >
+                          <Text className={`text-[9px] font-black ${t.empId === currentEmpId ? "text-amber-800" : "text-[#7A76A6]"}`}>
+                            {t.empId === currentEmpId ? "Tagged you" : `@${t.name}`}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
                   <Text className="text-[10px] font-bold text-[#1F1B3D] border-t border-slate-100 pt-2">
                     Posted by: {item.postedBy}
                   </Text>

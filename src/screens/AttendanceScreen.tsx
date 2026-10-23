@@ -122,6 +122,25 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
   const [coApprovedTimes, setCoApprovedTimes] = useState<Record<string, string>>({}); // date -> "06:45 PM"
   const [shiftEndStr, setShiftEndStr] = useState<string>("");
 
+  // ------------------------------------------------------------------
+  // Late punch request: only TODAY, only when the check-in is later than shift start + 5 min.
+  // The server decides (eligibility); tomorrow the button is gone by itself.
+  // ------------------------------------------------------------------
+  const LATE_REASONS = ["Office phone locked", "Network problem", "Forgot to punch", "Phone problem", "Other"];
+  const [lateElig, setLateElig] = useState<{
+    eligible: boolean; late: boolean; requestStatus: string | null; date: string;
+    used: number; limit: number; limitReached: boolean;
+  }>({ eligible: false, late: false, requestStatus: null, date: "", used: 0, limit: 3, limitReached: false });
+  const [lpRecord, setLpRecord] = useState<AttendanceRecord | null>(null);
+  const [lpHour, setLpHour] = useState("");
+  const [lpMinute, setLpMinute] = useState("");
+  const [lpAmPm, setLpAmPm] = useState<"AM" | "PM">("AM");
+  const [lpReason, setLpReason] = useState(LATE_REASONS[0]);
+  const [lpNote, setLpNote] = useState("");
+  const [lpError, setLpError] = useState("");
+  const [lpSending, setLpSending] = useState(false);
+  const [lpDone, setLpDone] = useState("");
+
   const isMissingTime = (v?: string) => !v || v.trim() === "" || /^[-\u2013\u2014:\s]+$/.test(v);
 
   const pad2 = (n: number) => String(n).padStart(2, "0");
@@ -190,6 +209,62 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
     if (iso < today) return true;
     if (iso === today) return shiftEndPassed();
     return false;
+  };
+
+  // The eligible record is today's card (the server says which date).
+  const isLatePunchCard = (rec: AttendanceRecord): boolean => {
+    const iso = recordIso(rec);
+    return !!iso && iso === lateElig.date && lateElig.late;
+  };
+  const canRequestLatePunch = (rec: AttendanceRecord): boolean => isLatePunchCard(rec) && lateElig.eligible;
+
+  const openLatePunch = (rec: AttendanceRecord) => {
+    setLpRecord(rec);
+    setLpHour("");
+    setLpMinute("");
+    setLpAmPm("AM");
+    setLpReason(LATE_REASONS[0]);
+    setLpNote("");
+    setLpError("");
+    setLpDone("");
+  };
+
+  const submitLatePunch = async () => {
+    if (!lpRecord) return;
+    const h = parseInt(lpHour, 10);
+    const m = parseInt(lpMinute || "0", 10);
+    if (isNaN(h) || h < 1 || h > 12 || isNaN(m) || m < 0 || m > 59) {
+      setLpError("Enter the time you really arrived, for example 9 : 20 AM.");
+      return;
+    }
+    let h24 = h % 12;
+    if (lpAmPm === "PM") h24 += 12;
+    setLpSending(true);
+    setLpError("");
+    try {
+      const res = await fetch(`${API_BASE_URL}/checkin-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          empId,
+          date: lateElig.date,
+          requestedTime: `${pad2(h24)}:${pad2(m)}`,
+          reason: lpReason,
+          note: lpNote.trim(),
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setLpError(json?.message || "Could not send the request. Try again.");
+        return;
+      }
+      setLateElig((p) => ({ ...p, eligible: false, requestStatus: "PENDING", used: p.used + 1, limitReached: p.used + 1 >= p.limit }));
+      setLpDone("Request sent to admin. Your check-in and late penalty are corrected once it is approved.");
+    } catch {
+      setLpError("Network problem. Check your connection and try again.");
+    } finally {
+      setLpSending(false);
+    }
   };
 
   const openCheckoutRequest = (rec: AttendanceRecord) => {
@@ -288,6 +363,21 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
           if (j2.shiftEnd) setShiftEndStr(j2.shiftEnd);
         }
       } catch { /* request status is optional */ }
+      try {
+        const r3 = await fetch(`${API_BASE_URL}/checkin-requests/eligibility?empId=${empId}`);
+        if (r3.ok) {
+          const j3 = await r3.json();
+          setLateElig({
+            eligible: !!j3.eligible,
+            late: !!j3.late,
+            requestStatus: j3.requestStatus || null,
+            date: j3.date || "",
+            used: Number(j3.used ?? 0),
+            limit: Number(j3.limit ?? 3),
+            limitReached: !!j3.limitReached,
+          });
+        }
+      } catch { /* late punch button is optional */ }
     } catch (err) {
       console.warn("Failed to load attendance records:", err);
     } finally {
@@ -579,9 +669,51 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
                     key={recordKey}
                     className="bg-white border border-[#E7E4F5] rounded-2xl p-3.5 shadow-xs mb-3"
                   >
-                    {/* 1. Header: Date + Status Badge */}
-                    <View className="flex-row items-center justify-between pb-2 mb-2 border-b border-slate-100">
+                    {/* 1. Header: Date | small request buttons | Status Badge */}
+                    <View className="flex-row items-center pb-2 mb-2 border-b border-slate-100">
                       <Text className="text-xs font-black text-[#1F1B3D]">{item.date}</Text>
+
+                      {/* Small action buttons sit between the date and the status, so the card body stays short */}
+                      <View className="flex-1 flex-row flex-wrap items-center justify-center px-2" style={{ gap: 4 }}>
+                        {isPresent && canRequestLatePunch(item) && (
+                          <TouchableOpacity
+                            onPress={() => openLatePunch(item)}
+                            activeOpacity={0.85}
+                            className="flex-row items-center bg-[#EEECFA] border border-[#5B4FD1]/30 rounded-full px-2.5 py-1"
+                          >
+                            <Clock size={10} color="#5B4FD1" />
+                            <Text className="text-[9.5px] font-black text-[#5B4FD1] ml-1">Late punch</Text>
+                          </TouchableOpacity>
+                        )}
+                        {isPresent && isLatePunchCard(item) && lateElig.limitReached && !lateElig.requestStatus && (
+                          <View className="flex-row items-center bg-slate-100 border border-slate-200 rounded-full px-2.5 py-1">
+                            <Clock size={10} color="#7A76A6" />
+                            <Text className="text-[9.5px] font-black text-[#7A76A6] ml-1">Late punch limit {lateElig.used}/{lateElig.limit}</Text>
+                          </View>
+                        )}
+                        {isPresent && isLatePunchCard(item) && lateElig.requestStatus === "PENDING" && (
+                          <View className="flex-row items-center bg-[#EEECFA] border border-[#5B4FD1]/20 rounded-full px-2.5 py-1">
+                            <Clock size={10} color="#5B4FD1" />
+                            <Text className="text-[9.5px] font-black text-[#5B4FD1] ml-1">Late punch sent</Text>
+                          </View>
+                        )}
+                        {isPresent && isLatePunchCard(item) && lateElig.requestStatus === "APPROVED" && (
+                          <View className="flex-row items-center bg-[#E7FAEE] border border-[#1FAE5C]/30 rounded-full px-2.5 py-1">
+                            <ShieldCheck size={10} color="#1FAE5C" />
+                            <Text className="text-[9.5px] font-black text-[#1FAE5C] ml-1">Late punch approved</Text>
+                          </View>
+                        )}
+                        {isPresent && canRequestCheckout(item) && (
+                          <TouchableOpacity
+                            onPress={() => openCheckoutRequest(item)}
+                            activeOpacity={0.85}
+                            className="flex-row items-center bg-[#FEF2D9] border border-[#D08A0C]/30 rounded-full px-2.5 py-1"
+                          >
+                            <Send size={10} color="#D08A0C" />
+                            <Text className="text-[9.5px] font-black text-[#D08A0C] ml-1">Missed check-out</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
 
                       <View
                         className={`px-2.5 py-0.5 rounded-full border ${isPresent
@@ -613,18 +745,6 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
                     </View>
 
                     {/* Missed check-out request */}
-                    {isPresent && canRequestCheckout(item) && (
-                      <TouchableOpacity
-                        onPress={() => openCheckoutRequest(item)}
-                        activeOpacity={0.85}
-                        className="flex-row items-center justify-center bg-[#FEF2D9] border border-[#D08A0C]/30 rounded-xl py-2 mb-2"
-                      >
-                        <Send size={12} color="#D08A0C" />
-                        <Text className="text-[11px] font-black text-[#D08A0C] ml-1.5">
-                          Missed check-out? Request it
-                        </Text>
-                      </TouchableOpacity>
-                    )}
                     {isPresent && isMissingTime(item.checkOut) && requestStatusOf(item) === "PENDING" && (
                       <View className="flex-row items-center justify-center bg-[#EEECFA] border border-[#5B4FD1]/20 rounded-xl py-2 mb-2">
                         <Clock size={12} color="#5B4FD1" />
@@ -950,6 +1070,142 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
                     className={`w-full py-2.5 rounded-xl items-center ${reqSending ? "bg-[#5B4FD1]/60" : "bg-[#5B4FD1]"}`}
                   >
                     {reqSending ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Text className="text-xs font-black text-white uppercase tracking-wider">Send to Admin</Text>
+                    )}
+                  </TouchableOpacity>
+                </ScrollView>
+              )}
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+
+        {/* ========================================================================= */}
+        {/* LATE PUNCH REQUEST MODAL (today only)                                    */}
+        {/* ========================================================================= */}
+        <Modal
+          visible={!!lpRecord}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setLpRecord(null)}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            className="flex-1 bg-black/60 items-center justify-center px-4"
+          >
+            <View className="w-full max-w-sm bg-white rounded-3xl p-5 border border-[#E7E4F5]">
+              <View className="flex-row items-center justify-between pb-3 mb-3 border-b border-[#E7E4F5]">
+                <View>
+                  <Text className="text-sm font-black text-[#1F1B3D]">Late Punch Request</Text>
+                  <Text className="text-[10px] font-semibold text-[#7A76A6]">
+                    {lpRecord?.date} • Saved check-in {lpRecord?.checkIn}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setLpRecord(null)}
+                  className="w-7 h-7 rounded-full bg-[#F6F5FC] items-center justify-center"
+                >
+                  <X size={16} color="#1F1B3D" />
+                </TouchableOpacity>
+              </View>
+
+              {lpDone ? (
+                <View>
+                  <View className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 mb-4">
+                    <Text className="text-xs font-bold text-emerald-700 text-center">{lpDone}</Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setLpRecord(null)}
+                    className="w-full py-2.5 bg-[#5B4FD1] rounded-xl items-center"
+                  >
+                    <Text className="text-xs font-black text-white uppercase tracking-wider">Done</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+                  <Text className="text-[10px] font-bold text-[#7A76A6] mb-3">
+                    {lateElig.used} of {lateElig.limit} late punch requests used this month
+                  </Text>
+                  <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
+                    I really arrived at
+                  </Text>
+                  <View className="flex-row items-center mb-3">
+                    <TextInput
+                      value={lpHour}
+                      onChangeText={(t) => setLpHour(t.replace(/[^0-9]/g, "").slice(0, 2))}
+                      placeholder="HH"
+                      placeholderTextColor="#9CA3AF"
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      className="w-14 text-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl py-2 text-sm font-black text-[#1F1B3D]"
+                    />
+                    <Text className="mx-1.5 text-base font-black text-[#1F1B3D]">:</Text>
+                    <TextInput
+                      value={lpMinute}
+                      onChangeText={(t) => setLpMinute(t.replace(/[^0-9]/g, "").slice(0, 2))}
+                      placeholder="MM"
+                      placeholderTextColor="#9CA3AF"
+                      keyboardType="number-pad"
+                      maxLength={2}
+                      className="w-14 text-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl py-2 text-sm font-black text-[#1F1B3D]"
+                    />
+                    <View className="flex-row ml-3 bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-0.5">
+                      {(["AM", "PM"] as const).map((ap) => (
+                        <TouchableOpacity
+                          key={ap}
+                          onPress={() => setLpAmPm(ap)}
+                          className={`px-3 py-1.5 rounded-lg ${lpAmPm === ap ? "bg-[#5B4FD1]" : "bg-transparent"}`}
+                        >
+                          <Text className={`text-[11px] font-black ${lpAmPm === ap ? "text-white" : "text-[#7A76A6]"}`}>
+                            {ap}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+
+                  <Text className="text-[10px] font-black text-[#7A76A6] uppercase tracking-wider mb-1.5">
+                    What happened
+                  </Text>
+                  <View className="flex-row flex-wrap gap-2 mb-3">
+                    {LATE_REASONS.map((r) => (
+                      <TouchableOpacity
+                        key={r}
+                        onPress={() => setLpReason(r)}
+                        className={`px-3 py-1.5 rounded-full border ${
+                          lpReason === r ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-white border-[#E7E4F5]"
+                        }`}
+                      >
+                        <Text className={`text-[11px] font-bold ${lpReason === r ? "text-white" : "text-[#7A76A6]"}`}>
+                          {r}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <TextInput
+                    value={lpNote}
+                    onChangeText={setLpNote}
+                    placeholder="Add a note (optional)"
+                    placeholderTextColor="#9CA3AF"
+                    multiline
+                    maxLength={500}
+                    className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-2 text-xs font-semibold text-[#1F1B3D] mb-3"
+                    style={{ minHeight: 60, textAlignVertical: "top" }}
+                  />
+
+                  {lpError ? (
+                    <Text className="text-[11px] font-bold text-rose-600 mb-3">{lpError}</Text>
+                  ) : null}
+
+                  <TouchableOpacity
+                    onPress={submitLatePunch}
+                    disabled={lpSending}
+                    className={`w-full py-2.5 rounded-xl items-center ${lpSending ? "bg-[#5B4FD1]/60" : "bg-[#5B4FD1]"}`}
+                  >
+                    {lpSending ? (
                       <ActivityIndicator size="small" color="#FFFFFF" />
                     ) : (
                       <Text className="text-xs font-black text-white uppercase tracking-wider">Send to Admin</Text>

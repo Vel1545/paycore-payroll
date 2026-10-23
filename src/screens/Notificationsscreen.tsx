@@ -4,7 +4,7 @@ import { ChevronLeft, Megaphone, MessageSquare, CheckCircle2, XCircle, Bell, Bel
 import ScreenContainer from "../components/ScreenContainer";
 import { NOTIFY_API, playBeep } from "../constants/Usenotifications";
 import { BASE_HOST } from "../constants/config";
-import { setAlertSoundPreference } from "../constants/Notifications"; 
+import { setAlertSoundPreference } from "../constants/Notifications";
 
 const C = { primary: "#5B4FD1", ink: "#1F1B3D", muted: "#7A76A6", faint: "#A6A2CE", border: "#E7E4F5", soft: "#EEECFA", bg: "#F6F5FC" };
 
@@ -61,7 +61,7 @@ const KIND_TAB: Record<string, string> = {
   LEAVE: "leave", PERMISSION: "leave", HALF_DAY: "leave",
   OD: "otod", OVERTIME: "otod",
   ADVANCE: "money", CLAIM: "money",
-  CHECKOUT: "checkout",
+  CHECKOUT: "checkout", CHECKIN: "checkout",
 };
 
 // Employee's "My Requests & Tracker" page (the same Approvals screen shows an employee's own requests). Change if yours has another name.

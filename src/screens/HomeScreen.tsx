@@ -854,7 +854,7 @@ const handleLogoutPress = async () => {
                 <Receipt size={22} color="#5B4FD1" />
               </View>
               <View>
-                <Text className="text-sm md:text-base font-black text-[#1F1B3D]">Salary & Pay Slip</Text>
+                <Text className="text-sm md:text-base font-black text-[#1F1B3D]">My HUB</Text>
                 <Text className="text-xs font-semibold text-[#7A76A6] mt-0.5">Check-in · Pay Slip · Form 16</Text>
               </View>
             </View>

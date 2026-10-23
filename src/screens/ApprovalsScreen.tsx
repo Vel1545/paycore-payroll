@@ -29,6 +29,9 @@ import {
 } from "lucide-react-native";
 import ScreenContainer from "../components/ScreenContainer";
 import CheckoutApprovalsPanel from "../components/Checkoutapprovalspanel";
+import CheckinApprovalsPanel from "../utils/Checkinapprovalspanel";
+import CheckinRequestsPanel from "../utils/Checkinrequestspanel";
+import CheckoutRequestsPanel from "../components/Checkoutrequestspanel";
 import CompactDatePicker from "../components/CrossPlatformDatePicker";
 import { useAuth } from "../context/AuthContext";
 import { UserSession } from "../services/UserSession";
@@ -68,7 +71,7 @@ const KIND_GROUP: Record<string, Group> = {
   LEAVE: "leave", PERMISSION: "leave", HALF_DAY: "leave",
   OD: "otod", OVERTIME: "otod",
   ADVANCE: "money", CLAIM: "money",
-  CHECKOUT: "checkout",
+  CHECKOUT: "checkout", CHECKIN: "checkout",
 };
 // request category (from the inbox list) -> group
 const groupOfCategory = (category?: string): Group => {
@@ -128,7 +131,9 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
     const prm = route?.params;
     if (!prm) return;
     if (userRole !== "ADMIN") {
-      // employee opened from an "approved / rejected" notification: show that request (it is decided, so under History)
+      // employee opened from an "approved / rejected" notification: open its category, show that request (it is decided, so under History)
+      const mine = (GROUP_TABS.find((t) => t.id === prm.tab)?.id as Group | undefined) ?? (prm.kind ? KIND_GROUP[prm.kind] : undefined);
+      if (mine) setGroup(mine);
       if (prm.requestId) {
         setHighlightId(String(prm.requestId));
         setActiveFilter("HISTORY");
@@ -148,6 +153,13 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
     }
     loadCounts();
   }, [route?.params?.tab, route?.params?.requestId, route?.params?.kind, userRole]);
+
+  // Employee opened a decided request from a bell alert: when the alert had no kind, the request itself tells the category
+  useEffect(() => {
+    if (userRole === "ADMIN" || !highlightId) return;
+    const r = requests.find((x) => x.id === highlightId);
+    if (r) setGroup(groupOfCategory(r.category));
+  }, [requests, highlightId, userRole]);
 
   // Search & Bulk Selection
   const [searchQuery, setSearchQuery] = useState("");
@@ -422,11 +434,18 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
   };
 
   // Filtering & Sorting
-  // Admin sees one group at a time; employees see everything of their own
+  // Everyone (admin and employee) sees one category at a time
   const groupRequests = useMemo(
-    () => (userRole === "ADMIN" ? requests.filter((r) => groupOfCategory(r.category) === group) : requests),
-    [requests, group, userRole]
+    () => requests.filter((r) => groupOfCategory(r.category) === group),
+    [requests, group]
   );
+
+  // Employee tabs: how many of my own requests are still pending in each category (check-out has its own lists)
+  const myPending = useMemo(() => {
+    const c: Record<Group, number> = { leave: 0, otod: 0, money: 0, checkout: 0 };
+    requests.forEach((r) => { if (r.status?.toUpperCase() === "PENDING") c[groupOfCategory(r.category)] += 1; });
+    return c;
+  }, [requests]);
 
   const filteredRequests = useMemo(() => {
     return groupRequests
@@ -550,16 +569,16 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
         </View>
       </View>
 
-      {/* Admin: category tabs with pending counts */}
-      {userRole === "ADMIN" && (
+      {/* Category tabs with pending counts: admin sees all pending, employee sees their own */}
+      {(
         <View className="flex-row bg-white border border-[#E7E4F5] p-1 rounded-2xl mb-4">
           {GROUP_TABS.map((t) => {
             const active = group === t.id;
-            const n = counts[t.id] || 0;
+            const n = (userRole === "ADMIN" ? counts[t.id] : myPending[t.id]) || 0;
             return (
               <TouchableOpacity
                 key={t.id}
-                onPress={() => { setGroup(t.id); setHighlightId(null); setSelectedRequestIds([]); loadCounts(); }}
+                onPress={() => { setGroup(t.id); setHighlightId(null); setSelectedRequestIds([]); if (userRole === "ADMIN") loadCounts(); }}
                 className={`flex-1 py-2.5 px-1 rounded-xl items-center justify-center ${active ? "bg-[#5B4FD1]" : ""}`}
               >
                 <Text numberOfLines={2} style={{ textAlign: "center" }} className={`text-[10px] font-black ${active ? "text-white" : "text-[#7A76A6]"}`}>
@@ -576,11 +595,30 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
         </View>
       )}
 
-      {userRole === "ADMIN" && group === "checkout" ? (
-        <CheckoutApprovalsPanel
-          adminId={approverName}
-          onChanged={loadCheckoutPending}
-        />
+      {group === "checkout" ? (
+        userRole === "ADMIN" ? (
+          <>
+            <CheckinApprovalsPanel
+              adminId={approverName}
+              onChanged={loadCheckoutPending}
+              highlightId={highlightId}
+            />
+            <CheckoutApprovalsPanel
+              adminId={approverName}
+              onChanged={loadCheckoutPending}
+            />
+          </>
+        ) : (
+          <>
+            {/* Employee: my late punch requests, then my missed check-out requests, each with its own status tabs */}
+            <CheckinRequestsPanel empId={String(currentUserId || "")} highlightId={highlightId} />
+            <CheckoutRequestsPanel
+              empId={String(currentUserId || "")}
+              onOpenAttendance={() => navigation?.navigate?.("Attendance")}
+              highlightId={highlightId}
+            />
+          </>
+        )
       ) : (
       <>
       {/* Admin Search & Toolbar */}
