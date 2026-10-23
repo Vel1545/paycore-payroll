@@ -3,10 +3,11 @@ import React, { useState, useEffect } from "react";
 import { View, Platform, ActivityIndicator, TouchableOpacity } from "react-native";
 import { configureReanimatedLogger, ReanimatedLogLevel } from "react-native-reanimated";
 import * as Linking from "expo-linking";
-import { NavigationContainer,type LinkingOptions } from "@react-navigation/native";
+import { NavigationContainer,useNavigation,type LinkingOptions } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
+import { useChatUnread, useOpenChatFromPush } from "./src/utils/Usechatunread";
 
 // 1. Mandatory Headless Background Task Import
 import "./src/services/locationTrackingTask";
@@ -44,6 +45,7 @@ import AdminHolidaysScreen from "./src/screens/Adminholidaysscreen";
 import { AuthProvider } from "./src/context/AuthContext";
 import { getSavedSession, clearActiveSessionOnly } from "./src/utils/authStorage";
 import { BASE_HOST } from "./src/constants/config";
+import { UserSession } from "./src/services/UserSession";
 
 configureReanimatedLogger({
   level: ReanimatedLogLevel.warn,
@@ -117,6 +119,11 @@ function MainTabs({ userSession, onLogout }: { userSession: any; onLogout: () =>
   const insets = useSafeAreaInsets();
   const bottomOffset = Math.max(insets.bottom, Platform.OS === "android" ? 50 : 16);
 
+  // unread chat number on the Chats tab; tapping a chat push opens that room
+  const { total: chatUnread } = useChatUnread(userSession?.empId);
+  const navigation = useNavigation<any>();
+  useOpenChatFromPush(navigation);
+
   return (
     <Tab.Navigator
       screenOptions={{
@@ -180,6 +187,8 @@ function MainTabs({ userSession, onLogout }: { userSession: any; onLogout: () =>
         name="Chat"
         options={{
           tabBarLabel: "Chats",
+          tabBarBadge: chatUnread > 0 ? (chatUnread > 99 ? "99+" : chatUnread) : undefined,
+tabBarBadgeStyle: { backgroundColor: "#16A34A", color: "#FFFFFF", fontSize: 10, fontWeight: "800" },
           tabBarIcon: ({ color, focused }) => (
             <MessagesSquare color={focused ? "#5B4FD1" : color} size={20} />
           ),
@@ -238,8 +247,8 @@ function MainTabs({ userSession, onLogout }: { userSession: any; onLogout: () =>
       <Tab.Screen name="MyCheckoutRequests" component={MyCheckoutRequestsScreen} options={{ tabBarItemStyle: { display: "none" } }} />
         <Tab.Screen name="SalaryView" component={SalaryViewScreen} options={{ tabBarItemStyle: { display: "none" } }}/>
         <Tab.Screen name="Notifications" options={{ tabBarItemStyle: { display: "none" } }}>
-        {(props) => <NotificationsScreen {...props} userSession={userSession} />}</Tab.Screen>
-      <Tab.Screen name="AdminHolidays" component={AdminHolidaysScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+  {(props) => <NotificationsScreen {...props} userSession={userSession} />}</Tab.Screen>
+  <Tab.Screen name="AdminHolidays" component={AdminHolidaysScreen} options={{ tabBarItemStyle: { display: "none" } }} />
 
       {/* Live Fleet Tracking & Route Polyline Maps */}
       <Tab.Screen name="LiveTracking" component={LiveTrackingScreen} options={{ tabBarItemStyle: { display: "none" } }} />
