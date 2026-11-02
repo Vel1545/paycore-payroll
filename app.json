@@ -13,7 +13,11 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.femi.payroll",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -22,6 +26,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.femi.payroll",
+      "googleServicesFile": "./google-services.json",
       "config": {
         "googleMaps": {
           "apiKey": "YOUR_GOOGLE_MAPS_ANDROID_API_KEY"
@@ -32,7 +37,9 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_LOCATION"
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS",
+        "CAMERA"
       ]
     },
     "web": {
@@ -52,11 +59,34 @@
       "expo-splash-screen",
       "expo-web-browser",
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Payroll to use the camera for the attendance selfie.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
+      [
         "expo-location",
         {
+          "locationWhenInUsePermission": "Allow Payroll to use your location to verify you are at the office when you check in or out.",
           "locationAlwaysAndWhenInUsePermission": "Allow Payroll to track location during shifts.",
           "isAndroidBackgroundLocationEnabled": true,
           "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Payroll to use your photos to set your profile picture.",
+          "cameraPermission": "Allow Payroll to take your profile picture."
+        }
+      ],
+      ["expo-notifications",
+       {
+          "icon": "./assets/notification-icon.png",
+          "color": "#1E40AF",
+          "sounds": ["./assets/bell.wav"]
         }
       ],
       "expo-audio"

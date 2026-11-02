@@ -62,13 +62,13 @@ export async function setupShiftReminderNotifications(): Promise<boolean> {
 
   if (Platform.OS === "android") {
     await Notifications.setNotificationChannelAsync(SHIFT_CHANNEL_ID, {
-      name: "Shift reminders",
-      importance: Notifications.AndroidImportance.HIGH, // pop-up banner with sound
-      sound: "bell.wav", // file listed under "sounds" in the expo-notifications plugin
-      vibrationPattern: [0, 250, 250, 250],
-      enableVibrate: true,
-      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-    });
+  name: "Shift reminders",
+  importance: Notifications.AndroidImportance.HIGH,
+  sound: "bell.wav", // Matches the filename from app.json sounds array
+  vibrationPattern: [0, 250, 250, 250],
+  enableVibrate: true,
+  lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+});
 
     await Notifications.setNotificationChannelAsync(ALERT_SOUND_CHANNEL_ID, {
       name: "Announcements, chat and approvals",

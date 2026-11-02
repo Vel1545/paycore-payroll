@@ -4,7 +4,7 @@ import { ChevronLeft, Megaphone, MessageSquare, CheckCircle2, XCircle, Bell, Bel
 import ScreenContainer from "../components/ScreenContainer";
 import { NOTIFY_API, playBeep } from "../constants/Usenotifications";
 import { BASE_HOST } from "../constants/config";
-import { setAlertSoundPreference } from "../constants/Notifications";
+import { setAlertSoundPreference,sendBellTest } from "../constants/Notifications";
 
 const C = { primary: "#5B4FD1", ink: "#1F1B3D", muted: "#7A76A6", faint: "#A6A2CE", border: "#E7E4F5", soft: "#EEECFA", bg: "#F6F5FC" };
 
@@ -248,7 +248,7 @@ export default function NotificationsScreen({ navigation, userSession }: { navig
               </View>
             )}
 
-            {/* Settings */}
+{/* Settings */}
             {showSettings && (
               <View style={{ borderColor: C.border }} className="bg-white border rounded-3xl px-4 py-2 mb-3">
                 {toggleRow("Notifications", "Pop-ups on your phone for new announcements, chats and approvals", prefs.pushEnabled, (v) => savePref({ pushEnabled: v }))}
@@ -260,6 +260,28 @@ export default function NotificationsScreen({ navigation, userSession }: { navig
                 {toggleRow("Chat messages", "Groups and direct messages", prefs.chat, (v) => savePref({ chat: v }))}
                 <View style={{ height: 1, backgroundColor: C.border }} />
                 {toggleRow("Approvals", "When your request is approved or rejected", prefs.approvals, (v) => savePref({ approvals: v }))}
+                
+                {/* --- BELL TEST BUTTON --- */}
+                {Platform.OS !== "web" && (
+                  <View className="py-2.5 border-t border-[#E7E4F5] mt-1">
+                    <TouchableOpacity
+                      onPress={async () => {
+                        await sendBellTest();
+                      }}
+                      activeOpacity={0.8}
+                      className="flex-row items-center justify-center py-2.5 px-4 rounded-2xl bg-[#EEECFA]"
+                    >
+                      <Volume2 size={16} color={C.primary} />
+                      <Text style={{ color: C.primary }} className="text-xs font-black ml-2">
+                        Test Shift Bell Sound (5s timer)
+                      </Text>
+                    </TouchableOpacity>
+                    <Text style={{ color: C.muted }} className="text-[10px] font-medium text-center mt-1">
+                      Tap, then lock or minimize your phone. Bell rings in 5 seconds.
+                    </Text>
+                  </View>
+                )}
+
                 {Platform.OS === "web" && (
                   <Text style={{ color: C.muted }} className="text-[11px] font-medium pb-2">
                     On the web version you get the bell and a chime while this page is open. Phone pop-ups need the Android app.

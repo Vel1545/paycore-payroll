@@ -25,6 +25,7 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
 import ScreenContainer from "../components/ScreenContainer";
 import WfhCard from "../components/Wfhcard";
+import Permissionpunchcard from "../components/Permissionpunchcard";
 import { UserSession } from "../services/UserSession";
 import { BASE_HOST } from "../constants/config";
 
@@ -239,6 +240,29 @@ export default function ApplyScreen({ route, navigation }: any) {
       alive = false;
     };
   }, []);
+  // Permission / OD flow switch. The server key permissionpunch.mode decides:
+  //   MANUAL (default) = normal request form only, AUTO = Start / End punch instead of the form.
+  const [punchMode, setPunchMode] = useState<"MANUAL" | "AUTO">("MANUAL");
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(
+          `${BASE_HOST}/api/attendance/permission-punch/current?empId=${encodeURIComponent(String(UserSession.empId || ""))}`,
+          { cache: "no-store" }
+        );
+        if (!res.ok) return;
+        const j = await res.json();
+        if (alive) setPunchMode(j?.enabled === true && j?.mode === "AUTO" ? "AUTO" : "MANUAL");
+      } catch {
+        // offline or old server: stay on the normal form
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // Leave State (Added HALF_DAY and halfDaySession)
   const [requestType, setRequestType] = useState<"LEAVE" | "HALF_DAY" | "PERMISSION" | "OD">("LEAVE");
   const [odMode, setOdMode] = useState<"FULL" | "HOURLY">("FULL"); // only used when requestType is OD
@@ -310,6 +334,9 @@ export default function ApplyScreen({ route, navigation }: any) {
 
   const OD_CATEGORY = "On Duty / Client Visit (OD)";
 
+  // Neither Permission nor Hourly OD hides the request form.
+// Both require submitting the form first so the admin can approve.
+const autoPunchHere = false;
   const leaveOptions = [
     "Annual / Paid Vacation (EL)",
     "Casual Leave (CL)",
@@ -839,6 +866,13 @@ const handleSubmitAdvance = async () => {
               </View>
             )}
 
+            {/* Show punch card for Permission or Hourly OD if the feature is in AUTO mode */}
+{punchMode === "AUTO" && (requestType === "PERMISSION" || (requestType === "OD" && odMode === "HOURLY")) && (
+  <View className="mb-4">
+    <Permissionpunchcard kind={requestType} />
+  </View>
+)}
+
             {/* CASE 1: FULL DAY LEAVE (also full-day OD) */}
             {(requestType === "LEAVE" || (requestType === "OD" && odMode === "FULL")) && (
               <View className="mb-3">
@@ -920,7 +954,7 @@ const handleSubmitAdvance = async () => {
             )}
 
             {/* CASE 3a: HOURLY OD - pick start and end time, hours are calculated */}
-            {requestType === "OD" && odMode === "HOURLY" && (
+            {requestType === "OD" && odMode === "HOURLY" && !autoPunchHere && (
               <View className="mb-3">
                 <View className="mb-2">
                   <DatePickerField label="OD Date" value={permDate} onChange={setPermDate} />
@@ -949,7 +983,7 @@ const handleSubmitAdvance = async () => {
             )}
 
             {/* CASE 3b: PERMISSION - pick start and end time, hours are calculated */}
-            {requestType === "PERMISSION" && (
+            {requestType === "PERMISSION" && !autoPunchHere && (
               <View className="mb-3">
                 <View className="mb-2">
                   <DatePickerField label="Permission Date" value={permDate} onChange={setPermDate} />
@@ -975,6 +1009,7 @@ const handleSubmitAdvance = async () => {
               </View>
             )}
 
+            {!autoPunchHere && (<>
             <View className="mb-4">
               <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">
                 Reason / Handover Note
@@ -1003,6 +1038,7 @@ const handleSubmitAdvance = async () => {
                 </Text>
               )}
             </TouchableOpacity>
+            </>)}
           </View>
         </View>
       )}

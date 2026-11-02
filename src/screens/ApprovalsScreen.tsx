@@ -32,6 +32,8 @@ import CheckoutApprovalsPanel from "../components/Checkoutapprovalspanel";
 import CheckinApprovalsPanel from "../utils/Checkinapprovalspanel";
 import CheckinRequestsPanel from "../utils/Checkinrequestspanel";
 import CheckoutRequestsPanel from "../components/Checkoutrequestspanel";
+import Permissionpunchapprovalspanel from "../components/Permissionpunchapprovalspanel";
+import Permissionpunchmypanel from "../components/Permissionpunchmypanel";
 import CompactDatePicker from "../components/CrossPlatformDatePicker";
 import { useAuth } from "../context/AuthContext";
 import { UserSession } from "../services/UserSession";
@@ -68,10 +70,17 @@ const GROUP_TABS: { id: Group; label: string }[] = [
 ];
 // kind sent by the notification -> group
 const KIND_GROUP: Record<string, Group> = {
-  LEAVE: "leave", PERMISSION: "leave", HALF_DAY: "leave",
-  OD: "otod", OVERTIME: "otod",
-  ADVANCE: "money", CLAIM: "money",
-  CHECKOUT: "checkout", CHECKIN: "checkout",
+  LEAVE: "leave",
+  PERMISSION: "leave",
+  HALF_DAY: "leave",
+  OD: "otod",
+  OVERTIME: "otod",
+  ADVANCE: "money",
+  CLAIM: "money",
+  CHECKOUT: "checkout",
+  CHECKIN: "checkout",
+  PERMISSION_PUNCH: "leave", // Opens Leave • Permission • Half Day tab
+  OD_PUNCH: "otod",
 };
 // request category (from the inbox list) -> group
 const groupOfCategory = (category?: string): Group => {
@@ -116,7 +125,19 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
       const r = await fetch(`${API_BASE_URL}/pending-counts`, { cache: "no-store" });
       if (r.ok) {
         const d = await r.json();
-        setCounts({ leave: d.leave || 0, otod: d.otod || 0, money: d.money || 0, checkout: d.checkout || 0 });
+        // punched permissions / ODs waiting for verification add to the Leave and OT & OD badges
+        let pPerm = 0, pOd = 0;
+        try {
+          const pr = await fetch(`${BASE_HOST}/api/admin/permission-punches?status=PENDING`, { cache: "no-store" });
+          if (pr.ok) {
+            const list = await pr.json();
+            if (Array.isArray(list)) {
+              pPerm = list.filter((x: any) => x.kind === "PERMISSION").length;
+              pOd = list.filter((x: any) => x.kind === "OD").length;
+            }
+          }
+        } catch { /* badge only */ }
+        setCounts({ leave: (d.leave || 0) + pPerm, otod: (d.otod || 0) + pOd, money: d.money || 0, checkout: d.checkout || 0 });
       }
     } catch { /* badges are optional */ }
   };
@@ -153,13 +174,6 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
     }
     loadCounts();
   }, [route?.params?.tab, route?.params?.requestId, route?.params?.kind, userRole]);
-
-  // Employee opened a decided request from a bell alert: when the alert had no kind, the request itself tells the category
-  useEffect(() => {
-    if (userRole === "ADMIN" || !highlightId) return;
-    const r = requests.find((x) => x.id === highlightId);
-    if (r) setGroup(groupOfCategory(r.category));
-  }, [requests, highlightId, userRole]);
 
   // Search & Bulk Selection
   const [searchQuery, setSearchQuery] = useState("");
@@ -611,16 +625,29 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
         ) : (
           <>
             {/* Employee: my late punch requests, then my missed check-out requests, each with its own status tabs */}
-            <CheckinRequestsPanel empId={String(currentUserId || "")} highlightId={highlightId} />
+            <CheckinRequestsPanel empId={String(currentUserId || "")} />
             <CheckoutRequestsPanel
               empId={String(currentUserId || "")}
               onOpenAttendance={() => navigation?.navigate?.("Attendance")}
-              highlightId={highlightId}
             />
           </>
         )
       ) : (
       <>
+      {/* Punched permission (Leave tab) and OD (OT & OD tab): the new Start / End system, shown above the normal requests */}
+      {group === "leave" || group === "otod" ? (
+        userRole === "ADMIN" ? (
+          <Permissionpunchapprovalspanel
+            kind={group === "leave" ? "PERMISSION" : "OD"}
+            adminId={approverName}
+            onChanged={loadCounts}
+            highlightId={highlightId}
+          />
+        ) : (
+          <Permissionpunchmypanel empId={String(currentUserId || "")} kind={group === "leave" ? "PERMISSION" : "OD"} />
+        )
+      ) : null}
+
       {/* Admin Search & Toolbar */}
       {userRole === "ADMIN" && (
         <View className="bg-white border border-[#E7E4F5] rounded-2xl p-4 mb-4 shadow-xs gap-3">

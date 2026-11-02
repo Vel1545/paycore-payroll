@@ -555,48 +555,88 @@ export default function SalaryViewScreen() {
           ))}
         </ScrollView>
 
-        {/* Search */}
+{/* Search */}
         <View className="flex-row items-center bg-white border border-[#E7E4F5] rounded-2xl px-3 mb-3">
           <Search size={16} color="#7A76A6" />
           <TextInput
             value={searchText}
-            onChangeText={(t) => { setSearchText(t); setSearchFocus(true); }}
+            onChangeText={(t) => {
+              setSearchText(t);
+              setSearchFocus(true);
+            }}
             onFocus={() => setSearchFocus(true)}
-            onBlur={() => setTimeout(() => setSearchFocus(false), 200)}
-            onSubmitEditing={() => { setAppliedSearch(searchText.trim()); setSearchFocus(false); }}
+            onBlur={() => setTimeout(() => setSearchFocus(false), 300)}
+            onSubmitEditing={() => {
+              setAppliedSearch(searchText.trim());
+              setSearchFocus(false);
+            }}
             returnKeyType="search"
             placeholder="Search by name or employee ID"
             placeholderTextColor="#A6A2CE"
             className="flex-1 py-3 px-2 text-sm font-bold text-[#1F1B3D]"
           />
-          {searchText.length > 0 && (
+
+          {/* Quick Clear Icon Button */}
+          {(searchText.length > 0 || appliedSearch.length > 0) && (
             <TouchableOpacity
               onPress={() => {
                 setSearchText("");
                 setAppliedSearch("");
+                setSearchFocus(false);
               }}
+              className="p-1 mr-1"
             >
               <X size={16} color="#7A76A6" />
             </TouchableOpacity>
           )}
-          <TouchableOpacity onPress={() => setAppliedSearch(searchText.trim())} className="ml-2 px-3 py-1.5 rounded-xl bg-[#EEECFA]">
+
+          {/* Search Button */}
+          <TouchableOpacity
+            onPress={() => {
+              setAppliedSearch(searchText.trim());
+              setSearchFocus(false);
+            }}
+            className="px-3 py-1.5 rounded-xl bg-[#EEECFA]"
+          >
             <Text className="text-xs font-black text-[#5B4FD1]">Search</Text>
           </TouchableOpacity>
+
+          {/* Clear Filter Button: Resets search and immediately reloads full table */}
+          {appliedSearch.length > 0 && (
+            <TouchableOpacity
+              onPress={() => {
+                setSearchText("");
+                setAppliedSearch("");
+                setSearchFocus(false);
+              }}
+              className="ml-1.5 px-3 py-1.5 rounded-xl bg-[#FDE9E8]"
+            >
+              <Text className="text-xs font-black text-[#E4453C]">Reset</Text>
+            </TouchableOpacity>
+          )}
         </View>
+
+        {/* Suggestion Dropdown */}
         {suggestions.length > 0 && (
-          <View className="bg-white border border-[#E7E4F5] rounded-2xl mb-3 -mt-1 overflow-hidden">
+          <View className="bg-white border border-[#E7E4F5] rounded-2xl mb-3 -mt-1 overflow-hidden shadow-sm z-50">
             {suggestions.map((p, i) => (
               <TouchableOpacity
                 key={p.empId}
-                onPress={() => {
+                // Using onPressIn ensures the click event fires BEFORE onBlur unmounts the list
+                onPressIn={() => {
                   setSearchText(p.userName);
-                  setAppliedSearch(p.empId); // exact person (two people can share a name)
+                  setAppliedSearch(p.empId);
                   setSearchFocus(false);
                 }}
-                className={`px-3 py-2.5 ${i > 0 ? "border-t border-[#F0EEFA]" : ""}`}
+                className={`px-3 py-2.5 ${i > 0 ? "border-t border-[#F0EEFA]" : ""} active:bg-[#F6F5FC]`}
               >
-                <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>{p.userName}</Text>
-                <Text className="text-[10px] font-bold text-[#7A76A6]" numberOfLines={1}>{p.empId}{p.department ? ` • ${p.department}` : ""}</Text>
+                <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>
+                  {p.userName}
+                </Text>
+                <Text className="text-[10px] font-bold text-[#7A76A6]" numberOfLines={1}>
+                  {p.empId}
+                  {p.department ? ` • ${p.department}` : ""}
+                </Text>
               </TouchableOpacity>
             ))}
           </View>

@@ -12,10 +12,11 @@ import {
   useWindowDimensions
 } from "react-native";
 import {
-  ChevronLeft, Search, UserPlus, UserCheck, FileText, Download, X
+  ChevronLeft, Search, UserPlus, UserCheck, FileText, Download, X, MessageCircle
 } from "lucide-react-native";
 import * as Clipboard from 'expo-clipboard'; // <-- Added Expo Clipboard import
 import ScreenContainer from "../components/ScreenContainer";
+// import Whatsappformpanel from "../components/Whatsappformpanel";
 import { BASE_HOST } from "../constants/config";
 
 interface SubmittedCandidate {
@@ -84,6 +85,9 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
   ]);
 
   const [selectedCandidate, setSelectedCandidate] = useState<SubmittedCandidate | null>(null);
+
+  // WhatsApp onboarding popup (new, separate from the link flow above)
+  const [showWhatsappPopup, setShowWhatsappPopup] = useState(false);
 
   const handleGenerateOnboardingLink = async () => {
     if (!onboardingMobile || onboardingMobile.length < 10) {
@@ -258,6 +262,22 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
               ) : null}
 
             </View>
+
+            {/* NEW: onboarding by WhatsApp message (opens a popup) */}
+            {/* <TouchableOpacity
+              onPress={() => setShowWhatsappPopup(true)}
+              className="bg-white border border-emerald-200 rounded-2xl p-4 flex-row items-center gap-3 shadow-xs active:opacity-90"
+            >
+              <View className="w-10 h-10 rounded-xl bg-emerald-50 items-center justify-center">
+                <MessageCircle size={20} color="#059669" />
+              </View>
+              <View className="flex-1">
+                <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-black text-[#1F1B3D]">WhatsApp Link / Onboarding via WhatsApp</Text>
+                <Text style={{ fontSize: isDesktop ? 11 : 10 }} className="font-bold text-[#7A76A6]">
+                  Check the number, send a verification message, then the form details as a WhatsApp message
+                </Text>
+              </View>
+            </TouchableOpacity> */}
           </View>
         </ScrollView>
       )}
@@ -373,6 +393,23 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
           )}
         </View>
       </Modal>
+
+      {/* NEW: WhatsApp onboarding popup */}
+      {/* <Modal visible={showWhatsappPopup} transparent animationType="fade" onRequestClose={() => setShowWhatsappPopup(false)}>
+        <View className="flex-1 bg-black/40 justify-center items-center p-4">
+          <View className="w-full max-w-lg bg-[#F6F5FC] border border-[#E7E4F5] rounded-3xl shadow-xl max-h-[90%]">
+            <View className="flex-row items-center justify-between px-5 pt-4 pb-2">
+              <Text className="text-sm font-black text-[#1F1B3D] uppercase">Onboarding via WhatsApp</Text>
+              <TouchableOpacity onPress={() => setShowWhatsappPopup(false)}>
+                <X size={20} color="#7A76A6" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 16, paddingTop: 4 }}>
+              <Whatsappformpanel />
+            </ScrollView>
+          </View>
+        </View>
+      </Modal> */}
 
     </ScreenContainer>
   );
