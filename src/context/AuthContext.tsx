@@ -7,7 +7,10 @@ const BASE_API_URL = `${BASE_HOST}/api`;
 
 export interface Address {
   street?: string;
+  village?: string;
   city?: string;
+  district?: string;
+  pincode?: string;
   state?: string;
   zipCode?: string;
   country?: string;

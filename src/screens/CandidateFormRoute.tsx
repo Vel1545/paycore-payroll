@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, ActivityIndicator, Platform } from "react-native";
+import { View, Text, ActivityIndicator } from "react-native";
 import * as Linking from "expo-linking";
-import CandidateOnboardingScreen from "../src/screens/CandidateOnboardingScreen";
-import { BASE_HOST } from "../src/constants/config";
+import CandidateOnboardingScreen from "./CandidateOnboardingScreen";
+import { BASE_HOST } from "../constants/config";
 
-const API_BASE_URL =  `${BASE_HOST}/api/onboarding`;
+// A repeated query key parses to string[]; only the first value is used
+const firstParam = (value: string | string[] | undefined) =>
+  Array.isArray(value) ? value[0] : value;
 
 export default function CandidateFormRoute() {
   const [token, setToken] = useState<string | undefined>(undefined);
@@ -18,39 +20,39 @@ export default function CandidateFormRoute() {
   // Parse token/mobile from whatever URL opened this screen
   useEffect(() => {
     const extractParams = (url: string | null) => {
-      if (!url) return;
-      const { queryParams } = Linking.parse(url);
-      setToken(queryParams?.token as string | undefined);
-      setMobile(queryParams?.mobile as string | undefined);
+      if (url) {
+        const { queryParams } = Linking.parse(url);
+        setToken(firstParam(queryParams?.token));
+        setMobile(firstParam(queryParams?.mobile));
+      }
+      // Set even without a URL, so the screen shows an error instead of spinning forever
       setParamsReady(true);
     };
 
-    // Case 1: app opened cold, directly via this link
     Linking.getInitialURL().then(extractParams);
-
-    // Case 2: app was already running, link tapped while foregrounded
     const subscription = Linking.addEventListener("url", ({ url }) => extractParams(url));
-
     return () => subscription.remove();
   }, []);
 
   useEffect(() => {
-    if (!paramsReady) return; // wait until we've actually tried to read the URL
+    if (!paramsReady) return;
 
     const verifyAccess = async () => {
       try {
-        const res = await fetch(`http://${BASE_HOST}/api/admin/verify-access?token=${token}&mobile=${mobile}`);
+        // BASE_HOST already holds http(s)://host, so no extra "http://" in front
+        const res = await fetch(
+          `${BASE_HOST}/api/admin/verify-access?token=${encodeURIComponent(token || "")}&mobile=${encodeURIComponent(mobile || "")}`,
+          { cache: "no-store" }
+        );
         if (res.ok) {
           setIsAuthorized(true);
         } else {
-          setErrorMessage("This link is unauthorized, invalid, or expired.");
+          const j = await res.json().catch(() => ({}));
+          setErrorMessage(j?.error || "This link is unauthorized, invalid, or expired.");
         }
-      } catch (err) {
-        if (token && mobile) {
-          setIsAuthorized(true);
-        } else {
-          setErrorMessage("Missing security credentials in the link.");
-        }
+      } catch {
+        // No fallback to "allowed": if the server cannot be reached the form must not open
+        setErrorMessage("Could not reach the server. Please check your internet connection and try again.");
       } finally {
         setVerifying(false);
       }
