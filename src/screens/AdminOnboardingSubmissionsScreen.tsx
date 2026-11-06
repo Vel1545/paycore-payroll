@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -6,39 +6,138 @@ import {
   TextInput,
   ScrollView,
   Alert,
+  Linking,
   Platform,
   Modal,
   ActivityIndicator,
   useWindowDimensions
 } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
 import {
-  ChevronLeft, Search, UserPlus, UserCheck, FileText, Download, X, MessageCircle
+  ChevronLeft, Search, UserPlus, UserCheck, FileText, Download, X, MessageCircle, RefreshCw
 } from "lucide-react-native";
 import * as Clipboard from 'expo-clipboard'; // <-- Added Expo Clipboard import
 import ScreenContainer from "../components/ScreenContainer";
-// import Whatsappformpanel from "../components/Whatsappformpanel";
 import { BASE_HOST } from "../constants/config";
+import { UserSession } from "../services/UserSession";
+import { useResponsive } from "../hooks/useResponsive";
+import { WebPageHeader } from "../components/web/webUi";
+
+type SubmissionStatus = "SUBMITTED" | "WAITING" | "APPROVED" | "REJECTED";
 
 interface SubmittedCandidate {
   id: string;
-  fullName: string;
-  designation: string;
-  department: string;
-  mobileNumber: string;
-  emailAddress: string;
-  submissionDate: string;
-  status: "PENDING_REVIEW" | "APPROVED" | "REJECTED";
-  documents: {
-    aadhaarUrl?: string;
-    panUrl?: string;
-    resumeUrl?: string;
-  };
+  fullName: string | null;
+  designation: string | null;
+  department: string | null;
+  mobileNumber: string | null;
+  emailAddress: string | null;
+  submissionDate: string | null;
+  status: SubmissionStatus;
+  empId: string | null;
 }
 
+interface SubmissionDetail {
+  data: Record<string, any>;
+  files: string[];
+  decidedBy: string | null;
+  adminNote: string | null;
+}
 
 const API_BASE_URL = `${BASE_HOST}/api/admin`;
+const SUBMISSIONS_URL = `${API_BASE_URL}/onboarding/submissions`;
+
+const STATUS_STYLES: Record<SubmissionStatus, { label: string; box: string; text: string }> = {
+  SUBMITTED: { label: "PENDING REVIEW", box: "bg-amber-50 border-amber-200", text: "text-amber-700" },
+  WAITING: { label: "WAITING", box: "bg-sky-50 border-sky-200", text: "text-sky-700" },
+  APPROVED: { label: "APPROVED", box: "bg-emerald-50 border-emerald-200", text: "text-emerald-700" },
+  REJECTED: { label: "REJECTED", box: "bg-rose-50 border-rose-200", text: "text-rose-700" },
+};
+
+const DOCUMENTS = [
+  { key: "aadhaarFile", label: "Aadhaar Card Copy" },
+  { key: "panFile", label: "PAN Card Copy" },
+  { key: "bankPassbookFile", label: "Bank Passbook / Cancelled Cheque" },
+  { key: "resumeFile", label: "Resume & Certificates" },
+];
+
+const DETAIL_SECTIONS: { title: string; fields: [string, string][] }[] = [
+  {
+    title: "Personal Information",
+    fields: [
+      ["fathersName", "Father's Name"], ["dateOfBirth", "Date of Birth"], ["gender", "Gender"],
+      ["maritalStatus", "Marital Status"], ["nationality", "Nationality"], ["bloodGroup", "Blood Group"],
+      ["religion", "Religion"], ["identificationMark", "Identification Mark"], ["familyIncome", "Family Income"],
+    ],
+  },
+  {
+    title: "Contact & Identity",
+    fields: [
+      ["mobileNumber", "Mobile"], ["emailAddress", "Email"], ["aadhaarNumber", "Aadhaar"], ["panNumber", "PAN"],
+      ["permanentAddress", "Permanent Address"], ["currentAddress", "Current Address"],
+    ],
+  },
+  {
+    title: "Employment",
+    fields: [["employmentType", "Employment Type"], ["dateOfJoining", "Date of Joining"]],
+  },
+  {
+    title: "Bank Details",
+    fields: [
+      ["bankName", "Bank"], ["accountHolderName", "Account Holder"], ["accountNumber", "Account Number"],
+      ["ifscCode", "IFSC"], ["branch", "Branch"],
+    ],
+  },
+  {
+    title: "Emergency Contact",
+    fields: [
+      ["emergencyName", "Name"], ["emergencyRelationship", "Relationship"],
+      ["emergencyPhone1", "Phone"], ["emergencyPhone2", "Alternate Phone"],
+    ],
+  },
+  {
+    title: "Reference",
+    fields: [["referenceName", "Name"], ["referenceContact", "Contact"], ["referenceDepartment", "Department"]],
+  },
+];
+
+const showMsg = (title: string, msg: string) => {
+  Platform.OS === "web" ? window.alert(`${title}\n${msg}`) : Alert.alert(title, msg);
+};
+
+// Forms now send an address object; older submissions hold plain text
+const fieldText = (value: any) =>
+  value && typeof value === "object"
+    ? [value.street, value.village, value.city, value.district, value.pincode].filter(Boolean).join(", ")
+    : String(value ?? "").trim();
+
+// Joins the filled parts of a table row from the form into one line
+const joinFilled = (parts: unknown[]) =>
+  parts.map((p) => String(p ?? "").trim()).filter(Boolean).join(" • ");
+
+// The form's repeating tables (education, work experience, family), as "Title: line" rows
+const listRows = (data: Record<string, any>): { title: string; lines: string[] }[] => {
+  const education = Object.entries(data.education || {})
+    .map(([level, e]: [string, any]) => {
+      const line = joinFilled([e?.institution, e?.year, e?.percentage]);
+      return line ? `${level.toUpperCase()}: ${line}` : "";
+    })
+    .filter(Boolean);
+  const work = (Array.isArray(data.workExperience) ? data.workExperience : [])
+    .map((w: any) => joinFilled([w?.company, w?.location, w?.role, w?.duration, w?.salary, w?.reason]))
+    .filter(Boolean);
+  const family = (Array.isArray(data.familyMembers) ? data.familyMembers : [])
+    .map((f: any) => joinFilled([f?.name, f?.relationship, f?.occupation, f?.contact]))
+    .filter(Boolean);
+  return [
+    { title: "Education", lines: education },
+    { title: "Work Experience", lines: work },
+    { title: "Family", lines: family },
+  ];
+};
 
 export default function AdminOnboardingSubmissions({ navigation }: { navigation: any }) {
+  const { isWebDesktop } = useResponsive();
   const { width } = useWindowDimensions();
   const isDesktop = width >= 1024;
 
@@ -52,42 +151,139 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
   const [generatingLink, setGeneratingLink] = useState(false);
 
   // Completed Submissions State
-  const [completedCandidates, setCompletedCandidates] = useState<SubmittedCandidate[]>([
-    {
-      id: "CAND-501",
-      fullName: "Alex Sterling",
-      designation: "Software Engineer",
-      department: "Engineering",
-      mobileNumber: "9876543210",
-      emailAddress: "alex.sterling@example.com",
-      submissionDate: "2026-06-07",
-      status: "PENDING_REVIEW",
-      documents: {
-        aadhaarUrl: "https://example.com/docs/aadhaar.pdf",
-        panUrl: "https://example.com/docs/pan.pdf",
-        resumeUrl: "https://example.com/docs/resume.pdf",
-      }
-    },
-    {
-      id: "CAND-502",
-      fullName: "Samantha Wright",
-      designation: "Product Designer",
-      department: "Design",
-      mobileNumber: "9123456780",
-      emailAddress: "sam.wright@example.com",
-      submissionDate: "2026-06-06",
-      status: "APPROVED",
-      documents: {
-        aadhaarUrl: "https://example.com/docs/aadhaar2.pdf",
-        panUrl: "https://example.com/docs/pan2.pdf",
-      }
-    }
-  ]);
+  const [completedCandidates, setCompletedCandidates] = useState<SubmittedCandidate[]>([]);
+  const [listLoading, setListLoading] = useState(false);
+  const [listError, setListError] = useState("");
 
   const [selectedCandidate, setSelectedCandidate] = useState<SubmittedCandidate | null>(null);
 
+  // Full form and document list of the open candidate
+  const [detail, setDetail] = useState<SubmissionDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const openRef = useRef<string | null>(null); // ignores a slow reply for a candidate who is no longer open
+
+  // Admin decision on the open candidate
+  const [empIdInput, setEmpIdInput] = useState("");
+  const [dojInput, setDojInput] = useState("");
+  const [salaryInput, setSalaryInput] = useState("");
+  const [noteInput, setNoteInput] = useState("");
+  const [deciding, setDeciding] = useState(false);
+
   // WhatsApp onboarding popup (new, separate from the link flow above)
   const [showWhatsappPopup, setShowWhatsappPopup] = useState(false);
+
+  const loadSubmissions = useCallback(async () => {
+    setListLoading(true);
+    setListError("");
+    try {
+      const res = await fetch(SUBMISSIONS_URL, { cache: "no-store" });
+      if (!res.ok) throw new Error();
+      const rows = await res.json();
+      setCompletedCandidates(Array.isArray(rows) ? rows : []);
+    } catch {
+      setListError("Could not load submitted forms. Please check the connection and try again.");
+    } finally {
+      setListLoading(false);
+    }
+  }, []);
+
+  // Reload whenever the admin comes back to this screen, so new submissions appear
+  useFocusEffect(
+    useCallback(() => {
+      loadSubmissions();
+    }, [loadSubmissions])
+  );
+
+  const closeCandidate = () => {
+    openRef.current = null;
+    setSelectedCandidate(null);
+    setDetail(null);
+    setDetailError("");
+  };
+
+  const openCandidate = async (candidate: SubmittedCandidate) => {
+    openRef.current = candidate.id;
+    setSelectedCandidate(candidate);
+    setDetail(null);
+    setDetailError("");
+    setEmpIdInput("");
+    setDojInput("");
+    setSalaryInput("");
+    setNoteInput("");
+    setDetailLoading(true);
+    try {
+      const res = await fetch(`${SUBMISSIONS_URL}/${encodeURIComponent(candidate.id)}`, { cache: "no-store" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error);
+      if (openRef.current !== candidate.id) return;
+      setDetail({
+        data: body.data || {},
+        files: Array.isArray(body.files) ? body.files : [],
+        decidedBy: body.decidedBy ?? null,
+        adminNote: body.adminNote ?? null,
+      });
+      const joining = String(body.data?.dateOfJoining || "");
+      if (/^\d{4}-\d{2}-\d{2}$/.test(joining)) setDojInput(joining);
+    } catch (e: any) {
+      if (openRef.current === candidate.id) setDetailError(e?.message || "Could not load this submission.");
+    } finally {
+      if (openRef.current === candidate.id) setDetailLoading(false);
+    }
+
+    // Suggest the next free Employee ID; the admin can still change it
+    if (candidate.status !== "APPROVED") {
+      try {
+        const res = await fetch(`${API_BASE_URL}/onboarding/next-emp-id`, { cache: "no-store" });
+        const body = await res.json();
+        if (res.ok && body?.empId && openRef.current === candidate.id) {
+          setEmpIdInput((current) => current || body.empId);
+        }
+      } catch {
+        // the admin can type the ID by hand
+      }
+    }
+  };
+
+  const handleDecision = async (status: "APPROVED" | "WAITING" | "REJECTED") => {
+    if (!selectedCandidate || deciding) return;
+    if (status === "APPROVED" && (!empIdInput.trim() || !dojInput.trim() || !salaryInput.trim())) {
+      showMsg("Details required", "Employee ID, date of joining and monthly salary are required to confirm.");
+      return;
+    }
+    setDeciding(true);
+    try {
+      const body: Record<string, string> = {
+        status,
+        adminName: String(UserSession.empId || "Admin"),
+        note: noteInput.trim(),
+      };
+      if (status === "APPROVED") {
+        body.empId = empIdInput.trim();
+        body.doj = dojInput.trim();
+        body.salary = salaryInput.trim();
+      }
+      const res = await fetch(`${SUBMISSIONS_URL}/${encodeURIComponent(selectedCandidate.id)}/decide`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Could not save the decision.");
+      showMsg(
+        "Saved",
+        status === "APPROVED"
+          ? `Employee ${data.empId} was created with default work settings. In Edit User, complete the settings, set Config status to ACTIVE and enable login.`
+          : `${selectedCandidate.fullName || "Candidate"} is now marked ${status}.`
+      );
+      closeCandidate();
+      loadSubmissions();
+    } catch (e: any) {
+      showMsg("Could not save", e?.message || "Could not save the decision.");
+    } finally {
+      setDeciding(false);
+    }
+  };
 
   const handleGenerateOnboardingLink = async () => {
     if (!onboardingMobile || onboardingMobile.length < 10) {
@@ -132,32 +328,36 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
     }
   };
 
-  const handleDownloadDoc = (docName: string, url?: string) => {
-    if (!url) {
-      Alert.alert("Not Found", "Document was not provided.");
-      return;
-    }
+  const handleOpenDoc = async (fileKey: string) => {
+    if (!selectedCandidate) return;
+    const url = `${SUBMISSIONS_URL}/${encodeURIComponent(selectedCandidate.id)}/file/${fileKey}`;
     if (Platform.OS === "web") {
       window.open(url, "_blank");
-    } else {
-      Alert.alert("Download Started", `Downloading ${docName}...`);
+      return;
+    }
+    try {
+      await Linking.openURL(url);
+    } catch {
+      showMsg("Could not open", "Unable to open this document on this device.");
     }
   };
 
+  const query = searchQuery.trim().toLowerCase();
   const filteredCandidates = completedCandidates.filter(c =>
-    c.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.mobileNumber.includes(searchQuery) ||
-    c.department.toLowerCase().includes(searchQuery.toLowerCase())
+    (c.fullName || "").toLowerCase().includes(query) ||
+    (c.mobileNumber || "").includes(query) ||
+    (c.department || "").toLowerCase().includes(query)
   );
 
   return (
-    <ScreenContainer scrollable={false} fullWidth={true}>
+    <ScreenContainer scrollable={false} fullWidth={true} webHeader={<WebPageHeader title="Onboarding Management" subtitle="Link generation & completed candidate reviews" onBack={() => (navigation.canGoBack?.() ? navigation.goBack() : navigation.navigate("Home"))} />}>
 
       {/* Header Bar */}
+      {!isWebDesktop && (
       <View className="mb-4 flex-row items-center justify-between">
         <View className="flex-row items-center gap-3">
           <TouchableOpacity
-            onPress={() => navigation.goBack()}
+            onPress={() => (navigation.canGoBack?.() ? navigation.goBack() : navigation.navigate("Home"))}
             className="w-10 h-10 bg-white border border-[#E7E4F5] rounded-xl items-center justify-center shadow-xs"
           >
             <ChevronLeft size={20} color="#1F1B3D" />
@@ -168,9 +368,10 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
           </View>
         </View>
       </View>
+      )}
 
       {/* Segmented Switcher Tabs */}
-      <View className="flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl border border-[#E7E4F5] mb-4">
+      <View className="web:lg:self-start web:lg:w-[480px] flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl border border-[#E7E4F5] mb-4">
         <TouchableOpacity
           onPress={() => setActiveTab("generate")}
           className={`flex-1 py-2.5 rounded-xl items-center justify-center ${activeTab === "generate" ? "bg-[#5B4FD1] shadow-xs" : ""}`}
@@ -286,45 +487,75 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
       {activeTab === "completed" && (
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 60 }} className="flex-1">
           <View className="gap-4">
-            <View className="bg-white border border-[#E7E4F5] rounded-2xl px-4 py-3 flex-row items-center shadow-xs mb-2">
-              <Search size={18} color="#7A76A6" />
-              <TextInput
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-                placeholder="Search candidate by name, mobile or department..."
-                placeholderTextColor="#A6A2CE"
-                className="flex-1 ml-2.5 text-xs font-bold text-[#1F1B3D]"
-              />
+            <View className="flex-row items-center gap-2 mb-2">
+              <View className="flex-1 bg-white border border-[#E7E4F5] rounded-2xl px-4 py-3 flex-row items-center shadow-xs">
+                <Search size={18} color="#7A76A6" />
+                <TextInput
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  placeholder="Search candidate by name, mobile or department..."
+                  placeholderTextColor="#A6A2CE"
+                  className="flex-1 ml-2.5 text-xs font-bold text-[#1F1B3D]"
+                />
+              </View>
+              <TouchableOpacity
+                onPress={loadSubmissions}
+                disabled={listLoading}
+                accessibilityLabel="Refresh submitted forms"
+                className="w-11 h-11 bg-white border border-[#E7E4F5] rounded-2xl items-center justify-center shadow-xs"
+              >
+                {listLoading ? <ActivityIndicator size="small" color="#5B4FD1" /> : <RefreshCw size={16} color="#5B4FD1" />}
+              </TouchableOpacity>
             </View>
 
+            {listError ? (
+              <View className="bg-rose-50 border border-rose-200 rounded-2xl p-4">
+                <Text className="text-xs font-bold text-rose-700">{listError}</Text>
+              </View>
+            ) : null}
+
+            {!listLoading && !listError && filteredCandidates.length === 0 ? (
+              <View className="bg-white border border-[#E7E4F5] rounded-3xl p-8 items-center">
+                <Text className="text-sm font-black text-[#1F1B3D]">
+                  {query ? "No matching candidates" : "No submitted forms yet"}
+                </Text>
+                <Text className="text-xs font-bold text-[#7A76A6] mt-1 text-center">
+                  {query ? "Try a different name, mobile number or department." : "Forms appear here after a candidate submits their link."}
+                </Text>
+              </View>
+            ) : null}
+
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 16 }}>
-              {filteredCandidates.map((candidate) => (
-                <TouchableOpacity
-                  key={candidate.id}
-                  onPress={() => setSelectedCandidate(candidate)}
-                  className="bg-white border border-[#E7E4F5] rounded-3xl p-5 shadow-xs active:opacity-90"
-                  style={{ width: isDesktop ? "32%" : "100%", minHeight: 160 }}
-                >
-                  <View className="flex-row items-center justify-between mb-3">
-                    <View className="w-10 h-10 rounded-xl bg-[#EEECFA] items-center justify-center">
-                      <UserCheck size={20} color="#5B4FD1" />
+              {filteredCandidates.map((candidate) => {
+                const badge = STATUS_STYLES[candidate.status] || STATUS_STYLES.SUBMITTED;
+                const role = joinFilled([candidate.designation, candidate.department]);
+                return (
+                  <TouchableOpacity
+                    key={candidate.id}
+                    onPress={() => openCandidate(candidate)}
+                    className="bg-white border border-[#E7E4F5] rounded-3xl p-5 shadow-xs active:opacity-90"
+                    style={{ width: isDesktop ? "32%" : "100%", minHeight: 160 }}
+                  >
+                    <View className="flex-row items-center justify-between mb-3">
+                      <View className="w-10 h-10 rounded-xl bg-[#EEECFA] items-center justify-center">
+                        <UserCheck size={20} color="#5B4FD1" />
+                      </View>
+                      <View className={`px-2.5 py-1 rounded-full border ${badge.box}`}>
+                        <Text className={`text-[9px] font-black ${badge.text}`}>{badge.label}</Text>
+                      </View>
                     </View>
-                    <View className={`px-2.5 py-1 rounded-full border ${candidate.status === "APPROVED" ? "bg-emerald-50 border-emerald-200" : "bg-amber-50 border-amber-200"}`}>
-                      <Text className={`text-[9px] font-black ${candidate.status === "APPROVED" ? "text-emerald-700" : "text-amber-700"}`}>
-                        {candidate.status}
-                      </Text>
+
+                    <Text className="text-base font-black text-[#1F1B3D]" numberOfLines={1}>{candidate.fullName || "Unnamed candidate"}</Text>
+                    {role ? <Text className="text-xs font-bold text-[#5B4FD1] mt-0.5">{role}</Text> : null}
+                    {candidate.empId ? <Text className="text-[11px] font-bold text-emerald-700 mt-0.5">Employee ID: {candidate.empId}</Text> : null}
+
+                    <View className="mt-3 pt-3 border-t border-slate-100 flex-row justify-between items-center">
+                      <Text className="text-[11px] font-semibold text-[#7A76A6]">Mobile: {candidate.mobileNumber}</Text>
+                      <Text className="text-[10px] font-bold text-slate-400">{candidate.submissionDate}</Text>
                     </View>
-                  </View>
-
-                  <Text className="text-base font-black text-[#1F1B3D]" numberOfLines={1}>{candidate.fullName}</Text>
-                  <Text className="text-xs font-bold text-[#5B4FD1] mt-0.5">{candidate.designation} • {candidate.department}</Text>
-
-                  <View className="mt-3 pt-3 border-t border-slate-100 flex-row justify-between items-center">
-                    <Text className="text-[11px] font-semibold text-[#7A76A6]">Mobile: {candidate.mobileNumber}</Text>
-                    <Text className="text-[10px] font-bold text-slate-400">{candidate.submissionDate}</Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           </View>
         </ScrollView>
@@ -338,79 +569,143 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
 
               <View className="flex-row items-center justify-between pb-3 border-b border-slate-100">
                 <View>
-                  <Text className="text-lg font-black text-[#1F1B3D]">{selectedCandidate.fullName}</Text>
-                  <Text className="text-xs font-bold text-[#5B4FD1]">{selectedCandidate.designation} ({selectedCandidate.department})</Text>
+                  <Text className="text-lg font-black text-[#1F1B3D]">{selectedCandidate.fullName || "Unnamed candidate"}</Text>
+                  <Text className="text-xs font-bold text-[#5B4FD1]">{joinFilled([selectedCandidate.designation, selectedCandidate.department])}</Text>
                 </View>
-                <TouchableOpacity onPress={() => setSelectedCandidate(null)}>
+                <TouchableOpacity onPress={closeCandidate} accessibilityLabel="Close">
                   <X size={20} color="#7A76A6" />
                 </TouchableOpacity>
               </View>
 
-              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 14 }}>
-                <View className="bg-[#F6F5FC] p-4 rounded-2xl border border-[#E7E4F5] gap-2">
-                  <Text className="text-[11px] font-black text-[#1F1B3D] uppercase">Contact Information</Text>
-                  <Text className="text-xs font-bold text-[#7A76A6]">Mobile: <Text className="text-[#1F1B3D]">{selectedCandidate.mobileNumber}</Text></Text>
-                  <Text className="text-xs font-bold text-[#7A76A6]">Email: <Text className="text-[#1F1B3D]">{selectedCandidate.emailAddress}</Text></Text>
-                </View>
+              <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 14 }}>
+                {detailLoading ? <ActivityIndicator size="large" color="#5B4FD1" /> : null}
 
-                <View className="gap-2">
-                  <Text className="text-[11px] font-black text-[#1F1B3D] uppercase">Uploaded Documents</Text>
-                  {[
-                    { label: "Aadhaar Card Copy", url: selectedCandidate.documents.aadhaarUrl },
-                    { label: "PAN Card Copy", url: selectedCandidate.documents.panUrl },
-                    { label: "Resume & Certificates", url: selectedCandidate.documents.resumeUrl },
-                  ].map((doc, idx) => (
-                    <View key={idx} className="flex-row items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3">
-                      <View className="flex-row items-center gap-2">
-                        <FileText size={16} color="#5B4FD1" />
-                        <Text className="text-xs font-bold text-[#1F1B3D]">{doc.label}</Text>
-                      </View>
-                      <TouchableOpacity
-                        onPress={() => handleDownloadDoc(doc.label, doc.url)}
-                        className="bg-[#EEECFA] px-3 py-1.5 rounded-lg border border-[#5B4FD1]/30 flex-row items-center gap-1"
-                      >
-                        <Download size={12} color="#5B4FD1" />
-                        <Text className="text-[10px] font-black text-[#5B4FD1]">VIEW / DOWNLOAD</Text>
-                      </TouchableOpacity>
+                {detailError ? (
+                  <View className="bg-rose-50 border border-rose-200 rounded-2xl p-4">
+                    <Text className="text-xs font-bold text-rose-700">{detailError}</Text>
+                  </View>
+                ) : null}
+
+                {detail ? (
+                  <>
+                    {DETAIL_SECTIONS.map((section) => {
+                      const rows = section.fields.filter(([key]) => fieldText(detail.data[key]));
+                      if (rows.length === 0) return null;
+                      return (
+                        <View key={section.title} className="bg-[#F6F5FC] p-4 rounded-2xl border border-[#E7E4F5] gap-2">
+                          <Text className="text-[11px] font-black text-[#1F1B3D] uppercase">{section.title}</Text>
+                          {rows.map(([key, label]) => (
+                            <Text key={key} className="text-xs font-bold text-[#7A76A6]">
+                              {label}: <Text className="text-[#1F1B3D]">{fieldText(detail.data[key])}</Text>
+                            </Text>
+                          ))}
+                        </View>
+                      );
+                    })}
+
+                    {listRows(detail.data).map((group) =>
+                      group.lines.length === 0 ? null : (
+                        <View key={group.title} className="bg-[#F6F5FC] p-4 rounded-2xl border border-[#E7E4F5] gap-2">
+                          <Text className="text-[11px] font-black text-[#1F1B3D] uppercase">{group.title}</Text>
+                          {group.lines.map((line, idx) => (
+                            <Text key={idx} className="text-xs font-bold text-[#1F1B3D]">{line}</Text>
+                          ))}
+                        </View>
+                      )
+                    )}
+
+                    <View className="gap-2">
+                      <Text className="text-[11px] font-black text-[#1F1B3D] uppercase">Uploaded Documents</Text>
+                      {DOCUMENTS.map((doc) => {
+                        const provided = detail.files.includes(doc.key);
+                        return (
+                          <View key={doc.key} className="flex-row items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 gap-2">
+                            <View className="flex-row items-center gap-2 flex-1">
+                              <FileText size={16} color="#5B4FD1" />
+                              <Text className="text-xs font-bold text-[#1F1B3D] flex-1">{doc.label}</Text>
+                            </View>
+                            {provided ? (
+                              <TouchableOpacity
+                                onPress={() => handleOpenDoc(doc.key)}
+                                className="bg-[#EEECFA] px-3 py-1.5 rounded-lg border border-[#5B4FD1]/30 flex-row items-center gap-1"
+                              >
+                                <Download size={12} color="#5B4FD1" />
+                                <Text className="text-[10px] font-black text-[#5B4FD1]">VIEW / DOWNLOAD</Text>
+                              </TouchableOpacity>
+                            ) : (
+                              <Text className="text-[10px] font-bold text-slate-400">Not provided</Text>
+                            )}
+                          </View>
+                        );
+                      })}
                     </View>
-                  ))}
-                </View>
+
+                    {detail.decidedBy || detail.adminNote ? (
+                      <View className="bg-[#F6F5FC] p-4 rounded-2xl border border-[#E7E4F5] gap-2">
+                        <Text className="text-[11px] font-black text-[#1F1B3D] uppercase">Last Decision</Text>
+                        {detail.decidedBy ? <Text className="text-xs font-bold text-[#7A76A6]">By: <Text className="text-[#1F1B3D]">{detail.decidedBy}</Text></Text> : null}
+                        {detail.adminNote ? <Text className="text-xs font-bold text-[#7A76A6]">Note: <Text className="text-[#1F1B3D]">{detail.adminNote}</Text></Text> : null}
+                      </View>
+                    ) : null}
+
+                    {selectedCandidate.status !== "APPROVED" ? (
+                      <View className="gap-2">
+                        <Text className="text-[11px] font-black text-[#1F1B3D] uppercase">Review Decision</Text>
+                        <Text className="text-[10px] font-bold text-[#7A76A6]">Employee ID, date of joining and salary are needed only to confirm.</Text>
+                        {[
+                          { label: "Employee ID*", value: empIdInput, onChange: setEmpIdInput, placeholder: "F9102" },
+                          { label: "Date of Joining* (YYYY-MM-DD)", value: dojInput, onChange: setDojInput, placeholder: "2026-11-05" },
+                          { label: "Monthly Salary*", value: salaryInput, onChange: setSalaryInput, placeholder: "25000" },
+                          { label: "Note (optional)", value: noteInput, onChange: setNoteInput, placeholder: "Reason or remarks" },
+                        ].map((input) => (
+                          <View key={input.label} className="gap-1">
+                            <Text className="text-[10px] font-bold text-[#7A76A6] uppercase">{input.label}</Text>
+                            <TextInput
+                              value={input.value}
+                              onChangeText={input.onChange}
+                              placeholder={input.placeholder}
+                              placeholderTextColor="#A6A2CE"
+                              className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-xs font-bold text-[#1F1B3D]"
+                            />
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
+                  </>
+                ) : null}
               </ScrollView>
 
-              <View className="flex-row gap-2 pt-2 border-t border-slate-100">
-                <TouchableOpacity
-                  onPress={() => {
-                    Alert.alert("Approved", `${selectedCandidate.fullName} has been approved.`);
-                    setSelectedCandidate(null);
-                  }}
-                  className="flex-1 bg-emerald-600 py-3.5 rounded-xl items-center shadow-xs"
-                >
-                  <Text className="text-white text-xs font-black uppercase">Approve & Move to Core</Text>
-                </TouchableOpacity>
-              </View>
-
+              {detail && selectedCandidate.status !== "APPROVED" ? (
+                <View className="gap-2 pt-2 border-t border-slate-100">
+                  <TouchableOpacity
+                    onPress={() => handleDecision("APPROVED")}
+                    disabled={deciding}
+                    className="bg-emerald-600 py-3.5 rounded-xl items-center shadow-xs"
+                  >
+                    {deciding ? <ActivityIndicator color="#FFFFFF" /> : <Text className="text-white text-xs font-black uppercase">Confirm & Create Employee</Text>}
+                  </TouchableOpacity>
+                  <View className="flex-row gap-2">
+                    <TouchableOpacity
+                      onPress={() => handleDecision("WAITING")}
+                      disabled={deciding}
+                      className="flex-1 bg-sky-50 border border-sky-200 py-3 rounded-xl items-center"
+                    >
+                      <Text className="text-sky-700 text-xs font-black uppercase">Mark Waiting</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => handleDecision("REJECTED")}
+                      disabled={deciding}
+                      className="flex-1 bg-rose-50 border border-rose-200 py-3 rounded-xl items-center"
+                    >
+                      <Text className="text-rose-700 text-xs font-black uppercase">Reject</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ) : null}
             </View>
           )}
         </View>
       </Modal>
-
-      {/* NEW: WhatsApp onboarding popup */}
-      {/* <Modal visible={showWhatsappPopup} transparent animationType="fade" onRequestClose={() => setShowWhatsappPopup(false)}>
-        <View className="flex-1 bg-black/40 justify-center items-center p-4">
-          <View className="w-full max-w-lg bg-[#F6F5FC] border border-[#E7E4F5] rounded-3xl shadow-xl max-h-[90%]">
-            <View className="flex-row items-center justify-between px-5 pt-4 pb-2">
-              <Text className="text-sm font-black text-[#1F1B3D] uppercase">Onboarding via WhatsApp</Text>
-              <TouchableOpacity onPress={() => setShowWhatsappPopup(false)}>
-                <X size={20} color="#7A76A6" />
-              </TouchableOpacity>
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 16, paddingTop: 4 }}>
-              <Whatsappformpanel />
-            </ScrollView>
-          </View>
-        </View>
-      </Modal> */}
-
     </ScreenContainer>
   );
 }

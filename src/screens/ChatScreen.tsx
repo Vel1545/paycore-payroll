@@ -42,6 +42,8 @@ import { BASE_HOST } from "../constants/config";
 import { useChatUnread } from "../utils/Usechatunread";
 import { playChatSound } from "../utils/chatSound";
 import { setActiveChatRoom } from "../constants/Notifications";
+import { useResponsive } from "../hooks/useResponsive";
+import { Badge, Btn, WebPageHeader } from "../components/web/webUi";
 
 interface ChatScreenProps {
   navigation: {
@@ -129,6 +131,7 @@ const readError = async (res: Response, fallback: string) => {
 };
 
 export default function ChatScreen({ navigation, userSession, route }: ChatScreenProps) {
+  const { isWebDesktop } = useResponsive();
   const isFocused = useIsFocused();
 
   const isAdmin = userSession?.isAdmin ?? false;
@@ -863,7 +866,7 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
   );
 
   return (
-    <ScreenContainer scrollable={false} fullWidth={true}>
+    <ScreenContainer scrollable={false} fullWidth={true} webHeader={<WebPageHeader title="Workplace Chat" subtitle="Workspace real-time comms" onBack={() => { if (activeTab === "channels" && chatOpen) { closeChat(); return; } navigation.canGoBack?.() ? navigation.goBack() : navigation.navigate("Home"); }}>{isAdmin && activeTab === "announcements" ? <Btn label="Post notice" onPress={() => setShowNewAnnouncementModal(true)} icon={<PlusCircle size={15} color="#FFFFFF" />} /> : null}<Badge label={String(myName || currentEmpId)} /></WebPageHeader>}>
       <View
         style={{
           paddingBottom: Platform.OS === "web" ? 40 : 30,
@@ -873,6 +876,7 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
         {/* ========================================================================= */}
         {/* 1. TOP PURPLE BANNER HEADER                                               */}
         {/* ========================================================================= */}
+        {!isWebDesktop && (
         <View className="bg-[#5B4FD1] rounded-3xl p-4 mb-3 shadow-xs flex-row items-center justify-between shrink-0">
           <View className="flex-row items-center gap-2.5">
             <TouchableOpacity
@@ -905,12 +909,13 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
             </View>
           </View>
         </View>
+        )}
 
         {/* ========================================================================= */}
         {/* 2. MODE SWITCH: CHATS vs ANNOUNCEMENTS                                    */}
         {/* ========================================================================= */}
         {!(activeTab === "channels" && chatOpen) && (
-        <View className="flex-row bg-white p-1 rounded-2xl mb-3 border border-[#E7E4F5] shadow-xs shrink-0">
+        <View className="web:lg:self-start web:lg:w-[420px] flex-row bg-white p-1 rounded-2xl mb-3 border border-[#E7E4F5] shadow-xs shrink-0">
           <TouchableOpacity
             onPress={() => setActiveTab("channels")}
             className={`flex-1 py-2 rounded-xl items-center flex-row justify-center ${

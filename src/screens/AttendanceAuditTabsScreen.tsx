@@ -30,6 +30,8 @@ import {
 } from "lucide-react-native";
 import CrossPlatformDatePicker from "../components/CrossPlatformDatePicker";
 import { BASE_HOST } from "../constants/config";
+import { useResponsive } from "../hooks/useResponsive";
+import { Badge, IconBtn, WebPageHeader, ui } from "../components/web/webUi";
 
 type TabType = "ATTENDANCE" | "LEAVE" | "CLAIMS";
 type LeaveFilterType = "ALL" | "PERMISSION" | "HALF_DAY" | "FULL_DAY";
@@ -151,6 +153,7 @@ function PaginationBar({
 }
 
 export default function AttendanceAuditTabsScreen({ navigation }: any) {
+  const { isWebDesktop } = useResponsive();
   // Global Filters: the page opens on TODAY; the user widens the range when needed
   const [fromDate, setFromDate] = useState<Date>(() => startOfDay(new Date()));
   const [toDate, setToDate] = useState<Date>(() => startOfDay(new Date()));
@@ -458,6 +461,8 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
   return (
     <View className="flex-1 bg-[#F8F7FD]">
       {/* 1. Top Header */}
+      {isWebDesktop ? <WebPageHeader title="Workforce Lifecycle Audit" onBack={() => { if (adminView !== "menu") { setAdminView("menu"); } else { navigation?.canGoBack?.() ? navigation.goBack() : navigation?.navigate("Home"); } }}><IconBtn label="Refresh" onPress={fetchAuditData}><RefreshCw size={16} color={ui.color.ink} /></IconBtn></WebPageHeader> : null}
+      {!isWebDesktop && (
       <View className="bg-[#5B4FD1] pt-10 pb-4 px-4 shadow-sm">
         <View className="flex-row items-center justify-between">
           <TouchableOpacity
@@ -481,6 +486,7 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
           </TouchableOpacity>
         </View>
       </View>
+      )}
 
       <ScrollView
         ref={scrollRef}
@@ -635,7 +641,7 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
         </View>
 
         {/* 3. Segmented Tab Selector */}
-        <View className="flex-row bg-white border border-[#E7E4F5] p-1 rounded-xl mb-4 shadow-xs">
+        <View className="web:lg:self-start web:lg:w-[520px] flex-row bg-white border border-[#E7E4F5] p-1 rounded-xl mb-4 shadow-xs">
           <TouchableOpacity
             onPress={() => setActiveTab("ATTENDANCE")}
             className={`flex-1 py-2 rounded-lg items-center justify-center ${

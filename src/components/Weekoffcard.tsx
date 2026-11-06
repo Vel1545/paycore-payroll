@@ -3,13 +3,13 @@ import { View, Text, TouchableOpacity, Platform, Alert, ActivityIndicator } from
 import { CalendarOff, Check } from "lucide-react-native";
 import { BASE_HOST } from "../constants/config";
 
-const C = { primary: "#5B4FD1", ink: "#1F1B3D", muted: "#7A76A6", faint: "#A6A2CE", border: "#E7E4F5", soft: "#EEECFA", bg: "#F6F5FC" };
+const C = { primary: "#5B4FD1", ink: "#1F1B3D", muted: "#7A76A6", faint: "#A6A2CE", border: "#E7E4F5", soft: "#EEECFA", bg: "#F6F5FC", amber: "#D08A0C", amberSoft: "#FEF2D9" };
 const API = `${BASE_HOST}/api/weekoff`;
 
 interface Day {
   date: string;
   dayName: string;
-  kind: "FIXED_OFF" | "FLEX_OFF" | "WORK";
+  kind: "FIXED_OFF" | "FLEX_OFF" | "PENDING_OFF" | "WORK";
   isToday: boolean;
   isPast: boolean;
   worked: boolean;
@@ -18,6 +18,8 @@ interface Day {
 }
 interface Week {
   flexOffsPerWeek: number;
+  approved: number;
+  pending: number;
   used: number;
   left: number;
   workingDaysPerWeek: number;
@@ -38,7 +40,7 @@ const confirmAsk = (title: string, msg: string, onYes: () => void) => {
   ]);
 };
 
-/** Shows this week and lets the employee take their flexible week-offs. Renders nothing if the schedule has none. */
+/** Shows this week. The employee requests a flexible week-off; the admin approves it. Renders nothing if the schedule has none. */
 export default function WeekOffCard({ empId, onChanged }: { empId: string; onChanged?: () => void }) {
   const [week, setWeek] = useState<Week | null>(null);
   const [busy, setBusy] = useState(false);
@@ -73,6 +75,7 @@ export default function WeekOffCard({ empId, onChanged }: { empId: string; onCha
         notify("Week off", j?.error || "Could not update. Please try again.");
       } else {
         setWeek(j);
+        if (method === "POST") notify("Request sent", "Your week-off request was sent to your admin for approval.");
         onChanged?.();
       }
     } catch {
@@ -85,13 +88,17 @@ export default function WeekOffCard({ empId, onChanged }: { empId: string; onCha
   const onTap = (d: Day) => {
     if (busy) return;
     if (d.canTake) {
-      confirmAsk("Take a week off?", `Mark ${d.dayName} (${d.date}) as your week off. You cannot punch in that day.`, () => call("POST", d));
+      confirmAsk("Request a week off?", `Ask for ${d.dayName} (${d.date}) as your week off. Your admin must approve it. You cannot punch in that day once it is approved.`, () => call("POST", d));
     } else if (d.canCancel) {
-      confirmAsk("Cancel this week off?", `${d.dayName} (${d.date}) will become a working day again.`, () => call("DELETE", d));
+      confirmAsk("Withdraw this request?", `Your request for ${d.dayName} (${d.date}) will be cancelled.`, () => call("DELETE", d));
+    } else if (d.kind === "FLEX_OFF" && !d.isPast) {
+      notify("Week off", "This week off is approved. Ask your admin if you need to cancel it.");
     }
   };
 
   if (!week || week.flexOffsPerWeek <= 0) return null;
+
+  const full = week.left <= 0;
 
   return (
     <View style={{ borderColor: C.border }} className="bg-white border rounded-3xl p-4 mb-3">
@@ -107,8 +114,8 @@ export default function WeekOffCard({ empId, onChanged }: { empId: string; onCha
             </Text>
           </View>
         </View>
-        <View style={{ backgroundColor: week.left > 0 ? C.soft : "#F1F0F7" }} className="px-3 py-1.5 rounded-full">
-          <Text style={{ color: week.left > 0 ? C.primary : C.muted }} className="text-[11px] font-black">
+        <View style={{ backgroundColor: !full ? C.soft : "#F1F0F7" }} className="px-3 py-1.5 rounded-full">
+          <Text style={{ color: !full ? C.primary : C.muted }} className="text-[11px] font-black">
             {week.left} of {week.flexOffsPerWeek} left
           </Text>
         </View>
@@ -118,13 +125,14 @@ export default function WeekOffCard({ empId, onChanged }: { empId: string; onCha
         {week.days.map((d) => {
           const fixed = d.kind === "FIXED_OFF";
           const flex = d.kind === "FLEX_OFF";
+          const pend = d.kind === "PENDING_OFF";
           const tappable = d.canTake || d.canCancel;
-          const bg = flex ? C.primary : fixed ? "#EDEBF7" : d.isToday ? C.soft : "#FFFFFF";
-          const border = flex ? C.primary : d.isToday ? C.primary : C.border;
+          const bg = flex ? C.primary : pend ? C.amberSoft : fixed ? "#EDEBF7" : d.isToday ? C.soft : "#FFFFFF";
+          const border = flex ? C.primary : pend ? C.amber : d.isToday ? C.primary : C.border;
           return (
             <TouchableOpacity
               key={d.date}
-              disabled={!tappable || busy}
+              disabled={(!tappable && !(flex && !d.isPast)) || busy}
               activeOpacity={0.8}
               onPress={() => onTap(d)}
               style={{
@@ -132,8 +140,8 @@ export default function WeekOffCard({ empId, onChanged }: { empId: string; onCha
                 backgroundColor: bg,
                 borderColor: border,
                 borderWidth: 1,
-                borderStyle: tappable && !flex ? "dashed" : "solid",
-                opacity: d.isPast && !flex && !fixed ? 0.55 : 1,
+                borderStyle: (tappable && !flex) || pend ? "dashed" : "solid",
+                opacity: d.isPast && !flex && !fixed && !pend ? 0.55 : 1,
               }}
               className="rounded-2xl py-2.5 items-center"
             >
@@ -146,12 +154,14 @@ export default function WeekOffCard({ empId, onChanged }: { empId: string; onCha
               <View style={{ height: 16 }} className="items-center justify-center mt-1">
                 {flex ? (
                   <Check size={12} color="#FFFFFF" />
+                ) : pend ? (
+                  <Text style={{ color: C.amber }} className="text-[8px] font-black">WAIT</Text>
                 ) : fixed ? (
                   <Text style={{ color: C.muted }} className="text-[9px] font-black">OFF</Text>
                 ) : d.worked ? (
                   <Check size={12} color="#15803D" />
                 ) : d.canTake ? (
-                  <Text style={{ color: C.primary }} className="text-[9px] font-black">TAKE</Text>
+                  <Text style={{ color: C.primary }} className="text-[9px] font-black">ASK</Text>
                 ) : null}
               </View>
             </TouchableOpacity>
@@ -159,9 +169,16 @@ export default function WeekOffCard({ empId, onChanged }: { empId: string; onCha
         })}
       </View>
 
-      <Text style={{ color: C.muted }} className="text-[11px] font-medium mt-3">
-        Tap a day marked TAKE to use a week off. Tap a purple day to give it back.
-      </Text>
+      {full ? (
+        <Text style={{ color: C.muted }} className="text-[11px] font-medium mt-3">
+          You have used all {week.flexOffsPerWeek} week off{week.flexOffsPerWeek > 1 ? "s" : ""} for this week
+          {week.pending > 0 ? ` (${week.approved} approved, ${week.pending} waiting for approval)` : " (all approved)"}. No more requests can be raised.
+        </Text>
+      ) : (
+        <Text style={{ color: C.muted }} className="text-[11px] font-medium mt-3">
+          Tap a day marked ASK to request a week off. Yellow = waiting for approval (tap to withdraw). Purple = approved.
+        </Text>
+      )}
       {busy && <ActivityIndicator size="small" color={C.primary} style={{ marginTop: 8 }} />}
     </View>
   );

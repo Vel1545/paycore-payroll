@@ -9,6 +9,8 @@ import CrossPlatformDatePicker from "../components/CrossPlatformDatePicker";
 import Confetti from "../components/Confetti";
 import FullPageCelebration from "../components/FullPageCelebration";
 import LottieCelebration from "../components/LottieCelebration";
+import { useResponsive } from "../hooks/useResponsive";
+import { Badge, Btn, WebPageHeader } from "../components/web/webUi";
 
 const API = `${BASE_HOST}/api/celebrations`;
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -143,6 +145,7 @@ function WishBox({ item, today, myEmpId, isAdmin, onChanged }: { item: any; toda
 }
 
 export default function CelebrationsScreen({ navigation }: any) {
+  const { isWebDesktop } = useResponsive();
   const { height: winH } = useWindowDimensions();
   const { user } = useAuth();
   const isAdmin = !!(user?.isAdmin || String(user?.role || "").toUpperCase() === "ADMIN");
@@ -251,6 +254,8 @@ export default function CelebrationsScreen({ navigation }: any) {
   return (
     <SafeAreaView className="flex-1 bg-[#F6F5FC]" edges={["top"]} style={Platform.OS === "web" ? ({ height: winH, maxHeight: winH, overflow: "hidden" } as any) : undefined}>
       {/* Header */}
+      {isWebDesktop ? <View style={{ marginBottom: 16 }}><WebPageHeader title="Team Celebrations" subtitle="Birthdays, achievements & work anniversaries" onBack={() => (navigation?.canGoBack?.() ? navigation.goBack() : navigation?.navigate("Home"))}>{isAdmin ? <Btn label="Tag achievement" onPress={openForm} icon={<Trophy size={15} color="#FFFFFF" />} /> : null}<Badge label="Workplace culture" tone="primary" /></WebPageHeader></View> : null}
+      {!isWebDesktop && (
       <View className="bg-[#5B4FD1] rounded-3xl pt-4 pb-6 px-5 mx-4 mt-2 mb-4 relative overflow-hidden">
         <View className="absolute -top-3 -right-4 w-20 h-20 rounded-3xl border-2 border-white/20" style={{ transform: [{ rotate: "20deg" }] }} pointerEvents="none" />
         <View className="absolute top-12 -left-6 w-16 h-16 rounded-2xl border-2 border-white/10" style={{ transform: [{ rotate: "-15deg" }] }} pointerEvents="none" />
@@ -281,8 +286,9 @@ export default function CelebrationsScreen({ navigation }: any) {
           <Text className="text-xs font-semibold text-white/80 mt-0.5 text-center">Birthdays, achievements & work anniversaries</Text>
         </View>
       </View>
+      )}
 
-      <View className="flex-1 min-h-0 w-full max-w-4xl mx-auto px-4" style={{ minHeight: 0 }}>
+      <View className="flex-1 min-h-0 w-full max-w-4xl web:lg:max-w-page mx-auto px-4" style={{ minHeight: 0 }}>
         <ScrollView
           className="flex-1 min-h-0"
           style={{ flex: 1, minHeight: 0 }}

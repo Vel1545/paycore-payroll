@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { View, Text, ActivityIndicator } from "react-native";
 import * as Linking from "expo-linking";
 import CandidateOnboardingScreen from "./CandidateOnboardingScreen";
-import { BASE_HOST } from "../constants/config";
+import { BASE_HOST } from "../constants/config";4
 
 // A repeated query key parses to string[]; only the first value is used
 const firstParam = (value: string | string[] | undefined) =>

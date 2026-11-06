@@ -42,6 +42,8 @@ import { UserSession } from "../services/UserSession";
 import { startShiftTracking, stopShiftTracking } from "../services/shiftTrackingManager";
 import { BASE_HOST } from "../constants/config";
 import { useIsFocused } from "@react-navigation/native";
+import { useResponsive } from "../hooks/useResponsive";
+import { Badge, IconBtn, WebPageHeader, ui } from "../components/web/webUi";
 
 // Optional: shrinks the selfie so low-memory phones do not crash on a full-size photo.
 // Install with: npx expo install expo-image-manipulator (needs a new build)
@@ -405,6 +407,7 @@ class CameraErrorBoundary extends React.Component<
 }
 
 export default function PunchClockScreen({ navigation }: PunchClockScreenProps) {
+  const { isWebDesktop } = useResponsive();
   const isFocused = useIsFocused();
   const cameraRef = useRef<any>(null);
   const [permission, requestPermission] = useCameraPermissions();
@@ -1337,7 +1340,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
     : 0;
 
   return (
-    <ScreenContainer scrollable={false}>
+    <ScreenContainer scrollable={false} webMaxWidth={1120} webHeader={<WebPageHeader title="Biometric Punch Clock" subtitle={isGeofenceExempt ? `Field ${workMode} • GPS & Selfie Verification (Location Unrestricted)` : activeMode === "WFH" ? "Remote Presence • GPS & Selfie Verification" : "Geofenced GPS & Live Camera Attendance"} onBack={() => (navigation.canGoBack?.() ? navigation.goBack() : navigation.navigate("Home"))}><Badge label="NTP live synced" tone="success" /><IconBtn label="Refresh" onPress={handleManualRefresh}>{isPullRefreshing ? <ActivityIndicator size="small" color={ui.color.primary} /> : <RefreshCw size={16} color={ui.color.ink} />}</IconBtn></WebPageHeader>}>
       <ScrollView
         showsVerticalScrollIndicator={false}
         nestedScrollEnabled
@@ -1349,6 +1352,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
         }
       >
         {/* TOP PURPLE BANNER */}
+        {!isWebDesktop && (
         <View className="bg-[#5B4FD1] rounded-3xl pt-3 pb-4 px-4 mb-4 shadow-xs relative overflow-hidden">
           <View className="flex-row items-center justify-between mb-3">
             <TouchableOpacity
@@ -1389,6 +1393,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
             </Text>
           </View>
         </View>
+        )}
 
         {/* WORK MODE SWITCH — fixed by admin config for geofence-exempt roles */}
         <View className="bg-white border border-[#E7E4F5] rounded-3xl p-2 mb-4 shadow-xs">
@@ -1398,7 +1403,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
               <Text className="text-xs font-black text-[#5B4FD1] ml-2">Field / {workMode} Mode — Location Not Restricted</Text>
             </View>
           ) : (
-            <View className="flex-row bg-[#F6F5FC] p-1 rounded-2xl border border-[#E7E4F5]">
+            <View className="web:lg:self-start web:lg:w-[420px] flex-row bg-[#F6F5FC] p-1 rounded-2xl border border-[#E7E4F5]">
               <TouchableOpacity
                 onPress={() => setActiveMode("OFFICE")}
                 disabled={attendanceState !== "NOT_CHECKED_IN"}

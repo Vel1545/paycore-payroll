@@ -14,15 +14,20 @@ import {
   FlatList
 } from "react-native";
 import CrossPlatformDatePicker from "../components/CrossPlatformDatePicker";
+import UserManagementDesktop from "../components/web/UserManagementDesktop";
 import { LinearGradient } from "expo-linear-gradient";
 import {
   Users, ArrowRight, ChevronLeft,
   Search, Navigation, ChevronRight,
-  DollarSign, Landmark,  Edit3,
+  Landmark,  Edit3,
   UserPlus, X, ClipboardList, BarChart3, FileSpreadsheet, ShieldCheck,
   ChevronDown,CalendarOff 
 } from "lucide-react-native";
 import { BASE_HOST } from "../constants/config";
+import { UserSession } from "../services/UserSession";
+import UserConfigPanel from "../components/Userconfigpanel";
+import WeekOffApprovalsPanel from "../components/Weekoffapprovalspanel";
+import { Badge, Btn, WebPageHeader, ui } from "../components/web/webUi";
 
 interface AdminHubScreenProps {
   navigation: any;
@@ -140,18 +145,19 @@ const NativeDropdown = ({ label, selectedValue, options, onSelect, isDesktop }: 
 export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
   const { width } = useWindowDimensions();
   const isDesktop = width >= 1024;
+  const isWebDesktop = Platform.OS === "web" && isDesktop;
+  // Three module cards per row on a wide laptop/PC window
+  const moduleCardWidth: any = isWebDesktop && width >= 1280 ? "calc(33.33% - 11px)" : isDesktop ? "48%" : "100%";
 
-  const [adminView, setAdminView] = useState<"menu" | "users" | "dashboard" | "onboarding" | "reports">("menu");
-  const [showPermissionModal, setShowPermissionModal] = useState(false);
+  // Admin / Super Admin only (the server checks the role again)
+  const sessionRole = String(UserSession.role || "").toUpperCase().replace(/[\s-]+/g, "_");
+  const canManageWork = sessionRole === "ADMIN" || sessionRole === "SUPER_ADMIN";
 
-  const [earnedLeave, setEarnedLeave] = useState("14");
-  const [casualLeave, setCasualLeave] = useState("04");
-  const [odPermitted, setOdPermitted] = useState("08");
-  const [otHours, setOtHours] = useState("16.5");
+  const [adminView, setAdminView] = useState<"menu" | "users" | "dashboard" | "weekoff">("menu");
 
   const [usersList, setUsersList] = useState<UserItem[]>([]);
   const [selectedUserEmpId, setSelectedUserEmpId] = useState<string>("");
-  const [userSubTab, setUserSubTab] = useState<"personal" | "bank" | "salary" | "balances">("personal");
+  const [userSubTab, setUserSubTab] = useState<"personal" | "work">("personal");
   const [searchQuery, setSearchQuery] = useState("");
   const [loadingUsers, setLoadingUsers] = useState(false);
 
@@ -353,12 +359,47 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
       u.role?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const permissionList = [
-    { id: "1", name: "Sarah Jenkins", role: "Software Engineer", slot: "02:00 PM - 04:00 PM", reason: "Medical Checkup" },
-    { id: "2", name: "David Miller", role: "Senior Analyst", slot: "09:30 AM - 11:30 AM", reason: "Bank Documentation" },
-    { id: "3", name: "Alex Richardson", role: "Product Designer", slot: "03:30 PM - 05:30 PM", reason: "Personal Errand" },
-    { id: "4", name: "Elena Gomez", role: "HR Operations", slot: "04:00 PM - 06:00 PM", reason: "Early Departure" },
-  ];
+  // Laptop/PC website: the Users page has its own layout. Same data and same save functions as below.
+  if (isWebDesktop && adminView === "users") {
+    return (
+      <UserManagementDesktop
+        users={filteredUsers}
+        allUsersCount={usersList.length}
+        loading={loadingUsers}
+        search={searchQuery}
+        onSearch={setSearchQuery}
+        selected={selectedUserObj}
+        onSelect={setSelectedUserEmpId}
+        subTab={userSubTab}
+        onSubTab={setUserSubTab}
+        canManageWork={canManageWork}
+        adminEmpId={String(UserSession.empId || "")}
+        onBack={() => setAdminView("menu")}
+        onAdd={handleOpenAddModal}
+        onEdit={handleOpenEditModal}
+        onOpenFullDetails={() => navigation.navigate("UserDirectory")}
+        form={{
+          visible: showUserModal,
+          editing: isEditingUser,
+          saving: savingUser,
+          empId: formEmpId,
+          fullName: formFullName,
+          email: formEmail,
+          mobile: formMobile,
+          role: formRole,
+          active: formActive,
+          setEmpId: setFormEmpId,
+          setFullName: setFormFullName,
+          setEmail: setFormEmail,
+          setMobile: setFormMobile,
+          setRole: setFormRole,
+          setActive: setFormActive,
+          close: () => setShowUserModal(false),
+          save: handleSaveUser,
+        }}
+      />
+    );
+  }
 
   return (
     <View className="flex-1 bg-[#F4F6F9]">
@@ -368,17 +409,19 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
         className="flex-1"
       >
         {/* 1. HERO HEADER */}
+        {isWebDesktop ? <WebPageHeader title={adminView === "menu" ? "Team Hub" : adminView === "dashboard" ? "Overall dashboard" : adminView === "weekoff" ? "Week-off approvals" : "Users"} subtitle="Human capital command center" onBack={() => { if (adminView !== "menu") { setAdminView("menu"); } else { navigation?.canGoBack?.() ? navigation.goBack() : navigation?.navigate("Home"); } }}><Btn label="Announce holiday" variant="secondary" onPress={() => navigation?.navigate("AdminHolidays")} icon={<CalendarOff size={15} color={ui.color.ink} />} /><Badge label="Admin role" tone="success" /></WebPageHeader> : null}
+        {!isWebDesktop && (
         <LinearGradient
           colors={["#4F46E5", "#6366F1", "#818CF8"]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          style={{ paddingTop: 44, paddingBottom: 36, paddingHorizontal: 24 }}
+          style={isWebDesktop ? { paddingTop: 20, paddingBottom: 24, paddingHorizontal: 40 } : { paddingTop: 44, paddingBottom: 36, paddingHorizontal: 24 }}
           className="relative overflow-hidden shadow-xl shadow-indigo-950/25 rounded-b-[36px] mb-6"
         >
           <View className="absolute -top-12 -right-12 w-56 h-56 rounded-full bg-white/10 blur-2xl pointer-events-none" />
           <View className="absolute bottom-0 left-10 w-44 h-44 rounded-full bg-indigo-900/20 blur-2xl pointer-events-none" />
 
-          <View className="max-w-6xl mx-auto w-full">
+          <View className="max-w-6xl web:lg:max-w-page mx-auto w-full">
             <View className="flex-row items-center justify-between mb-6">
               <TouchableOpacity
                 onPress={() => {
@@ -421,9 +464,10 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
             </View>
           </View>
         </LinearGradient>
+        )}
 
-        {adminView !== "menu" && (
-          <View className="max-w-6xl mt-1 mx-auto w-full px-5 md:px-10 mb-4">
+        {adminView !== "menu" && !isWebDesktop && (
+          <View className="max-w-6xl web:lg:max-w-page mt-1 mx-auto w-full px-5 md:px-10 mb-4">
             <TouchableOpacity
               onPress={() => setAdminView("menu")}
               className="flex-row items-center gap-2 bg-[#EEECFA] px-4 py-2.5 rounded-2xl self-start border border-[#5B4FD1]/20 shadow-xs"
@@ -435,7 +479,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
         )}
 
         {/* 2. MAIN CONTAINER BODY */}
-        <View className="max-w-6xl mx-auto w-full px-5 md:px-10">
+        <View className="max-w-6xl web:lg:max-w-page mx-auto w-full px-5 md:px-10 web:lg:mt-6">
 
           {/* MENU VIEW */}
           {adminView === "menu" && (
@@ -450,7 +494,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   onPress={() => navigation.navigate("AdminOnboardingSubmissions")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-indigo-200/80"
-                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
+                  style={{ width: moduleCardWidth, minHeight: 140 }}
                 >
                   <LinearGradient colors={["#F8F7FF", "#EEEDFE", "#E2E0FD"]} style={{ minHeight: 140, padding: 20 }}>
                     <View className="flex-row items-center justify-between">
@@ -473,7 +517,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   onPress={() => setAdminView("users")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-emerald-200/80"
-                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
+                  style={{ width: moduleCardWidth, minHeight: 140 }}
                 >
                   <LinearGradient colors={["#ECFDF5", "#D1FAE5", "#A7F3D0"]} style={{ minHeight: 140, padding: 20 }}>
                     <View className="flex-row items-center justify-between">
@@ -496,7 +540,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   onPress={() => navigation.navigate("AdminReports", { initialTab: "reports" })}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-amber-200/80"
-                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
+                  style={{ width: moduleCardWidth, minHeight: 140 }}
                 >
                   <LinearGradient colors={["#FFFBEB", "#FEF3C7", "#FDE68A"]} style={{ minHeight: 140, padding: 20 }}>
                     <View className="flex-row items-center justify-between">
@@ -519,7 +563,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   onPress={() => setAdminView("dashboard")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-blue-200/80"
-                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
+                  style={{ width: moduleCardWidth, minHeight: 140 }}
                 >
                   <LinearGradient colors={["#EFF6FF", "#DBEAFE", "#BFDBFE"]} style={{ minHeight: 140, padding: 20 }}>
                     <View className="flex-row items-center justify-between">
@@ -542,7 +586,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   onPress={() => navigation.navigate("AttendanceAuditTabs")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-teal-200/80"
-                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
+                  style={{ width: moduleCardWidth, minHeight: 140 }}
                 >
                   <LinearGradient colors={["#F0FDFA", "#CCFBF1", "#99F6E4"]} style={{ minHeight: 140, padding: 20 }}>
                     <View className="flex-row items-center justify-between">
@@ -565,7 +609,7 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   onPress={() => navigation.navigate("UserDirectory")}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[24px] border border-purple-200/80"
-                  style={{ width: isDesktop ? "48%" : "100%", minHeight: 140 }}
+                  style={{ width: moduleCardWidth, minHeight: 140 }}
                 >
                   <LinearGradient colors={["#FAF5FF", "#F3E8FF", "#E9D5FF"]} style={{ minHeight: 140, padding: 20 }}>
                     <View className="flex-row items-center justify-between">
@@ -582,8 +626,36 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                     <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#6B21A8] mt-3">Access shift rosters & statutory configs</Text>
                   </LinearGradient>
                 </TouchableOpacity>
+
+                {/* Week-off approvals */}
+                <TouchableOpacity
+                  onPress={() => setAdminView("weekoff")}
+                  activeOpacity={0.85}
+                  className="overflow-hidden rounded-[24px] border border-amber-200/80"
+                  style={{ width: moduleCardWidth, minHeight: 140 }}
+                >
+                  <LinearGradient colors={["#FFFBEB", "#FEF3C7", "#FDE68A"]} style={{ minHeight: 140, padding: 20 }}>
+                    <View className="flex-row items-center justify-between">
+                      <View className="flex-row items-center gap-3.5 flex-1 pr-3">
+                        <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#FEF3C7", borderWidth: 1, borderColor: "#FDE68A" }} className="items-center justify-center">
+                          <CalendarOff size={22} color="#D97706" />
+                        </View>
+                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#78350F] tracking-tight">Week-off Approvals</Text>
+                      </View>
+                      <View style={{ width: 54, height: 34, borderRadius: 17, backgroundColor: "#D97706", alignItems: "center", justifyContent: "center" }}>
+                        <ArrowRight size={20} color="#FFFFFF" strokeWidth={3} />
+                      </View>
+                    </View>
+                    <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#92400E] mt-3">Approve or reject flexible week-off requests</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
               </View>
             </View>
+          )}
+
+          {/* WEEK-OFF APPROVALS VIEW */}
+          {adminView === "weekoff" && (
+            <WeekOffApprovalsPanel adminEmpId={String(UserSession.empId || "")} isDesktop={isDesktop} />
           )}
 
           {/* DASHBOARD VIEW */}
@@ -781,21 +853,6 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   </View>
                 </View>
 
-                {showPermissionModal ? (
-                  <View className="mt-2 pt-3 border-t border-slate-100 gap-2.5">
-                    {permissionList.map((emp) => (
-                      <View key={emp.id} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl p-3.5 flex-row items-center justify-between">
-                        <View className="flex-1 pr-2">
-                          <Text style={{ fontSize: isDesktop ? 14 : 12 }} className="font-black text-[#1F1B3D]">{emp.name}</Text>
-                          <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-semibold text-[#7A76A6]">{emp.role} • {emp.reason}</Text>
-                        </View>
-                        <View className="bg-white border border-[#E7E4F5] px-3 py-1 rounded-lg">
-                          <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-black text-[#5B4FD1]">{emp.slot}</Text>
-                        </View>
-                      </View>
-                    ))}
-                  </View>
-                ) : null}
               </View>
 
             </View>
@@ -907,12 +964,10 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
 
               {/* User Detail Right Column */}
               <View style={{ flex: 1, width: "100%", gap: 16 }}>
-                <View className="flex-row bg-[#EEECFA]/70 border border-[#E7E4F5] p-1.5 rounded-2xl justify-between gap-2">
+                <View className="web:lg:self-start web:lg:w-[380px] flex-row bg-[#EEECFA]/70 border border-[#E7E4F5] p-1.5 rounded-2xl justify-between gap-2">
                   {[
                     { key: "personal", label: "Personal" },
-                    { key: "bank", label: "Bank" },
-                    { key: "salary", label: "Salary" },
-                    { key: "balances", label: "Balances" },
+                    ...(canManageWork ? [{ key: "work", label: "Work settings" }] : []),
                   ].map((st) => {
                     const isActive = userSubTab === st.key;
                     return (
@@ -975,117 +1030,19 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                     <TouchableOpacity onPress={() => handleOpenEditModal(selectedUserObj)} style={{ width: isDesktop ? 260 : "100%" }} className="bg-[#5B4FD1] py-3.5 rounded-xl items-center shadow-xs active:opacity-90">
                       <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="text-white font-black uppercase tracking-wider">Edit & Save Personal Details</Text>
                     </TouchableOpacity>
+                    <TouchableOpacity onPress={() => navigation.navigate("UserDirectory")} style={{ width: isDesktop ? 260 : "100%" }} className="border border-[#5B4FD1]/30 py-3.5 rounded-xl items-center active:opacity-90">
+                      <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="text-[#5B4FD1] font-black uppercase tracking-wider">Salary, bank & full details</Text>
+                    </TouchableOpacity>
                   </View>
                 ) : null}
 
-                {userSubTab === "bank" && (
-                  <View className="bg-white border border-[#E7E4F5] rounded-3xl p-6 md:p-7 gap-5 shadow-xs">
-                    <View className="flex-row justify-between items-center pb-3 border-b border-slate-100">
-                      <Text style={{ fontSize: isDesktop ? 15 : 12 }} className="font-black text-[#1F1B3D] uppercase tracking-wider">Statutory & Bank Verification</Text>
-                      <Landmark size={isDesktop ? 20 : 18} color="#5B4FD1" />
-                    </View>
-                    <View style={{ flexDirection: isDesktop ? "row" : "column", gap: 16 }}>
-                      <View style={{ flex: 1 }}><Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-bold text-[#7A76A6] uppercase mb-1.5">Bank Name</Text><TextInput defaultValue="JPMorgan Chase N.A." style={{ fontSize: isDesktop ? 14 : 12 }} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3.5 font-bold text-[#1F1B3D]" /></View>
-                      <View style={{ flex: 1 }}><Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-bold text-[#7A76A6] uppercase mb-1.5">Account Number</Text><TextInput defaultValue="9042-8819-0129" style={{ fontSize: isDesktop ? 14 : 12 }} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3.5 font-bold text-[#1F1B3D]" /></View>
-                      <View style={{ flex: 1 }}><Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-bold text-[#7A76A6] uppercase mb-1.5">IFSC Code</Text><TextInput defaultValue="JPMU0000129" style={{ fontSize: isDesktop ? 14 : 12 }} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3.5 font-bold text-[#1F1B3D]" /></View>
-                      <View style={{ flex: 1 }}><Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-bold text-[#7A76A6] uppercase mb-1.5">Branch Name</Text><TextInput defaultValue="New York" style={{ fontSize: isDesktop ? 14 : 12 }} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3.5 font-bold text-[#1F1B3D]" /></View>
-                    </View>
-                  </View>
-                )}
-
-                {userSubTab === "salary" && (
-                  <View className="bg-white border border-[#E7E4F5] rounded-3xl p-6 md:p-7 gap-5 shadow-xs">
-                    <View className="flex-row justify-between items-center pb-3 border-b border-slate-100">
-                      <Text style={{ fontSize: isDesktop ? 15 : 12 }} className="font-black text-[#1F1B3D] uppercase tracking-wider">Salary Structure Breakdown</Text>
-                      <DollarSign size={isDesktop ? 20 : 18} color="#5B4FD1" />
-                    </View>
-                    <View style={{ flexDirection: isDesktop ? "row" : "column", gap: 16 }}>
-                      <View style={{ flex: 1 }}><Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-bold text-[#7A76A6] uppercase mb-1.5">Monthly CTC ($)</Text><TextInput defaultValue="6500.00" style={{ fontSize: isDesktop ? 14 : 12 }} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3.5 font-bold text-[#1F1B3D]" /></View>
-                      <View style={{ flex: 1 }}><Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-bold text-[#7A76A6] uppercase mb-1.5">Basic Pay ($)</Text><TextInput defaultValue="4200.00" style={{ fontSize: isDesktop ? 14 : 12 }} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3.5 font-bold text-[#1F1B3D]" /></View>
-                      <View style={{ flex: 1 }}><Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-bold text-[#7A76A6] uppercase mb-1.5">HRA ($)</Text><TextInput defaultValue="1200.00" style={{ fontSize: isDesktop ? 14 : 12 }} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3.5 font-bold text-[#1F1B3D]" /></View>
-                      <View style={{ flex: 1 }}><Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-bold text-[#7A76A6] uppercase mb-1.5">PF Deduction ($)</Text><TextInput defaultValue="200.00" style={{ fontSize: isDesktop ? 14 : 12 }} className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3.5 font-bold text-[#1F1B3D]" /></View>
-                    </View>
-                  </View>
-                )}
-
-                {userSubTab === "balances" && (
-                  <View className="bg-white border border-[#E7E4F5] rounded-3xl p-6 md:p-7 gap-5 shadow-xs">
-                    <Text style={{ fontSize: isDesktop ? 15 : 12 }} className="font-black text-[#1F1B3D] uppercase tracking-wider">
-                      Accrual & Overtime Balances
-                    </Text>
-
-                    <View style={{ flexDirection: isDesktop ? "row" : "column", gap: 14 }}>
-                      <View className="flex-1 bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl p-4 items-center">
-                        <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-bold text-[#7A76A6]">Earned Leave</Text>
-                        <TextInput value={earnedLeave} onChangeText={setEarnedLeave} keyboardType="numeric" style={{ fontSize: isDesktop ? 20 : 16 }} className="font-black text-[#1F1B3D] mt-1 text-center" />
-                      </View>
-                      <View className="flex-1 bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl p-4 items-center">
-                        <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-bold text-[#7A76A6]">Casual Leave</Text>
-                        <TextInput value={casualLeave} onChangeText={setCasualLeave} keyboardType="numeric" style={{ fontSize: isDesktop ? 20 : 16 }} className="font-black text-[#1F1B3D] mt-1 text-center" />
-                      </View>
-                      <View className="flex-1 bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl p-4 items-center">
-                        <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-bold text-[#7A76A6]">OD Permitted</Text>
-                        <TextInput value={odPermitted} onChangeText={setOdPermitted} keyboardType="numeric" style={{ fontSize: isDesktop ? 20 : 16 }} className="font-black text-amber-700 mt-1 text-center" />
-                      </View>
-                      <View className="flex-1 bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl p-4 items-center">
-                        <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-bold text-[#7A76A6]">OT Hours Logged</Text>
-                        <TextInput value={otHours} onChangeText={setOtHours} keyboardType="numeric" style={{ fontSize: isDesktop ? 20 : 16 }} className="font-black text-[#5B4FD1] mt-1 text-center" />
-                      </View>
-                    </View>
-
-                    <View className="pt-2">
-                      <TouchableOpacity
-                        onPress={() => {
-                          const msg = "Balance quotas saved successfully!";
-                          Platform.OS === "web" ? window.alert(msg) : Alert.alert("Success", msg);
-                        }}
-                        style={{ width: isDesktop ? 220 : "100%" }}
-                        className="bg-[#5B4FD1] py-3.5 rounded-xl items-center shadow-xs active:opacity-90"
-                      >
-                        <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="text-white font-black uppercase tracking-wider">
-                          Save Balance Quotas
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              </View>
-            </View>
-          )}
-
-          {/* REPORTS VIEW */}
-          {adminView === "reports" && (
-            <View style={{ width: isDesktop ? 600 : "100%", alignSelf: "center" }} className="gap-4">
-              <View className="bg-white border border-[#E7E4F5] rounded-3xl p-6 md:p-8 shadow-xs gap-5">
-                <View className="flex-row items-center gap-3 pb-3 border-b border-slate-100">
-                  <View className="w-10 h-10 rounded-xl bg-[#EEECFA] items-center justify-center">
-                    <Landmark size={20} color="#5B4FD1" />
-                  </View>
-                  <View>
-                    <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#1F1B3D]">
-                      Download User Details & Reports
-                    </Text>
-                    <Text style={{ fontSize: isDesktop ? 12 : 10 }} className="font-bold text-[#7A76A6]">
-                      Export employee master directories, statutory sheets, and audit files
-                    </Text>
-                  </View>
-                </View>
-
-                <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="text-[#7A76A6] leading-relaxed">
-                  Generate and download comprehensive spreadsheet exports containing employee personal details, banking identifiers, salary breakdowns, and active accrual quotas.
-                </Text>
-
-                <TouchableOpacity
-                  onPress={() => {
-                    const msg = "Downloading master employee spreadsheet report...";
-                    Platform.OS === "web" ? window.alert(msg) : Alert.alert("Export Successful", msg);
-                  }}
-                  className="bg-[#5B4FD1] py-4 rounded-xl items-center shadow-xs active:opacity-90 mt-2"
-                >
-                  <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="text-white font-black uppercase tracking-wider">
-                    Download Full Master Report (.xlsx)
-                  </Text>
-                </TouchableOpacity>
+                {userSubTab === "work" && canManageWork && selectedUserObj ? (
+                  <UserConfigPanel
+                    empId={selectedUserObj.empId}
+                    adminEmpId={String(UserSession.empId || "")}
+                    isDesktop={isDesktop}
+                  />
+                ) : null}
               </View>
             </View>
           )}

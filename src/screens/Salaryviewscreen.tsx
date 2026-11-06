@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, Alert, TextInput, Modal, Platform } from "react-native";
 import { Search, RotateCw, X, Calculator, Download, Pencil, History } from "lucide-react-native";
+import WebBackButton from "../components/WebBackButton";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import ScreenContainer from "../components/ScreenContainer";
@@ -9,7 +10,10 @@ import { BASE_HOST } from "../constants/config";
 import { useAuth } from "../context/AuthContext";
 import { UserSession } from "../services/UserSession";
 import { downloadPayslipPdf } from "../services/Payslipdownload";
+import MonthDaysPanel from "../components/MonthDaysPanel";
 import PayslipView, { MonthStepper, StatusPill, inr, num, shortDate, toIso, monthKey, monthsBetween } from "../components/Payslipview";
+import { useResponsive } from "../hooks/useResponsive";
+import { WebPageHeader } from "../components/web/webUi";
 
 const API = `${BASE_HOST}/api/payroll`;
 
@@ -51,6 +55,7 @@ const NAME_W = 170;
 const STATUS_W = 112;
 
 export default function SalaryViewScreen() {
+  const { isWebDesktop } = useResponsive();
   const today = new Date();
   const [fromDate, setFromDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
   const [toDate, setToDate] = useState(today);
@@ -86,6 +91,7 @@ export default function SalaryViewScreen() {
 
   const [detailKey, setDetailKey] = useState<{ empId: string; month: string } | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [detailTab, setDetailTab] = useState<"SLIP" | "DAYS">("SLIP");
   const { user } = useAuth();
   const isAdmin = !!(user?.isAdmin || String(user?.role || "").toUpperCase() === "ADMIN");
   const myEmpId = String(user?.empId || user?.userId || UserSession.empId || "");
@@ -448,7 +454,7 @@ export default function SalaryViewScreen() {
   // ---------- screen ----------
   const Toggle = () =>
     isAdmin ? (
-      <View className="flex-row bg-white p-1 rounded-2xl border border-[#E7E4F5] mb-3">
+      <View className="web:lg:self-start web:lg:w-[360px] flex-row bg-white p-1 rounded-2xl border border-[#E7E4F5] mb-3">
         {([["ALL", "All employees"], ["ME", "My payslip"]] as const).map(([k, label]) => (
           <TouchableOpacity
             key={k}
@@ -463,10 +469,17 @@ export default function SalaryViewScreen() {
 
   if (view === "ME" || !isAdmin) {
     return (
-      <ScreenContainer>
+      <ScreenContainer webHeader={<WebPageHeader title={isAdmin ? "Salary" : "My Payslip"} subtitle="Your own salary details" />}>
         <View className="px-4 pt-2 pb-8">
-          <Text className="text-xl font-black text-[#1F1B3D]">{isAdmin ? "Salary" : "My Payslip"}</Text>
-          <Text className="text-xs font-bold text-[#7A76A6] mb-3">Your own salary details</Text>
+          {!isWebDesktop && (
+          <View className="flex-row items-center mb-3">
+            <WebBackButton />
+            <View>
+              <Text className="text-xl font-black text-[#1F1B3D]">{isAdmin ? "Salary" : "My Payslip"}</Text>
+              <Text className="text-xs font-bold text-[#7A76A6]">Your own salary details</Text>
+            </View>
+          </View>
+          )}
           <Toggle />
           <MonthStepper month={myMonth} onChange={setMyMonth} />
           <View className="flex-row items-center justify-between bg-white border border-[#E7E4F5] rounded-2xl px-4 py-3 mb-3">
@@ -491,13 +504,18 @@ export default function SalaryViewScreen() {
   }
 
   return (
-    <ScreenContainer>
+    <ScreenContainer webHeader={<WebPageHeader title="Salary View" subtitle="All employees • by salary month" />}>
       <View className="px-4 pt-2 pb-8">
-        <View className="flex-row items-center justify-between mb-3">
-          <View>
-            <Text className="text-xl font-black text-[#1F1B3D]">Salary View</Text>
-            <Text className="text-xs font-bold text-[#7A76A6]">All employees • by salary month</Text>
+        <View className="flex-row items-center justify-between web:lg:justify-end mb-3">
+          {!isWebDesktop && (
+          <View className="flex-row items-center">
+            <WebBackButton />
+            <View>
+              <Text className="text-xl font-black text-[#1F1B3D]">Salary View</Text>
+              <Text className="text-xs font-bold text-[#7A76A6]">All employees • by salary month</Text>
+            </View>
           </View>
+          )}
           <View className="flex-row">
             <TouchableOpacity onPress={load} className="w-10 h-10 rounded-2xl bg-white border border-[#E7E4F5] items-center justify-center mr-2">
               {loading ? <ActivityIndicator size="small" color="#5B4FD1" /> : <RotateCw size={16} color="#5B4FD1" />}
@@ -683,7 +701,7 @@ export default function SalaryViewScreen() {
               {rows.map((r) => (
                 <TouchableOpacity
                   key={`${r.empId}-${r.salaryMonth}`}
-                  onPress={() => setDetailKey({ empId: r.empId, month: r.salaryMonth })}
+                  onPress={() => { setDetailTab("SLIP"); setDetailKey({ empId: r.empId, month: r.salaryMonth }); }}
                   className="flex-row items-center py-3 border-t border-[#F0EEFA] active:bg-[#F6F5FC]"
                 >
                   <View className="px-3" style={{ width: NAME_W }}>
@@ -762,9 +780,22 @@ export default function SalaryViewScreen() {
               </TouchableOpacity>
             </View>
           </View>
-          <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>{detailKey && (
+          <View className="flex-row bg-white p-1 rounded-2xl border border-[#E7E4F5] mx-4 mb-2">
+            {([["SLIP", "Payslip"], ["DAYS", "Day-wise"]] as const).map(([k, label]) => (
+              <TouchableOpacity
+                key={k}
+                onPress={() => setDetailTab(k)}
+                className={`flex-1 h-10 rounded-xl items-center justify-center ${detailTab === k ? "bg-[#5B4FD1]" : ""}`}
+              >
+                <Text className={`text-xs font-black uppercase tracking-wider ${detailTab === k ? "text-white" : "text-[#7A76A6]"}`}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>{detailKey && (detailTab === "SLIP" ? (
               <PayslipView empId={detailKey.empId} month={detailKey.month} mode="admin" reloadKey={reloadKey} showEmployerShare onEditDay={openDayEdit} />
-            )}</ScrollView>
+            ) : (
+              <MonthDaysPanel key={`${detailKey.empId}-${detailKey.month}-${reloadKey}`} empId={detailKey.empId} month={detailKey.month} adminEmpId={myEmpId} isDesktop={false} />
+            ))}</ScrollView>
 
           {/* Admin correction of one day */}
           {dayEdit && (

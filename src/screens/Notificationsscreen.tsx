@@ -4,7 +4,10 @@ import { ChevronLeft, Megaphone, MessageSquare, CheckCircle2, XCircle, Bell, Bel
 import ScreenContainer from "../components/ScreenContainer";
 import { NOTIFY_API, playBeep } from "../constants/Usenotifications";
 import { BASE_HOST } from "../constants/config";
+import { PAGE_MAX_WIDTH } from "../hooks/useResponsive";
 import { setAlertSoundPreference,sendBellTest } from "../constants/Notifications";
+import { useResponsive } from "../hooks/useResponsive";
+import { Btn, WebPageHeader, ui } from "../components/web/webUi";
 
 const C = { primary: "#5B4FD1", ink: "#1F1B3D", muted: "#7A76A6", faint: "#A6A2CE", border: "#E7E4F5", soft: "#EEECFA", bg: "#F6F5FC" };
 
@@ -71,6 +74,7 @@ const openApprovals = (navigation: any, tab?: string, extra: Record<string, any>
   navigation.navigate("Approvals", { ...(tab ? { tab } : {}), ...extra });
 
 export default function NotificationsScreen({ navigation, userSession }: { navigation: any; userSession?: { empId: string; isAdmin: boolean } }) {
+  const { isWebDesktop } = useResponsive();
   const empId = (userSession?.empId || "").trim();
   const q = encodeURIComponent(empId);
 
@@ -184,9 +188,10 @@ export default function NotificationsScreen({ navigation, userSession }: { navig
   );
 
   return (
-    <ScreenContainer scrollable={false} fullWidth={true}>
+    <ScreenContainer scrollable={false} fullWidth={true} webMaxWidth={1120} webHeader={<WebPageHeader title="Notifications" subtitle={unreadCount > 0 ? `${unreadCount} unread` : "You're all caught up"} onBack={() => (navigation.canGoBack?.() ? navigation.goBack() : navigation.navigate("Home"))}><Btn label="Settings" variant={showSettings ? "primary" : "secondary"} onPress={() => setShowSettings((v) => !v)} icon={prefs.pushEnabled ? <Bell size={15} color={showSettings ? "#FFFFFF" : ui.color.ink} /> : <BellOff size={15} color={showSettings ? "#FFFFFF" : ui.color.ink} />} /></WebPageHeader>}>
       <View className="flex-1 min-h-0 w-full" style={{ paddingBottom: Platform.OS === "web" ? 40 : 16 }}>
         {/* Header */}
+        {!isWebDesktop && (
         <View style={{ backgroundColor: C.primary }} className="rounded-3xl p-4 mb-3 flex-row items-center justify-between">
           <View className="flex-row items-center">
             <TouchableOpacity
@@ -212,9 +217,10 @@ export default function NotificationsScreen({ navigation, userSession }: { navig
             <Text style={{ color: showSettings ? C.primary : "#FFFFFF" }} className="text-xs font-black ml-1.5">Settings</Text>
           </TouchableOpacity>
         </View>
+        )}
 
         <ScrollView className="flex-1 min-h-0" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}>
-          <View style={{ width: "100%", maxWidth: 720, alignSelf: "center" }}>
+          <View style={{ width: "100%", maxWidth: Platform.OS === "web" ? PAGE_MAX_WIDTH : 720, alignSelf: "center" }}>
             {/* Admin: pending approvals summary, each chip opens its Approvals tab */}
             {userSession?.isAdmin && pending && (
               <View style={{ borderColor: pendingTotal > 0 ? "#F59E0B" : C.border, backgroundColor: pendingTotal > 0 ? "#FFFBEB" : "#FFFFFF" }} className="border rounded-3xl p-4 mb-3">

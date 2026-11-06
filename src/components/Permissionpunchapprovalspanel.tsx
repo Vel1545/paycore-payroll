@@ -183,7 +183,7 @@ export default function Permissionpunchapprovalspanel({
       </Text>
       {/* Pending / Approved + refresh */}
       <View className="flex-row items-center justify-between mb-3">
-        <View className="flex-row bg-white border border-[#E7E4F5] p-1 rounded-xl">
+        <View className="web:lg:self-start web:lg:w-[480px] flex-row bg-white border border-[#E7E4F5] p-1 rounded-xl">
           {(["PENDING", "APPROVED"] as const).map((f) => (
             <TouchableOpacity
               key={f}

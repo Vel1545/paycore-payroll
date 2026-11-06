@@ -2,7 +2,7 @@ import React, { useEffect } from "react";
 import { View, Text, TouchableOpacity } from "react-native";
 import { Bell } from "lucide-react-native";
 import { useNotifications } from "../constants/Usenotifications";
-import { registerPushTokenWithServer } from "../constants/Notifications";
+import { registerPushTokenWithServer, setupShiftReminderNotifications } from "../constants/Notifications";
 
 interface Props {
   navigation: any;
@@ -18,8 +18,11 @@ export default function NotificationBell({ navigation, empId, isAdmin }: Props) 
   const { unread } = useNotifications(empId, true);
 
   // Every role (admins too) hands its phone token to the server once the Home screen opens
+  // Android channels must exist before the permission prompt and the token request
   useEffect(() => {
-    registerPushTokenWithServer(empId);
+    setupShiftReminderNotifications()
+      .catch((e) => console.warn("Could not set up notification channels:", e))
+      .finally(() => registerPushTokenWithServer(empId));
   }, [empId]);
 
   return (

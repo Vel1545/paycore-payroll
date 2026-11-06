@@ -159,7 +159,7 @@ export default function CheckoutApprovalsPanel({
         </TouchableOpacity>
       </View>
 
-      <View className="flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl mb-4 border border-[#E7E4F5]">
+      <View className="web:lg:self-start web:lg:w-[480px] flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl mb-4 border border-[#E7E4F5]">
         {(["PENDING", "APPROVED", "REJECTED"] as const).map((t) => {
           const act = filter === t;
           return (

@@ -8,14 +8,28 @@ import {
   Alert, 
   ActivityIndicator,
   Switch,
+  Platform,
   useWindowDimensions 
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { 
   User, FileText, Upload, Building2, MapPin, 
-  CreditCard, Users, Briefcase, GraduationCap, Phone, CheckSquare, Square 
+  CreditCard, Users, Briefcase, GraduationCap, Phone, CheckSquare, Square, CheckCircle2
 } from "lucide-react-native";
+import * as DocumentPicker from "expo-document-picker";
+import { BASE_HOST } from "../constants/config";
+
+const EMPTY_ADDRESS = { street: "", village: "", city: "", district: "", pincode: "" };
+type AddressKind = "permanentAddress" | "currentAddress";
+
+const ADDRESS_FIELDS: { key: keyof typeof EMPTY_ADDRESS; label: string; placeholder: string }[] = [
+  { key: "street", label: "Door No & Street*", placeholder: "31, SSP Nagar Mariyamman Kovil Street" },
+  { key: "village", label: "Village", placeholder: "Muthampalayam" },
+  { key: "city", label: "City*", placeholder: "Erode" },
+  { key: "district", label: "District*", placeholder: "Erode" },
+  { key: "pincode", label: "Pincode*", placeholder: "638107" },
+];
 
 export default function CandidateOnboardingScreen({ route }: any) {
   const { width } = useWindowDimensions();
@@ -25,6 +39,7 @@ export default function CandidateOnboardingScreen({ route }: any) {
   const mobile = route?.params?.mobile || "";
 
   const [loading, setLoading] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   
   // 1. General & Personal Information
   const [formData, setFormData] = useState({
@@ -46,8 +61,8 @@ export default function CandidateOnboardingScreen({ route }: any) {
     panNumber: "",
     mobileNumber: mobile,
     emailAddress: "",
-    permanentAddress: "",
-    currentAddress: "",
+    permanentAddress: { ...EMPTY_ADDRESS },
+    currentAddress: { ...EMPTY_ADDRESS },
     // Bank Details
     bankName: "",
     accountHolderName: "",
@@ -85,7 +100,7 @@ export default function CandidateOnboardingScreen({ route }: any) {
   ]);
 
   // Document Attachments
-  const [files, setFiles] = useState({
+  const [files, setFiles] = useState<Record<string, any>>({
     aadhaarFile: null,
     panFile: null,
     bankPassbookFile: null,
@@ -99,9 +114,31 @@ export default function CandidateOnboardingScreen({ route }: any) {
     setFormData({ ...formData, [field]: value });
   };
 
-  const handleFileUpload = (fileKey: string) => {
-    setFiles({ ...files, [fileKey]: "Document_Attached.pdf" as any });
-    Alert.alert("Success", "Document attached successfully.");
+  const handleAddressChange = (kind: AddressKind, field: keyof typeof EMPTY_ADDRESS, value: string) => {
+    setFormData({ ...formData, [kind]: { ...formData[kind], [field]: value } });
+  };
+
+  const showMsg = (title: string, msg: string) => {
+    Platform.OS === "web" ? window.alert(`${title}\n${msg}`) : Alert.alert(title, msg);
+  };
+
+  // Pick a real file (PDF / JPG / PNG, up to 10 MB)
+  const handleFileUpload = async (fileKey: string) => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["image/*", "application/pdf"],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const f = result.assets[0];
+      if (f.size && f.size > 10 * 1024 * 1024) {
+        showMsg("File too large", "Each file must be 10 MB or smaller.");
+        return;
+      }
+      setFiles({ ...files, [fileKey]: f });
+    } catch {
+      showMsg("File Error", "Unable to select the document.");
+    }
   };
 
   const addFamilyRow = () => {
@@ -109,30 +146,104 @@ export default function CandidateOnboardingScreen({ route }: any) {
   };
 
   const handleSubmitForm = async () => {
+    if (loading) return;
     if (!declarationAccepted) {
-      Alert.alert("Declaration Required", "Please review your details and check the declaration box before submitting.");
+      showMsg("Declaration Required", "Please review your details and check the declaration box before submitting.");
+      return;
+    }
+
+    // required fields (the server checks them again)
+    const required: [string, string][] = [
+      ["fullName", "Full name"], ["fathersName", "Father's name"], ["emailAddress", "Email address"],
+      ["bankName", "Bank name"], ["accountHolderName", "Account holder name"], ["accountNumber", "Account number"],
+      ["ifscCode", "IFSC code"], ["branch", "Branch name"],
+      ["emergencyName", "Emergency contact name"], ["emergencyRelationship", "Emergency contact relationship"],
+      ["emergencyPhone1", "Emergency phone"],
+    ];
+    for (const [k, label] of required) {
+      if (!String((formData as any)[k] || "").trim()) {
+        showMsg("Missing detail", `${label} is required.`);
+        return;
+      }
+    }
+    const addressChecks: [AddressKind, string][] = [["permanentAddress", "Permanent address"], ["currentAddress", "Current address"]];
+    for (const [kind, title] of addressChecks) {
+      const a = formData[kind];
+      if (!a.street.trim() || !a.city.trim() || !a.district.trim()) {
+        showMsg("Missing detail", `${title}: door no & street, city and district are required.`);
+        return;
+      }
+      if (!/^\d{6}$/.test(a.pincode.trim())) {
+        showMsg("Check pincode", `${title}: pincode must be 6 digits.`);
+        return;
+      }
+    }
+    if (!/^\d{12}$/.test(formData.aadhaarNumber.trim())) {
+      showMsg("Check Aadhaar", "Aadhaar number must be 12 digits.");
+      return;
+    }
+    if (!/^[A-Za-z]{5}[0-9]{4}[A-Za-z]$/.test(formData.panNumber.trim())) {
+      showMsg("Check PAN", "PAN number is not valid (example: ABCDE1234F).");
+      return;
+    }
+    if (!files.aadhaarFile || !files.panFile) {
+      showMsg("Documents required", "Please attach your Aadhaar and PAN copies.");
       return;
     }
 
     setLoading(true);
     try {
       const payload = {
-        token,
         ...formData,
         hasExperience,
         workExperience: hasExperience ? workExperience : [],
         familyMembers,
         education,
+        declarationAccepted: true,
       };
 
-      console.log("Submitting Payload:", payload);
-      Alert.alert("Submitted", "Your details have been securely staged for verification!");
-    } catch (error) {
-      Alert.alert("Error", "Failed to submit form. Please check your inputs.");
+      const form = new FormData();
+      form.append("token", String(token));
+      form.append("mobile", String(mobile));
+      form.append("payload", JSON.stringify(payload));
+      for (const key of Object.keys(files)) {
+        const f = files[key];
+        if (!f) continue;
+        if (Platform.OS === "web") {
+          const blob: Blob = (f as any).file ?? (await (await fetch(f.uri)).blob());
+          form.append(key, blob, f.name || `${key}.pdf`);
+        } else {
+          form.append(key, { uri: f.uri, name: f.name || `${key}.pdf`, type: f.mimeType || "application/octet-stream" } as any);
+        }
+      }
+
+      // no Content-Type header: the browser / app adds the multipart boundary itself
+      const res = await fetch(`${BASE_HOST}/api/onboarding/submit-form`, { method: "POST", body: form });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Could not submit the form. Please try again.");
+      setSubmitted(true);
+    } catch (error: any) {
+      showMsg("Could not submit", error?.message || "Failed to submit form. Please check your connection and try again.");
     } finally {
       setLoading(false);
     }
   };
+
+  if (submitted) {
+    return (
+      <SafeAreaView className="flex-1 bg-[#F4F6F9]">
+        <View className="flex-1 items-center justify-center p-6">
+          <View className="bg-white rounded-3xl p-8 border border-emerald-100 items-center max-w-md w-full">
+            <CheckCircle2 size={44} color="#059669" />
+            <Text className="text-base font-black text-[#1F1B3D] mt-3 mb-1">Details submitted</Text>
+            <Text className="text-xs text-center text-slate-600 leading-relaxed">
+              Thank you. HR will verify your details and documents. You can close this page now.
+            </Text>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView className="flex-1 bg-[#4F46E5]" edges={["top"]}>
@@ -359,31 +470,25 @@ export default function CandidateOnboardingScreen({ route }: any) {
                 </View>
               </View>
 
-              <View>
-                <Text className="text-[11px] font-bold text-[#7A76A6] uppercase mb-1">Permanent Address*</Text>
-                <TextInput 
-                  className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm text-[#1F1B3D]"
-                  placeholder="Enter full permanent address"
-                  placeholderTextColor="#94A3B8"
-                  multiline
-                  numberOfLines={2}
-                  value={formData.permanentAddress}
-                  onChangeText={(val) => handleInputChange("permanentAddress", val)}
-                />
-              </View>
-
-              <View>
-                <Text className="text-[11px] font-bold text-[#7A76A6] uppercase mb-1">Current Address*</Text>
-                <TextInput 
-                  className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm text-[#1F1B3D]"
-                  placeholder="Enter full current address"
-                  placeholderTextColor="#94A3B8"
-                  multiline
-                  numberOfLines={2}
-                  value={formData.currentAddress}
-                  onChangeText={(val) => handleInputChange("currentAddress", val)}
-                />
-              </View>
+              {([["permanentAddress", "Permanent Address"], ["currentAddress", "Current Address"]] as [AddressKind, string][]).map(([kind, title]) => (
+                <View key={kind} className="gap-3">
+                  <Text className="text-xs font-black text-[#1F1B3D] uppercase">{title}</Text>
+                  {ADDRESS_FIELDS.map((field) => (
+                    <View key={field.key}>
+                      <Text className="text-[11px] font-bold text-[#7A76A6] uppercase mb-1">{field.label}</Text>
+                      <TextInput
+                        className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm text-[#1F1B3D]"
+                        placeholder={field.placeholder}
+                        placeholderTextColor="#94A3B8"
+                        keyboardType={field.key === "pincode" ? "number-pad" : "default"}
+                        maxLength={field.key === "pincode" ? 6 : undefined}
+                        value={formData[kind][field.key]}
+                        onChangeText={(val) => handleAddressChange(kind, field.key, val)}
+                      />
+                    </View>
+                  ))}
+                </View>
+              ))}
             </View>
           </View>
 
@@ -736,22 +841,27 @@ export default function CandidateOnboardingScreen({ route }: any) {
 
             <View className="gap-3">
               {[
-                { key: "aadhaarFile", label: "Aadhaar Card Copy" },
-                { key: "panFile", label: "PAN Card Copy" },
+                { key: "aadhaarFile", label: "Aadhaar Card Copy*" },
+                { key: "panFile", label: "PAN Card Copy*" },
                 { key: "bankPassbookFile", label: "Bank Passbook / Cancelled Cheque" },
                 { key: "resumeFile", label: "Resume & Certificates" },
               ].map((doc) => (
                 <View key={doc.key} className="flex-row items-center justify-between bg-slate-50 border border-slate-200 rounded-2xl p-3.5 gap-3">
                   <View className="flex-row items-center gap-2.5 flex-1 pr-1">
                     <FileText size={18} color="#5B4FD1" />
-                    <Text className="text-xs font-bold text-[#1F1B3D] flex-1" numberOfLines={2}>{doc.label}</Text>
+                    <View className="flex-1">
+                      <Text className="text-xs font-bold text-[#1F1B3D]" numberOfLines={2}>{doc.label}</Text>
+                      {(files as any)[doc.key] ? (
+                        <Text className="text-[10px] text-slate-500 mt-0.5" numberOfLines={1}>{(files as any)[doc.key].name}</Text>
+                      ) : null}
+                    </View>
                   </View>
                   <TouchableOpacity 
                     onPress={() => handleFileUpload(doc.key)}
                     className={`px-3.5 py-2 rounded-xl border shrink-0 ${(files as any)[doc.key] ? "bg-emerald-50 border-emerald-200" : "bg-[#EEECFA] border-[#5B4FD1]/30"}`}
                   >
                     <Text className={`text-[10px] font-black ${(files as any)[doc.key] ? "text-emerald-700" : "text-[#5B4FD1]"}`}>
-                      {(files as any)[doc.key] ? "ATTACHED ✓" : "BROWSE"}
+                      {(files as any)[doc.key] ? "CHANGE ✓" : "BROWSE"}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -830,6 +940,7 @@ export default function CandidateOnboardingScreen({ route }: any) {
 
             <TouchableOpacity 
               onPress={handleSubmitForm}
+              disabled={loading}
               activeOpacity={0.85}
               className={`rounded-2xl py-4 items-center shadow-lg mt-2 ${declarationAccepted ? "bg-[#5B4FD1] shadow-indigo-900/30" : "bg-slate-300 shadow-none"}`}
             >

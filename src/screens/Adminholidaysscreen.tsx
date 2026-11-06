@@ -6,6 +6,8 @@ import CrossPlatformDatePicker from "../components/CrossPlatformDatePicker";
 import { BASE_HOST } from "../constants/config";
 import { useAuth } from "../context/AuthContext";
 import { UserSession } from "../services/UserSession";
+import { useResponsive } from "../hooks/useResponsive";
+import { WebPageHeader } from "../components/web/webUi";
 
 const API = `${BASE_HOST}/api/holidays`;
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -18,6 +20,7 @@ const nice = (ymd: string) => {
 interface Holiday { date: string; title: string }
 
 export default function AdminHolidaysScreen({ navigation }: { navigation?: any }) {
+  const { isWebDesktop } = useResponsive();
   const { user } = useAuth();
   const myEmpId = String(user?.empId || user?.userId || UserSession.empId || "");
   const [year, setYear] = useState(new Date().getFullYear());
@@ -93,8 +96,9 @@ export default function AdminHolidaysScreen({ navigation }: { navigation?: any }
   };
 
   return (
-    <ScreenContainer>
+    <ScreenContainer webMaxWidth={960} webHeader={<WebPageHeader title="Company holidays" subtitle="Applies to all staff • paid, no LOP" onBack={navigation ? () => (navigation.canGoBack?.() ? navigation.goBack() : navigation.navigate("AdminHub")) : undefined} />}>
       <View className="px-4 pt-2 pb-8">
+        {!isWebDesktop && (
         <View className="flex-row items-center mb-3">
           {navigation && (
             <TouchableOpacity
@@ -109,6 +113,7 @@ export default function AdminHolidaysScreen({ navigation }: { navigation?: any }
             <Text className="text-xs font-bold text-[#7A76A6]">Applies to all staff • paid, no LOP</Text>
           </View>
         </View>
+        )}
 
         {/* Announce */}
         <View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 mb-4">

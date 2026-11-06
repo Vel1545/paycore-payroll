@@ -3,8 +3,9 @@ import {
   View, 
   Text, 
   TouchableOpacity, 
-  ScrollView, 
-  useWindowDimensions 
+  ScrollView,
+  Platform,
+  useWindowDimensions
 } from "react-native";
 import { 
   ChevronLeft, 
@@ -17,6 +18,8 @@ import {
   CheckCircle2 
 } from "lucide-react-native";
 import ScreenContainer from "../components/ScreenContainer";
+import { useResponsive } from "../hooks/useResponsive";
+import { WebPageHeader } from "../components/web/webUi";
 
 interface HrPolicyScreenProps {
   navigation?: {
@@ -27,6 +30,7 @@ interface HrPolicyScreenProps {
 }
 
 export default function HrPolicyAndTermsScreen({ navigation }: HrPolicyScreenProps) {
+  const { isWebDesktop } = useResponsive();
   const { width } = useWindowDimensions();
   const isDesktop = width >= 1024;
 
@@ -91,14 +95,15 @@ export default function HrPolicyAndTermsScreen({ navigation }: HrPolicyScreenPro
   ];
 
   return (
-    <ScreenContainer scrollable={false} fullWidth={true}>
+    <ScreenContainer scrollable={false} fullWidth={true} webHeader={<WebPageHeader title="HR Policy & Terms" subtitle="Corporate guidelines, compliance, and terms of service" onBack={() => (navigation?.canGoBack?.() ? navigation.goBack?.() : navigation?.navigate?.("Home"))} />}>
       {/* Outer wrapper with clean horizontal padding to prevent edge bleeding */}
       <View className="flex-1 px-5 md:px-8 pt-4 pb-2">
         
         {/* Properly Aligned Header Bar */}
+        {!isWebDesktop && (
         <View className="mb-5 flex-row items-center gap-3.5">
           <TouchableOpacity 
-            onPress={() => (navigation?.goBack ? navigation.goBack() : null)}
+            onPress={() => (navigation?.canGoBack?.() ? navigation.goBack?.() : navigation?.navigate?.("Home"))}
             className="w-11 h-11 bg-white border border-[#E7E4F5] rounded-2xl items-center justify-center shadow-xs shrink-0"
           >
             <ChevronLeft size={22} color="#1F1B3D" />
@@ -112,9 +117,10 @@ export default function HrPolicyAndTermsScreen({ navigation }: HrPolicyScreenPro
             </Text>
           </View>
         </View>
+        )}
 
         {/* Clean Segmented Switcher Tabs */}
-        <View className="flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl border border-[#E7E4F5] mb-5">
+        <View className="web:lg:self-start web:lg:w-[420px] flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl border border-[#E7E4F5] mb-5">
           <TouchableOpacity
             onPress={() => setActiveTab("policy")}
             className={`flex-1 py-3 rounded-xl items-center justify-center ${activeTab === "policy" ? "bg-[#5B4FD1] shadow-xs" : ""}`}
@@ -139,7 +145,7 @@ export default function HrPolicyAndTermsScreen({ navigation }: HrPolicyScreenPro
           contentContainerStyle={{ paddingBottom: 60, gap: 16 }} 
           className="flex-1"
         >
-          <View style={{ width: isDesktop ? "85%" : "100%", alignSelf: "center" }} className="gap-4 w-full">
+          <View style={{ width: isDesktop && Platform.OS !== "web" ? "85%" : "100%", alignSelf: "center" }} className="gap-4 w-full">
             
             {activeTab === "policy" ? (
               <>

@@ -29,6 +29,8 @@ import {
 } from "lucide-react-native";
 import ScreenContainer from "../components/ScreenContainer";
 import { BASE_HOST } from "../constants/config";
+import { useResponsive } from "../hooks/useResponsive";
+import { Badge, WebPageHeader } from "../components/web/webUi";
 
 interface AdminReportsScreenProps {
   navigation: any;
@@ -55,6 +57,7 @@ interface ShiftRosterRecord {
 }
 
 export default function AdminReportsScreen({ navigation }: AdminReportsScreenProps) {
+  const { isWebDesktop } = useResponsive();
   const [activeTab, setActiveTab] = useState<"reports" | "shifts" | "salCalc" | "deductions" | "payslipConfig">("reports");
   
   // Date Range Filters
@@ -314,8 +317,9 @@ const [salaryFilter, setSalaryFilter] = useState("");
 };
 
   return (
-    <ScreenContainer>
+    <ScreenContainer webHeader={<WebPageHeader title="Reports & Rules" subtitle="Workforce analytics, payroll rules & shifts" onBack={() => (navigation?.canGoBack?.() ? navigation.goBack() : navigation?.navigate("Home"))}><Badge label="Admin engine" tone="primary" /></WebPageHeader>}>
       {/* 1. Header Bar */}
+      {!isWebDesktop && (
       <View className="mb-4">
         <View className="flex-row items-center justify-between">
           <View className="flex-row items-center gap-2.5 flex-1 pr-2">
@@ -342,6 +346,7 @@ const [salaryFilter, setSalaryFilter] = useState("");
           </View>
         </View>
       </View>
+      )}
 
       {/* 2. Top Segmented Tabs Bar */}
       <View className="mb-4">
@@ -594,7 +599,7 @@ const [salaryFilter, setSalaryFilter] = useState("");
     contentContainerStyle={{ paddingBottom: 120 }} 
     className="flex-1"
   >
-    <View className="max-w-5xl mx-auto w-full gap-4">
+    <View className="max-w-5xl web:lg:max-w-page mx-auto w-full gap-4">
       
       {/* 1. ADVANCED FILTER & PARAMETER CONTROL PANEL */}
       <View className="bg-white border border-[#E7E4F5] rounded-3xl p-5 shadow-xs gap-4">

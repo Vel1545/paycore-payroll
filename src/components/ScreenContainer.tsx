@@ -1,13 +1,15 @@
 import React from "react";
 import { View, ScrollView, Platform,ScrollViewProps  } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useResponsive } from "../hooks/useResponsive";
+import { PAGE_MAX_WIDTH, useResponsive } from "../hooks/useResponsive";
 
 interface ScreenContainerProps {
   children: React.ReactNode;
   scrollable?: boolean; // false: the screen brings its own ScrollView (for example one with pull-to-refresh)
   contentContainerStyle?: object;
   fullWidth?: boolean;
+  webMaxWidth?: number; // laptop/PC website only: a narrower centred column for form pages
+  webHeader?: React.ReactNode; // laptop/PC website only: page top bar, full width above the content
   scrollRef?: React.Ref<ScrollView>; // lets a screen scroll the page itself (for example to a field)
  // was:  refreshControl?: React.ReactElement;
 refreshControl?: ScrollViewProps["refreshControl"]; // optional pull-to-refresh for screens that use the built-in scrolling
@@ -18,22 +20,25 @@ export default function ScreenContainer({
   scrollable = true,
   contentContainerStyle,
   fullWidth = false,
+  webMaxWidth,
+  webHeader,
   scrollRef,
   refreshControl,
 }: ScreenContainerProps) {
-  const { isDesktop } = useResponsive();
+  const { isDesktop, isWebDesktop } = useResponsive();
 
   return (
     <View className="flex-1 w-full h-full bg-[#F6F5FC]">
+      {isWebDesktop ? webHeader : null}
       <SafeAreaView className="flex-1 bg-[#F6F5FC]" edges={["top", "left", "right"]}>
         <View
           style={{
             flex: 1,
             width: "100%",
-            maxWidth: isDesktop ? (fullWidth ? "94%" : 1100) : "100%",
+            maxWidth: isWebDesktop ? (webMaxWidth ?? PAGE_MAX_WIDTH) : isDesktop ? (fullWidth ? "94%" : 1100) : "100%",
             marginHorizontal: "auto",
-            paddingHorizontal: isDesktop ? 24 : 16,
-            paddingTop: 8,
+            paddingHorizontal: isWebDesktop ? 32 : isDesktop ? 24 : 16,
+            paddingTop: isWebDesktop ? 24 : 8,
           }}
         >
           {scrollable ? (
@@ -48,7 +53,8 @@ export default function ScreenContainer({
               contentContainerStyle={[
                 {
                   flexGrow: 1,
-                  paddingBottom: Platform.OS === "web" ? 40 : 110,
+                  // the bottom bar floats over the page everywhere except the laptop/PC website
+                  paddingBottom: isWebDesktop ? 40 : 110,
                 },
                 contentContainerStyle,
               ]}
@@ -58,7 +64,7 @@ export default function ScreenContainer({
           ) : (
             <View
               className="flex-1 w-full"
-              style={{ paddingBottom: Platform.OS === "web" ? 30 : 100 }}
+              style={{ paddingBottom: isWebDesktop ? 30 : 100 }}
             >
               {children}
             </View>

@@ -27,6 +27,9 @@ import {
 import { clearActiveSessionOnly } from "../utils/authStorage";
 import { UserSession } from "../services/UserSession";
 import { BASE_HOST } from "../constants/config";
+import WebBackButton from "../components/WebBackButton";
+import { useResponsive } from "../hooks/useResponsive";
+import { Avatar, WebPageHeader } from "../components/web/webUi";
 
 interface ProfileScreenProps {
   navigation: {
@@ -39,6 +42,7 @@ interface ProfileScreenProps {
 }
 
 export default function ProfileScreen({ navigation, onLogout }: ProfileScreenProps) {
+  const { isWebDesktop } = useResponsive();
   const [activeModal, setActiveModal] = useState<string | null>(null);
 
   const [photoFailed, setPhotoFailed] = useState(false);
@@ -90,12 +94,15 @@ const handleLogoutPress = () => {
 };
 
   return (
-    <View className="flex-1 bg-[#5B4FD1]">
+    <View className="flex-1 bg-[#5B4FD1] web:lg:bg-[#F7F7FB]">
       {/* ========================================================================= */}
       {/* 1. TOP PURPLE HERO HEADER (Profile Avatar & Title)                         */}
       {/* ========================================================================= */}
-      <View className="pt-12 pb-8 px-6 max-w-xl mx-auto w-full">
+      {isWebDesktop ? <WebPageHeader title={String(info?.name || UserSession.name || "Settings")} subtitle={String(info?.designation || UserSession.designation || UserSession.role || "")} onBack={() => ((navigation as any).canGoBack?.() ? navigation.goBack?.() : navigation.navigate("Home"))} leading={!photoFailed ? <Image source={{ uri: `${BASE_HOST}/api/profile/${encodeURIComponent(UserSession.empId || "")}/photo?v=${(UserSession as any).photoVersion || 0}` }} onError={() => setPhotoFailed(true)} style={{ width: 40, height: 40, borderRadius: 20 }} resizeMode="cover" /> : <Avatar name={String(UserSession.name || "?")} size={40} />} /> : null}
+      {!isWebDesktop && (
+      <View className="pt-12 web:lg:pt-8 pb-8 px-6 max-w-xl web:lg:max-w-3xl mx-auto w-full">
         <View className="flex-row items-center gap-4">
+          <WebBackButton onHero />
           <View className="w-16 h-16 rounded-full border-2 border-white/80 overflow-hidden shadow-sm bg-white items-center justify-center">
             {!photoFailed ? (
               <Image
@@ -121,21 +128,22 @@ const handleLogoutPress = () => {
           </View>
         </View>
       </View>
+      )}
 
       {/* ========================================================================= */}
       {/* 2. ROUNDED BODY SHEET & ITEM NAVIGATION                                   */}
       {/* ========================================================================= */}
-      <View className="flex-1 bg-white rounded-t-[36px] shadow-lg overflow-hidden">
+      <View className="flex-1 bg-white rounded-t-[36px] shadow-lg overflow-hidden web:lg:bg-transparent web:lg:rounded-none web:lg:shadow-none">
         <ScrollView 
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{
             paddingTop: 12,
             paddingBottom: Platform.OS === "web" ? 30 : 110, // Dock clearance
           }}
-          className="flex-1 max-w-xl mx-auto w-full"
+          className="flex-1 max-w-xl web:lg:max-w-3xl mx-auto w-full"
         >
           {/* Main Action Rows */}
-          <View className="px-4 divide-y divide-slate-100">
+          <View className="px-4 divide-y divide-slate-100 web:lg:mt-6 web:lg:bg-white web:lg:border web:lg:border-[#E4E2F0] web:lg:rounded-xl">
             {menuItems.map((item) => {
               const Icon = item.icon;
               return (

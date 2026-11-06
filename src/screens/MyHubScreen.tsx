@@ -11,9 +11,12 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import * as ImagePicker from "expo-image-picker";
 import { BASE_HOST } from "../constants/config";
+import { useResponsive } from "../hooks/useResponsive";
 import { UserSession } from "../services/UserSession";
 import { downloadPayslipPdf } from "../services/Payslipdownload";
 import PayslipView, { MonthStepper, monthKey, monthLabel } from "../components/Payslipview";
+import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
+import { Badge, WebPageHeader } from "../components/web/webUi";
 
 interface MyHubScreenProps {
   navigation: {
@@ -28,6 +31,7 @@ interface MyHubScreenProps {
 }
 
 export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
+  const { isWebDesktop } = useResponsive();
   const [activeTab, setActiveTab] = useState<"profile" | "payslip">(
     route?.params?.initialTab === "payslip" ? "payslip" : "profile"
   );
@@ -72,42 +76,50 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
     Platform.OS === "web" ? window.alert(`${title}\n${msg}`) : Alert.alert(title, msg);
 
   // the person picks a new photo of their own and it is uploaded
-  const changePhoto = async () => {
-    if (!currentUserId || photoBusy) return;
-    try {
-      if (Platform.OS !== "web") {
-        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (!perm.granted) return say("Permission needed", "Allow photo access to change your picture.");
-      }
-      const picked = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true, aspect: [1, 1], quality: 0.7,   // square, compressed
-      });
-      if (picked.canceled || !picked.assets?.length) return;
-      const a = picked.assets[0];
+const changePhoto = async () => {
+  if (!currentUserId || photoBusy) return;
+  try {
+    const picked = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsEditing: true, aspect: [1, 1], quality: 0.8,
+    });
+    if (picked.canceled || !picked.assets?.length) return;
 
-      setPhotoBusy(true);
-      const form = new FormData();
-      const type = a.mimeType || "image/jpeg";
-      if (Platform.OS === "web") {
-        const blob = await (await fetch(a.uri)).blob();
-        form.append("file", blob, `photo.${type.split("/")[1] || "jpg"}`);
-      } else {
-        form.append("file", { uri: a.uri, name: `photo.${type.split("/")[1] || "jpg"}`, type } as any);
-      }
-      const res = await fetch(`${BASE_HOST}/api/profile/${encodeURIComponent(currentUserId)}/photo`, { method: "POST", body: form });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body?.message || "Could not save the photo");
-      const v = Date.now();
-      (UserSession as any).photoVersion = v;   // Home and Profile read this when they show
-      setPhotoV(v);
-      setPhotoFailed(false);
-    } catch (e: any) {
-      say("Photo not changed", e?.message || "Try again");
-    } finally {
-      setPhotoBusy(false);
+    setPhotoBusy(true);
+
+    // Always send a small JPEG (512 px, any input format becomes JPEG)
+    const ctx = ImageManipulator.manipulate(picked.assets[0].uri).resize({ width: 512 });
+    const img = await ctx.renderAsync();
+    const small = await img.saveAsync({ compress: 0.7, format: SaveFormat.JPEG });
+
+    const form = new FormData();
+    if (Platform.OS === "web") {
+      const blob = await (await fetch(small.uri)).blob();
+      form.append("file", blob, "photo.jpg");
+    } else {
+      form.append("file", { uri: small.uri, name: "photo.jpg", type: "image/jpeg" } as any);
     }
-  };
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
+    let res: Response;
+    try {
+      res = await fetch(`${BASE_HOST}/api/profile/${encodeURIComponent(currentUserId)}/photo`,
+        { method: "POST", body: form, signal: ctrl.signal });
+    } finally { clearTimeout(timer); }
+
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body?.message || "Could not save the photo");
+    const v = Date.now();
+    (UserSession as any).photoVersion = v;
+    setPhotoV(v);
+    setPhotoFailed(false);
+  } catch (e: any) {
+    say("Photo not changed", e?.name === "AbortError" ? "Upload took too long, try again" : (e?.message || "Try again"));
+  } finally {
+    setPhotoBusy(false);
+  }
+};
 
   // the photo saved on the server for this employee (404 -> initials)
   const photoUri = `${BASE_HOST}/api/profile/${encodeURIComponent(currentUserId || "")}/photo?v=${photoV}`;
@@ -153,22 +165,24 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
        {/* ========================================================================= */}
         {/* 1. PREMIUM HEADER / HERO SECTION (Guaranteed Spacing via Inline Styles)    */}
         {/* ========================================================================= */}
+        {isWebDesktop ? <WebPageHeader title="My Hub" subtitle="Profile records & monthly compensation" onBack={() => ((navigation as any).canGoBack?.() ? navigation.goBack() : navigation.navigate("Home"))}><Badge label={String(profile?.status || "Active")} tone="success" /></WebPageHeader> : null}
+        {!isWebDesktop && (
         <LinearGradient
           colors={["#4F46E5", "#6366F1", "#818CF8"]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          style={{ paddingTop: 40, paddingBottom: 80, paddingHorizontal: 24 }}
+          style={isWebDesktop ? { paddingTop: 20, paddingBottom: 48, paddingHorizontal: 40 } : { paddingTop: 40, paddingBottom: 80, paddingHorizontal: 24 }}
           className="relative overflow-hidden shadow-xl shadow-indigo-950/20 rounded-b-[32px]"
         >
           {/* Decorative Background Glows */}
           <View className="absolute -top-10 -right-10 w-52 h-52 rounded-full bg-white/10 blur-2xl pointer-events-none" />
           <View className="absolute bottom-0 left-10 w-44 h-44 rounded-full bg-indigo-900/20 blur-2xl pointer-events-none" />
 
-          <View className="max-w-6xl mx-auto w-full">
+          <View className="max-w-6xl web:lg:max-w-page mx-auto w-full">
             {/* Header Navigation & Status Badge */}
-            <View className="flex-row items-center justify-between mb-6">
+            <View className="flex-row items-center justify-between mb-6 web:lg:mb-3">
               <TouchableOpacity 
-                onPress={() => navigation.goBack()}
+                onPress={() => ((navigation as any).canGoBack?.() ? navigation.goBack() : navigation.navigate("Home"))}
                 style={{ width: 44, height: 44 }}
                 className="bg-white/15 border border-white/25 rounded-2xl items-center justify-center active:opacity-80 shadow-xs"
               >
@@ -190,17 +204,18 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
             </View>
           </View>
         </LinearGradient>
+        )}
 
         {/* ========================================================================= */}
         {/* 2. MAIN CONTAINER BODY                                                    */}
         {/* ========================================================================= */}
-        <View className="max-w-6xl mx-auto w-full px-5 md:px-10 -mt-6">
+        <View className="max-w-6xl web:lg:max-w-page mx-auto w-full px-5 md:px-10 -mt-6 web:lg:mt-6">
 
           {/* Two Tab Switcher */}
-          <View className="flex-row bg-white p-1.5 rounded-2xl mb-6 border border-slate-100 shadow-xl shadow-slate-200/50 z-10">
+          <View className="web:lg:self-start web:lg:w-[460px] flex-row bg-white p-1.5 rounded-2xl mb-6 border border-slate-100 shadow-xl shadow-slate-200/50 z-10">
             <TouchableOpacity
               onPress={() => setActiveTab("profile")}
-              className={`flex-1 h-14 rounded-xl items-center flex-row justify-center px-2 ${
+              className={`flex-1 h-14 web:lg:h-11 rounded-xl items-center flex-row justify-center px-2 ${
                 activeTab === "profile" ? "bg-[#5B4FD1] shadow-md shadow-purple-600/30" : "bg-transparent"
               }`}
             >
@@ -217,7 +232,7 @@ export default function MyHubScreen({ navigation, route }: MyHubScreenProps) {
 
             <TouchableOpacity
               onPress={() => setActiveTab("payslip")}
-              className={`flex-1 h-14 rounded-xl items-center flex-row justify-center px-2 ${
+              className={`flex-1 h-14 web:lg:h-11 rounded-xl items-center flex-row justify-center px-2 ${
                 activeTab === "payslip" ? "bg-[#5B4FD1] shadow-md shadow-purple-600/30" : "bg-transparent"
               }`}
             >

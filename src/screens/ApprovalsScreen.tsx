@@ -38,6 +38,8 @@ import CompactDatePicker from "../components/CrossPlatformDatePicker";
 import { useAuth } from "../context/AuthContext";
 import { UserSession } from "../services/UserSession";
 import { BASE_HOST } from "../constants/config";
+import { useResponsive } from "../hooks/useResponsive";
+import { Btn, IconBtn, WebPageHeader, ui } from "../components/web/webUi";
 
 interface InboxRequest {
   id: string;
@@ -102,6 +104,7 @@ interface ApprovalsScreenProps {
 const API_BASE_URL= `${BASE_HOST}/api/admin/workflow`;
 
 export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenProps) {
+  const { isWebDesktop } = useResponsive();
   const { user } = useAuth();
   const isAdmin = user?.isAdmin ?? false;
   const currentUserId = user?.empId || user?.userId || UserSession.empId;
@@ -538,8 +541,9 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
   };
 
   return (
-    <ScreenContainer>
+    <ScreenContainer webHeader={<WebPageHeader title={userRole === "ADMIN" ? "Approval Queue" : "My Requests & Tracker"} subtitle={userRole === "ADMIN" ? "Review, allocate hours & action submissions" : "Track status of leaves, claims, permissions & OT"} onBack={() => (navigation?.canGoBack?.() ? navigation.goBack?.() : navigation?.navigate?.("Home"))}>{userRole === "USER" ? <Btn label="New request" onPress={() => navigation?.navigate?.("Apply")} icon={<Send size={14} color="#FFFFFF" />} /> : null}<IconBtn label="Refresh" onPress={fetchInbox}><RotateCw size={16} color={ui.color.ink} /></IconBtn></WebPageHeader>}>
       {/* Top Header */}
+      {!isWebDesktop && (
       <View className="mb-4">
         <View className="flex-row items-center justify-between">
           <View className="flex-row items-center gap-2.5">
@@ -582,10 +586,11 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
           </View>
         </View>
       </View>
+      )}
 
       {/* Category tabs with pending counts: admin sees all pending, employee sees their own */}
       {(
-        <View className="flex-row bg-white border border-[#E7E4F5] p-1 rounded-2xl mb-4">
+        <View className="web:lg:self-start web:lg:w-[760px] flex-row bg-white border border-[#E7E4F5] p-1 rounded-2xl mb-4">
           {GROUP_TABS.map((t) => {
             const active = group === t.id;
             const n = (userRole === "ADMIN" ? counts[t.id] : myPending[t.id]) || 0;
@@ -779,7 +784,7 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
       )}
 
       {/* Filter Tabs */}
-      <View className="flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl mb-5 border border-[#E7E4F5]">
+      <View className="web:lg:self-start web:lg:w-[520px] flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl mb-5 border border-[#E7E4F5]">
         {[
           { id: "PENDING", label: `Pending (${pendingCount})` },
           { id: "APPROVED", label: `Approved (${approvedCount})` },

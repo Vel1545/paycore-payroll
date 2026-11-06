@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { useFocusEffect } from "@react-navigation/native";
-import WeekOffCard from "../components/Weekoffcard";
 import {
   View,
   Text,
@@ -28,6 +27,8 @@ import {
 import ScreenContainer from "../components/ScreenContainer";
 import { UserSession } from "../services/UserSession";
 import { BASE_HOST } from "../constants/config";
+import { useResponsive } from "../hooks/useResponsive";
+import { Badge, WebPageHeader } from "../components/web/webUi";
 
 interface AttendanceScreenProps {
   navigation: {
@@ -72,6 +73,7 @@ interface AttendanceRecord {
 const API_BASE_URL = `${BASE_HOST}/api/attendance`;
 
 export default function AttendanceScreen({ navigation }: AttendanceScreenProps) {
+  const { isWebDesktop } = useResponsive();
   type FilterTab = "All" | "Present" | "Leave" | "Permission" | "OD";
   const [filterType, setFilterType] = useState<FilterTab>("All");
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -432,12 +434,13 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
   const hasPenalty = penaltyHours > 0 || penaltyInr > 0 || excessBreakMins > 0;
 
   return (
-    <ScreenContainer scrollable={false}>
+    <ScreenContainer scrollable={false} webHeader={<WebPageHeader title="Attendance & Time" subtitle="Shift & biometric verification" onBack={() => { if (navigation?.canGoBack?.() && navigation?.goBack) { navigation.goBack(); } else { navigation.navigate("Home"); } }}><Badge label={String(empId || "1042")} /></WebPageHeader>}>
       <View className="flex-1 w-full flex-col justify-between">
 
         {/* ========================================================================= */}
         {/* 1. TOP PURPLE BANNER HEADER                                              */}
         {/* ========================================================================= */}
+        {!isWebDesktop && (
         <View className="bg-[#5B4FD1] rounded-3xl p-4 mb-4 shadow-xs relative overflow-hidden shrink-0">
           <View
             className="absolute -top-3 -right-4 w-20 h-20 rounded-3xl border-2 border-white/20 pointer-events-none"
@@ -452,7 +455,7 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
             <View className="flex-row items-center gap-2.5">
               <TouchableOpacity
                 onPress={() => {
-                  if (navigation?.goBack) {
+                  if (navigation?.canGoBack?.() && navigation?.goBack) {
                     navigation.goBack();
                   } else {
                     navigation.navigate("Home");
@@ -480,6 +483,7 @@ export default function AttendanceScreen({ navigation }: AttendanceScreenProps) 
             </View>
           </View>
         </View>
+        )}
 
         {/* ========================================================================= */}
         {/* SCROLLABLE MAIN CONTENT                                                  */}

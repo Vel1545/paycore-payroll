@@ -5,14 +5,15 @@ const BACKEND_PORT = process.env.EXPO_PUBLIC_API_PORT || "8080";
 
 
 //const BASE_HOST = Platform.OS === "web" ? "localhost" : LOCAL_IP;
-
+//Default true for production build enable false for testing purpose 
 export const DEVICE_VERIFICATION_ENABLED = false;
 //Production
 // export const BASE_HOST = "https://payroll.brainmarq.com";
 //Mobile
 // export const BASE_HOST = "http://10.211.186.167:8080";
 //Local IP Adress
-export const BASE_HOST = "http://10.125.25.167:8080";
+export const BASE_HOST = "http://192.168.31.233:8080";
 //Development Testing
 // export const BASE_HOST = "https://test.brainmarq.com";
+//  export const BASE_HOST = "https://frontend.brainmarq.com";
 // export const WORKFLOW_API_URL = `${API_BASE_URL}/admin/workflow`;

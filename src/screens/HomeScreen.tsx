@@ -25,6 +25,7 @@ import { UserSession } from "../services/UserSession";
 import { BASE_HOST } from "../constants/config";
 import { can } from "../services/Access";
 import { useChatUnread } from "../utils/Usechatunread";
+import { useResponsive } from "../hooks/useResponsive";
 
 interface HomeScreenProps {
   navigation: any;
@@ -42,6 +43,7 @@ let cachedKey = "";
 export default function HomeScreen({ navigation, userSession, onLogout }: HomeScreenProps) {
   const { width } = useWindowDimensions();
   const isDesktop = width >= 1024;
+  const { isWebDesktop } = useResponsive();
 
   const isAdmin = userSession?.isAdmin ?? false;
   const empId = userSession?.empId || UserSession.empId || "EMP1042";
@@ -254,10 +256,10 @@ const handleLogoutPress = async () => {
           colors={["#4F46E5", "#6366F1", "#818CF8"]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          style={{ 
-            paddingTop: 16, 
-            paddingBottom: 90, 
-            paddingHorizontal: 20,
+          style={{
+            paddingTop: isWebDesktop ? 24 : 16,
+            paddingBottom: isWebDesktop ? 76 : 90,
+            paddingHorizontal: isWebDesktop ? 40 : 20,
             borderBottomLeftRadius: 22,
             borderBottomRightRadius: 22
           }}
@@ -266,8 +268,9 @@ const handleLogoutPress = async () => {
           <View className="absolute -top-10 -right-10 w-52 h-52 rounded-full bg-white/10 blur-2xl pointer-events-none" />
           <View className="absolute bottom-0 left-10 w-44 h-44 rounded-full bg-indigo-900/20 blur-2xl pointer-events-none" />
 
-          <View className="max-w-6xl mx-auto w-full">
-            <View className="flex-row items-center justify-between" style={{ marginBottom: 8 }}>
+          {/* Laptop/PC: name and photo on the left, actions on the right, in one short row */}
+          <View className="max-w-6xl web:lg:max-w-page mx-auto w-full web:lg:flex-row-reverse web:lg:items-center web:lg:justify-between">
+            <View className="flex-row items-center justify-between web:lg:gap-3" style={{ marginBottom: isWebDesktop ? 0 : 8 }}>
               <TouchableOpacity 
                 onPress={() => (isAdmin ? navigation.navigate("Approvals") : null)}
                 className="w-12 h-12 rounded-2xl bg-white/15 border border-white/25 items-center justify-center relative active:opacity-80 shadow-sm"
@@ -286,9 +289,9 @@ const handleLogoutPress = async () => {
               </TouchableOpacity>
             </View>
 
-            <View className="items-center justify-center" style={{ marginTop: 0, marginBottom: 16 }}>
-              <View className="relative" style={{ marginBottom: 12 }}>
-                <View className="w-24 h-24 rounded-full bg-indigo-900/40 border-2 border-white/60 items-center justify-center shadow-xl overflow-hidden">
+            <View className="items-center justify-center web:lg:flex-row web:lg:gap-4" style={{ marginTop: 0, marginBottom: isWebDesktop ? 0 : 16 }}>
+              <View className="relative" style={{ marginBottom: isWebDesktop ? 0 : 12 }}>
+                <View className="w-24 h-24 web:lg:w-16 web:lg:h-16 rounded-full bg-indigo-900/40 border-2 border-white/60 items-center justify-center shadow-xl overflow-hidden">
                   {!photoFailed ? (
                     <Image
                       source={{ uri: `${BASE_HOST}/api/profile/${encodeURIComponent(empId)}/photo?v=${photoV}` }}
@@ -303,18 +306,20 @@ const handleLogoutPress = async () => {
                 <View className="absolute -inset-1 rounded-full border border-white/30 pointer-events-none" />
               </View>
 
-              <Text className="text-xl md:text-2xl font-black text-white tracking-tight text-center">
-                {UserSession.name? UserSession.name:"Employee"}
-              </Text>
-              <Text className="text-xs font-bold text-purple-200 uppercase tracking-widest text-center" style={{ marginTop: 5 }}>
-                {UserSession.designation?UserSession.designation:"Employee"}
-              </Text>
+              <View>
+                <Text className="text-xl md:text-2xl font-black text-white tracking-tight text-center web:lg:text-left">
+                  {UserSession.name? UserSession.name:"Employee"}
+                </Text>
+                <Text className="text-xs font-bold text-purple-200 uppercase tracking-widest text-center web:lg:text-left" style={{ marginTop: 5 }}>
+                  {UserSession.designation?UserSession.designation:"Employee"}
+                </Text>
+              </View>
             </View>
           </View>
         </LinearGradient>
 
         {/* 2. BODY CONTENT */}
-        <View className="max-w-6xl mx-auto w-full px-5 md:px-10">
+        <View className="max-w-6xl web:lg:max-w-page mx-auto w-full px-5 md:px-10">
           
           {/* Today Attendance Floating Card (employee / admin only) */}
           {allow("ATTENDANCE") ? (
@@ -331,7 +336,7 @@ const handleLogoutPress = async () => {
                 </View>
                 <View className="bg-[#EEECFA] px-3.5 py-1 rounded-full border border-[#5B4FD1]/10">
                   <Text className="text-[10px] font-black text-[#5B4FD1] uppercase tracking-wider">
-                    ID #{empId.replace(/[^0-9]/g, "") || "1042"}
+                    ID #{empId.replace(/[^0-9]/g, "")}
                   </Text>
                 </View>
               </View>

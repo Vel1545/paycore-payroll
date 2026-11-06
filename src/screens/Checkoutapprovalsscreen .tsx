@@ -5,6 +5,8 @@ import ScreenContainer from "../components/ScreenContainer";
 import CompactDatePicker from "../components/CrossPlatformDatePicker";
 import { useAuth } from "../context/AuthContext";
 import { BASE_HOST } from "../constants/config";
+import { useResponsive } from "../hooks/useResponsive";
+import { IconBtn, WebPageHeader, ui } from "../components/web/webUi";
 
 interface Nav {
   goBack?: () => void;
@@ -38,6 +40,7 @@ const notify = (title: string, msg: string) =>
   Platform.OS === "web" ? window.alert(`${title}: ${msg}`) : Alert.alert(title, msg);
 
 export default function CheckoutApprovalsScreen({ navigation }: { navigation?: Nav }) {
+  const { isWebDesktop } = useResponsive();
   const { user } = useAuth();
   const adminId = user?.empId || user?.userId || user?.userName || "Admin";
 
@@ -138,7 +141,8 @@ export default function CheckoutApprovalsScreen({ navigation }: { navigation?: N
   };
 
   return (
-    <ScreenContainer>
+    <ScreenContainer webHeader={<WebPageHeader title="Check-Out Requests" subtitle="Verify with camera, then set the exact time" onBack={() => (navigation?.canGoBack?.() ? navigation.goBack?.() : navigation?.navigate?.("Home"))}><IconBtn label="Refresh" onPress={load}><RotateCw size={16} color={ui.color.ink} /></IconBtn></WebPageHeader>}>
+      {!isWebDesktop && (
       <View className="mb-4 flex-row items-center justify-between">
         <View className="flex-row items-center gap-2.5">
           <TouchableOpacity
@@ -156,6 +160,7 @@ export default function CheckoutApprovalsScreen({ navigation }: { navigation?: N
           <RotateCw size={15} color="#5B4FD1" />
         </TouchableOpacity>
       </View>
+      )}
 
       <View className="flex-row items-center bg-white border border-[#E7E4F5] rounded-xl px-3.5 py-2.5 mb-3">
         <Search size={16} color="#7A76A6" />
@@ -173,7 +178,7 @@ export default function CheckoutApprovalsScreen({ navigation }: { navigation?: N
         )}
       </View>
 
-      <View className="flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl mb-4 border border-[#E7E4F5]">
+      <View className="web:lg:self-start web:lg:w-[480px] flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl mb-4 border border-[#E7E4F5]">
         {(["PENDING", "APPROVED", "REJECTED"] as const).map((t) => {
           const act = filter === t;
           return (

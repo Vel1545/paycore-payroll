@@ -35,14 +35,18 @@ import {
   Map as MapIcon,
   LocateFixed,
   Smartphone,
+  Phone,
   Clock,
   Navigation,
   Battery,
   RotateCcw,
 } from "lucide-react-native";
 import { BASE_HOST } from "../constants/config";
+import { PAGE_MAX_WIDTH } from "../hooks/useResponsive";
 import { UserSession } from "../services/UserSession";
 import { can } from "../services/Access";
+import { useResponsive } from "../hooks/useResponsive";
+import { Card as WebCard, IconBtn, Txt, WebPageHeader, ui } from "../components/web/webUi";
 
 // ---------------------------------------------------------------------------
 // Native map (Google Maps) - used in development / release builds with a key
@@ -110,6 +114,7 @@ interface StaffRow {
 interface DirectoryUser {
   empId: string;
   name: string;
+  phone?: string;
 }
 
 interface TracePoint {
@@ -453,7 +458,7 @@ const Stat = ({ label, value, sub }: { label: string; value: string; sub?: strin
 // Look & feel: small building blocks used by the page
 // ---------------------------------------------------------------------------
 // Content never stretches wider than this on big screens (web / tablet)
-const CONTENT = { width: "100%", maxWidth: 980, alignSelf: "center" } as const;
+const CONTENT = { width: "100%", maxWidth: Platform.OS === "web" ? PAGE_MAX_WIDTH : 980, alignSelf: "center" } as const;
 
 const CARD: any = Platform.select({
   web: { boxShadow: "0 1px 2px rgba(31,27,61,0.05), 0 8px 22px rgba(31,27,61,0.06)" },
@@ -548,6 +553,7 @@ const EmptyState = ({ icon, title, text }: { icon: React.ReactNode; title: strin
 // Screen
 // ---------------------------------------------------------------------------
 export default function LiveTrackingScreen({ navigation, route }: any) {
+  const { isWebDesktop } = useResponsive();
   const isFocused = useIsFocused();
   const mapRef = useRef<any>(null);
 
@@ -574,6 +580,7 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
   const [viewMode, setViewMode] = useState<"grouped" | "all">("grouped");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState("");
+  const [deptFilter, setDeptFilter] = useState<string | null>(null); // null = all departments
   const [searchFocused, setSearchFocused] = useState(false);
   const [editing, setEditing] = useState(false); // true while the admin is typing a new search
 
@@ -782,7 +789,11 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
           setDirectory(
             data
               .filter((u: any) => u?.empId)
-              .map((u: any) => ({ empId: u.empId, name: u.fullName || u.userName || u.empId }))
+              .map((u: any) => ({
+                empId: u.empId,
+                name: u.fullName || u.userName || u.empId,
+                phone: String(u.mobileNumber || u.phone || "").trim(),
+              }))
           );
         }
       } catch {
@@ -857,6 +868,27 @@ DateTimePickerAndroid.open({
   // ----------------------------- search -----------------------------
   const staffMap = useMemo(() => new Map(staff.map((s) => [s.empId, s])), [staff]);
 
+  // ----------------------------- department filter -----------------------------
+  const deptName = (d?: string | null) => (d && d.trim() ? d.trim() : "No department");
+  const departments = useMemo(() => {
+    const counts = new Map<string, number>();
+    staff.forEach((s) => counts.set(deptName(s.department), (counts.get(deptName(s.department)) || 0) + 1));
+    const last = (n: string) => (n === "No department" ? 1 : 0); // real departments first, A to Z
+    return [...counts.entries()]
+      .sort((a, b) => last(a[0]) - last(b[0]) || a[0].localeCompare(b[0]))
+      .map(([name, count]) => ({ name, count }));
+  }, [staff]);
+  // A department that has nobody on the chosen date falls back to all departments
+  const activeDept = deptFilter && departments.some((d) => d.name === deptFilter) ? deptFilter : null;
+  const shownStaff = useMemo(
+    () => (activeDept ? staff.filter((s) => deptName(s.department) === activeDept) : staff),
+    [staff, activeDept]
+  );
+
+  // Phone number from the employee directory (the tracking data has none)
+  const phoneMap = useMemo(() => new Map(directory.map((u) => [u.empId, u.phone || ""])), [directory]);
+  const phoneOf = (empId?: string | null) => (empId ? phoneMap.get(empId) || "" : "");
+
   const suggestions = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return [];
@@ -902,8 +934,8 @@ DateTimePickerAndroid.open({
 
   const chipRows: StaffRow[] =
     selected && !staffMap.has(selected.empId)
-      ? [{ empId: selected.empId, userName: selectedName, pointCount: 0 }, ...staff]
-      : staff;
+      ? [{ empId: selected.empId, userName: selectedName, pointCount: 0 }, ...shownStaff]
+      : shownStaff;
 
   const freshnessDot = (lastTime?: string | null) => {
     if (!isToday) return "bg-slate-300";
@@ -993,10 +1025,10 @@ DateTimePickerAndroid.open({
       const src = pathPoints.length ? pathPoints : stays.flatMap((st) => st.pings);
       return src.map((p) => ({ latitude: p.lat, longitude: p.lng }));
     }
-    return staff
+    return shownStaff
       .filter((s) => s.latestLatitude != null && s.latestLongitude != null)
       .map((s) => ({ latitude: Number(s.latestLatitude), longitude: Number(s.latestLongitude) }));
-  }, [selected, stays, pathPoints, staff]);
+  }, [selected, stays, pathPoints, shownStaff]);
 
   const hasCoords = mapCoords.length > 0;
 
@@ -1012,7 +1044,7 @@ DateTimePickerAndroid.open({
           sub: stay.place,
           color,
         }))
-      : staff
+      : shownStaff
           .filter((st) => st.latestLatitude != null && st.latestLongitude != null)
           .map((st) => ({
             lat: Number(st.latestLatitude),
@@ -1022,7 +1054,7 @@ DateTimePickerAndroid.open({
             color: "#5B4FD1",
           }));
     return buildLeafletHtml(route, markers);
-  }, [selected, stays, pathPoints, markerStays, staff]);
+  }, [selected, stays, pathPoints, markerStays, shownStaff]);
 
   useEffect(() => {
     if (tab !== "map" || !hasCoords) return;
@@ -1056,7 +1088,7 @@ DateTimePickerAndroid.open({
     let active = 0;
     let idle = 0;
     let off = 0;
-    staff.forEach((s) => {
+    shownStaff.forEach((s) => {
       const m = minutesSinceHHmm(s.lastTime);
       if (m == null) return;
       if (m <= 90) active += 1;
@@ -1064,7 +1096,7 @@ DateTimePickerAndroid.open({
       else off += 1;
     });
     return { active, idle, off };
-  }, [staff]);
+  }, [shownStaff]);
 
   const selectedFresh = freshInfo(
     (selected && staffMap.get(selected.empId)?.lastTime) || (summary.last !== "--:--" ? summary.last : null)
@@ -1101,7 +1133,7 @@ DateTimePickerAndroid.open({
               />
             ))}
           {!selected &&
-            staff
+            shownStaff
               .filter((s) => s.latestLatitude != null && s.latestLongitude != null)
               .map((s) => (
                 <Marker
@@ -1337,7 +1369,7 @@ DateTimePickerAndroid.open({
     const pingCount = flatItems.filter((i) => i.kind === "ping").length;
 
     return (
-      <View className="px-4 pt-3">
+      <View className="px-4 web:lg:px-8 pt-3">
         <View className="flex-row self-start mb-3 bg-white border border-[#E7E4F5] rounded-full p-1">
           {(["grouped", "all"] as const).map((m) => {
             const active = viewMode === m;
@@ -1414,10 +1446,10 @@ DateTimePickerAndroid.open({
       );
     }
     return (
-      <View className="px-4 pt-4">
+      <View className="px-4 web:lg:px-8 pt-4">
         <View className="flex-row items-center justify-between mb-2.5 px-1">
           <Text className="text-sm font-black text-[#1F1B3D]">
-            Field staff <Text className="text-[#7A76A6]">· {staff.length}</Text>
+            {activeDept || "Field staff"} <Text className="text-[#7A76A6]">· {shownStaff.length}</Text>
           </Text>
           {isToday && (
             <View className="flex-row items-center">
@@ -1435,7 +1467,7 @@ DateTimePickerAndroid.open({
           )}
         </View>
 
-        {staff.map((s) => {
+        {shownStaff.map((s) => {
           const f = freshInfo(s.lastTime);
           return (
             <TouchableOpacity
@@ -1450,6 +1482,12 @@ DateTimePickerAndroid.open({
                   <Text className="text-[13px] font-black text-[#1F1B3D]" numberOfLines={1}>
                     {s.userName}
                   </Text>
+                  <View className="flex-row items-center mt-0.5">
+                    <Phone size={11} color="#7A76A6" />
+                    <Text className="text-[11px] font-bold text-[#1F1B3D] ml-1" numberOfLines={1}>
+                      {phoneOf(s.empId) || "No phone number"}
+                    </Text>
+                  </View>
                   <Text className="text-[10px] font-bold text-[#7A76A6] mt-0.5" numberOfLines={1}>
                     {s.empId}
                     {s.department ? `  ·  ${s.department}` : ""}
@@ -1673,8 +1711,10 @@ DateTimePickerAndroid.open({
   return (
     <SafeAreaView className="flex-1 bg-[#F6F5FC]" edges={["top"]}>
       {/* ------------------------------ Header ------------------------------ */}
+      {isWebDesktop ? <WebPageHeader title="Location Tracking" subtitle={isToday ? "Live · refreshes every minute" : `History · ${fmtDateLong(selectedDate)}`} onBack={() => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Home"))}><IconBtn label="Refresh" onPress={onRefresh}>{refreshing ? <ActivityIndicator size="small" color={ui.color.primary} /> : <RefreshCw size={16} color={ui.color.ink} />}</IconBtn></WebPageHeader> : null}
+      {!isWebDesktop && (
       <View className="bg-[#5B4FD1]">
-        <View style={CONTENT} className="px-5 pt-3 pb-4">
+        <View style={CONTENT} className="px-5 web:lg:px-8 pt-3 web:lg:pt-5 pb-4 web:lg:pb-5">
           <View className="flex-row items-center justify-between">
             <View className="flex-row items-center flex-1">
               <TouchableOpacity
@@ -1707,11 +1747,11 @@ DateTimePickerAndroid.open({
           {!selected && staffLoaded && isToday && (
             <View className="flex-row gap-2.5 mt-4">
               {[
-                { label: "Tracked today", value: staff.length, dot: "bg-white" },
+                { label: "Tracked today", value: shownStaff.length, dot: "bg-white" },
                 { label: "Active now", value: kpi.active, dot: "bg-emerald-400" },
                 { label: "Idle / no signal", value: kpi.idle + kpi.off, dot: kpi.off ? "bg-rose-400" : "bg-amber-300" },
               ].map((k) => (
-                <View key={k.label} className="flex-1 bg-white/15 border border-white/20 rounded-2xl px-3 py-2.5">
+                <View key={k.label} className="flex-1 web:lg:flex-none web:lg:w-56 bg-white/15 border border-white/20 rounded-2xl px-3 py-2.5">
                   <View className="flex-row items-center">
                     <View className={`w-1.5 h-1.5 rounded-full mr-1.5 ${k.dot}`} />
                     <Text className="text-[9px] font-bold text-purple-100 uppercase tracking-wider" numberOfLines={1}>
@@ -1725,6 +1765,7 @@ DateTimePickerAndroid.open({
           )}
         </View>
       </View>
+      )}
 
       {/* ------------------------------ Scrolling page ------------------------------ */}
       <ScrollView
@@ -1735,8 +1776,25 @@ DateTimePickerAndroid.open({
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#5B4FD1"]} />}
       >
         <View style={CONTENT}>
+          {isWebDesktop && !selected && staffLoaded && isToday ? (
+            <View style={{ flexDirection: "row", gap: 12, paddingHorizontal: 32, marginTop: 20 }}>
+              {[
+                { label: "Tracked today", value: shownStaff.length, dot: ui.color.primary },
+                { label: "Active now", value: kpi.active, dot: "#1FAE5C" },
+                { label: "Idle / no signal", value: kpi.idle + kpi.off, dot: kpi.off ? ui.color.danger : "#D08A0C" },
+              ].map((k) => (
+                <WebCard key={k.label} style={{ width: 220, padding: 14 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: k.dot }} />
+                    <Txt variant="label">{k.label}</Txt>
+                  </View>
+                  <Txt variant="title" style={{ marginTop: 4 }}>{k.value}</Txt>
+                </WebCard>
+              ))}
+            </View>
+          ) : null}
           {/* Filters: date, search, staff */}
-          <View className="px-4 mt-3">
+          <View className="px-4 web:lg:px-8 mt-3 web:lg:mt-5">
             <Card className="p-3">
               <View className="flex-row flex-wrap items-center" style={{ gap: 8 }}>
                 {/* Date: back, day, forward (and a jump back to today) */}
@@ -1898,6 +1956,33 @@ DateTimePickerAndroid.open({
                   )}
                 </View>
               ) : (
+                <>
+                {departments.length > 0 && (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={{ paddingTop: 10, paddingRight: 4, alignItems: "center" }}
+                  >
+                    <Text className="text-[11px] font-black text-[#7A76A6] mr-2">Department</Text>
+                    {[{ name: null as string | null, label: "All", count: staff.length }, ...departments.map((d) => ({ name: d.name as string | null, label: d.name, count: d.count }))].map((d) => {
+                      const on = activeDept === d.name;
+                      return (
+                        <TouchableOpacity
+                          key={d.label}
+                          onPress={() => setDeptFilter(d.name)}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: on }}
+                          className={`mr-2 px-3 py-1.5 rounded-full border flex-row items-center ${
+                            on ? "bg-[#EEECFA] border-[#5B4FD1]" : "bg-white border-[#E7E4F5]"
+                          }`}
+                        >
+                          <Text className={`text-xs font-bold ${on ? "text-[#5B4FD1]" : "text-[#1F1B3D]"}`}>{d.label}</Text>
+                          <Text className={`text-[11px] font-bold ml-1.5 ${on ? "text-[#5B4FD1]" : "text-[#7A76A6]"}`}>{d.count}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                )}
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
@@ -1911,7 +1996,7 @@ DateTimePickerAndroid.open({
                   >
                     <Text className={`text-xs font-black ${!selected ? "text-white" : "text-[#1F1B3D]"}`}>All staff</Text>
                     <Text className={`text-[9px] font-bold ${!selected ? "text-purple-200" : "text-[#7A76A6]"}`}>
-                      {staff.length} with data
+                      {shownStaff.length} with data
                     </Text>
                   </TouchableOpacity>
 
@@ -1938,13 +2023,14 @@ DateTimePickerAndroid.open({
                     );
                   })}
                 </ScrollView>
+                </>
               )}
             </Card>
           </View>
 
           {/* Selected employee: profile, actions, numbers */}
           {selected && (
-            <View className="px-4 mt-3">
+            <View className="px-4 web:lg:px-8 mt-3 web:lg:mt-5">
               <Card className="p-4">
                 <View className="flex-row items-center">
                   <Avatar name={selectedName} dot={selectedFresh.dot} size={54} />
@@ -1952,6 +2038,12 @@ DateTimePickerAndroid.open({
                     <Text className="text-base font-black text-[#1F1B3D]" numberOfLines={1}>
                       {selectedName}
                     </Text>
+                    <View className="flex-row items-center mt-0.5">
+                      <Phone size={12} color="#7A76A6" />
+                      <Text className="text-xs font-bold text-[#1F1B3D] ml-1" numberOfLines={1}>
+                        {phoneOf(selected.empId) || "No phone number"}
+                      </Text>
+                    </View>
                     <Text className="text-[11px] font-bold text-[#7A76A6] mt-0.5" numberOfLines={1}>
                       {selected.empId}
                       {selectedDept ? `  ·  ${selectedDept}` : ""}
@@ -2012,7 +2104,7 @@ DateTimePickerAndroid.open({
           )}
 
           {/* View switch */}
-          <View className="mx-4 mt-4 flex-row bg-[#EEECFA] rounded-2xl p-1">
+          <View className="mx-4 web:lg:mx-8 mt-4 web:lg:self-start web:lg:w-[320px] flex-row bg-[#EEECFA] rounded-2xl p-1">
             {(["timeline", "map"] as const).map((t) => {
               const active = tab === t;
               const Icon = t === "timeline" ? ListIcon : MapIcon;

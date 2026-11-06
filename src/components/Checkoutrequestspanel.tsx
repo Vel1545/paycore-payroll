@@ -69,7 +69,7 @@ export default function CheckoutRequestsPanel({
         </TouchableOpacity>
       </View>
 
-      <View className="flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl mb-3 border border-[#E7E4F5]">
+      <View className="web:lg:self-start web:lg:w-[520px] flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl mb-3 border border-[#E7E4F5]">
         {[
           { id: "PENDING", label: `Pending (${count("PENDING")})` },
           { id: "APPROVED", label: `Approved (${count("APPROVED")})` },

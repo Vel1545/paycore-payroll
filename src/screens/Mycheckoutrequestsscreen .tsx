@@ -5,6 +5,8 @@ import ScreenContainer from "../components/ScreenContainer";
 import CheckoutRequestsPanel from "../components/Checkoutrequestspanel";
 import { useAuth } from "../context/AuthContext";
 import { UserSession } from "../services/UserSession";
+import { useResponsive } from "../hooks/useResponsive";
+import { WebPageHeader } from "../components/web/webUi";
 
 interface Nav {
   goBack?: () => void;
@@ -14,11 +16,13 @@ interface Nav {
 
 /** Stand-alone page (optional). The same list is also a tab inside the Apply screen. */
 export default function MyCheckoutRequestsScreen({ navigation }: { navigation?: Nav }) {
+  const { isWebDesktop } = useResponsive();
   const { user } = useAuth();
   const empId = String(user?.empId || user?.userId || UserSession.empId || "");
 
   return (
-    <ScreenContainer>
+    <ScreenContainer webHeader={<WebPageHeader title="My Check-Out Requests" subtitle="Missed check-outs sent to admin" onBack={() => (navigation?.canGoBack?.() ? navigation.goBack?.() : navigation?.navigate?.("Home"))} />}>
+      {!isWebDesktop && (
       <View className="mb-4 flex-row items-center gap-2.5">
         <TouchableOpacity
           onPress={() => (navigation?.canGoBack?.() ? navigation.goBack?.() : navigation?.navigate?.("Home"))}
@@ -31,6 +35,7 @@ export default function MyCheckoutRequestsScreen({ navigation }: { navigation?: 
           <Text className="text-xs font-bold text-[#7A76A6] mt-0.5">Missed check-outs sent to admin</Text>
         </View>
       </View>
+      )}
       <CheckoutRequestsPanel empId={empId} onOpenAttendance={() => navigation?.navigate?.("Attendance")} />
     </ScreenContainer>
   );

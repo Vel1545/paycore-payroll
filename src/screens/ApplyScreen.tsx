@@ -14,7 +14,7 @@ import {
   ChevronDown,
   ChevronRight,
   CheckCircle2,
-  Calendar as CalendarIcon,
+  Calendar as CalendarIcon,CalendarOff,
   Clock,
   FileText,
   Wallet,
@@ -22,12 +22,16 @@ import {
   Home,
 } from "lucide-react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
+import WebBackButton from "../components/WebBackButton";
 import * as DocumentPicker from "expo-document-picker";
 import ScreenContainer from "../components/ScreenContainer";
 import WfhCard from "../components/Wfhcard";
 import Permissionpunchcard from "../components/Permissionpunchcard";
 import { UserSession } from "../services/UserSession";
 import { BASE_HOST } from "../constants/config";
+import WeekOffCard from "../components/Weekoffcard";
+import { useResponsive } from "../hooks/useResponsive";
+import { Badge, WebPageHeader } from "../components/web/webUi";
 
 const API_BASE_URL = `${BASE_HOST}/api/admin/workflow`;
 
@@ -207,7 +211,8 @@ function TimePickerField({ label, value, onChange }: TimePickerFieldProps) {
 }
 
 export default function ApplyScreen({ route, navigation }: any) {
-  const [activeTab, setActiveTab] = useState<"leave" | "expense" | "overtime" | "advance" | "wfh">(
+  const { isWebDesktop } = useResponsive();
+  const [activeTab, setActiveTab] = useState<"leave" | "expense" | "overtime" | "advance" | "wfh" | "weekoff">(
     // check-out / late punch requests now live in "My Requests & Tracker" (Approvals screen), not here
     route?.params?.tab && route.params.tab !== "checkout" ? route.params.tab : "leave"
   );
@@ -262,6 +267,24 @@ export default function ApplyScreen({ route, navigation }: any) {
       alive = false;
     };
   }, []);
+
+  const [weekOffVisible, setWeekOffVisible] = useState(false);
+useEffect(() => {
+  let alive = true;
+  (async () => {
+    try {
+      const res = await fetch(`${BASE_HOST}/api/weekoff?empId=${encodeURIComponent(String(UserSession.empId || ""))}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const w = await res.json();
+      const has = Number(w?.flexOffsPerWeek) > 0;
+      if (alive) {
+        setWeekOffVisible(has);
+        if (!has) setActiveTab((t) => (t === "weekoff" ? "leave" : t));
+      }
+    } catch {}
+  })();
+  return () => { alive = false; };
+}, []);
 
   // Leave State (Added HALF_DAY and halfDaySession)
   const [requestType, setRequestType] = useState<"LEAVE" | "HALF_DAY" | "PERMISSION" | "OD">("LEAVE");
@@ -715,13 +738,17 @@ const handleSubmitAdvance = async () => {
 
   return (
      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
-    <ScreenContainer>
+    <ScreenContainer webMaxWidth={960} webHeader={<WebPageHeader title="Unified Request" subtitle="Submit leaves, reimbursement claims, overtime or advances" onBack={() => (navigation?.canGoBack?.() ? navigation.goBack() : navigation?.navigate("Home"))}><Badge label={String(CURRENT_EMP_ID)} /></WebPageHeader>}>
       {/* 1. Header */}
+      {!isWebDesktop && (
       <View className="mb-4">
         <View className="flex-row items-center justify-between">
-          <Text className="text-2xl font-black text-[#1F1B3D] tracking-tight">
-            Unified Request
-          </Text>
+          <View className="flex-row items-center">
+            <WebBackButton />
+            <Text className="text-2xl font-black text-[#1F1B3D] tracking-tight">
+              Unified Request
+            </Text>
+          </View>
           <View className="bg-[#EEECFA] px-2.5 py-1 rounded-full border border-[#5B4FD1]/20">
             <Text className="text-[10px] font-black text-[#5B4FD1] uppercase tracking-wider">
               {CURRENT_EMP_ID}
@@ -732,6 +759,7 @@ const handleSubmitAdvance = async () => {
           Submit leaves, reimbursement claims, overtime or advances
         </Text>
       </View>
+      )}
 
       {/* 2. Four-Tab Switcher */}
       <View className="flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl mb-5 border border-[#E7E4F5]">
@@ -741,8 +769,10 @@ const handleSubmitAdvance = async () => {
           { id: "overtime", label: "Overtime", icon: Clock },
           { id: "advance", label: "Advance", icon: Wallet },
           { id: "wfh", label: "WFH", icon: Home },
+          { id: "weekoff", label: "Week off", icon: CalendarOff },
         ]
           .filter((tab) => tab.id !== "wfh" || wfhVisible)
+          .filter((tab) => tab.id !== "weekoff" || weekOffVisible)
           .map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -1365,6 +1395,10 @@ const handleSubmitAdvance = async () => {
           emptyText="Work from home is not available for your schedule."
         />
       )}
+
+      {activeTab === "weekoff" && weekOffVisible && (
+  <WeekOffCard empId={String(UserSession.empId || "")} />
+)}
 
       {/* ========================================================================= */}
       {/* MODALS                                                                    */}
