@@ -42,6 +42,10 @@ module.exports = {
           accentSky: "#3B82F6",     // Payrolls / Sky Card gradient
         },
       },
+      // Full-page width on the laptop/PC website. Keep in step with PAGE_MAX_WIDTH in src/hooks/useResponsive.ts.
+      maxWidth: {
+        page: "1600px",
+      },
       borderRadius: {
         "2xl": "16px",
         "3xl": "24px",

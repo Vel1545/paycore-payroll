@@ -70,6 +70,9 @@ const KIND_TAB: Record<string, string> = {
 // Employee's "My Requests & Tracker" page (the same Approvals screen shows an employee's own requests). Change if yours has another name.
 const USER_REQUESTS_SCREEN = "Approvals";
 
+// Admin onboarding screen (Generate Link / Completed User Forms tabs). It reads route.params.tab and route.params.ref.
+export const ONBOARDING_SCREEN = "AdminOnboardingSubmissions";
+
 const openApprovals = (navigation: any, tab?: string, extra: Record<string, any> = {}) =>
   navigation.navigate("Approvals", { ...(tab ? { tab } : {}), ...extra });
 
@@ -321,14 +324,27 @@ export default function NotificationsScreen({ navigation, userSession }: { navig
                     activeOpacity={0.8}
                     onPress={() => {
                       if (!it.isRead) markRead(it.id);
+                      if (it.type === "ANNOUNCEMENT") {
+                        // birthday of the day, a wish you received, a new achievement -> Celebrations
+                        const kind = String(parseData(it.data).kind || "");
+                        if (kind === "BIRTHDAY" || kind === "CELEBRATION_WISH" || kind === "ACHIEVEMENT") {
+                          navigation.navigate("Celebrations");
+                          return;
+                        }
+                      }
                       if (it.type === "APPROVAL") {
                         // employee: open "My Requests" on the decided request
                         const d = parseData(it.data);
                         navigation.navigate(USER_REQUESTS_SCREEN, { requestId: d.requestId, kind: d.kind });
                       }
                       if (it.type === "REQUEST") {
-                        // admin: open the matching approval tab, with the request id so it can be highlighted
                         const d = parseData(it.data);
+                        if (d.kind === "CANDIDATE_ONBOARDING") {
+                          // admin: new onboarding form -> Completed User Forms tab, with that candidate opened
+                          navigation.navigate(ONBOARDING_SCREEN, { tab: "completed", ref: d.ref });
+                          return;
+                        }
+                        // admin: open the matching approval tab, with the request id so it can be highlighted
                         openApprovals(navigation, KIND_TAB[d.kind], { requestId: d.requestId, kind: d.kind });
                       }
                     }}

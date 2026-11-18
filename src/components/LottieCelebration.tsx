@@ -16,16 +16,16 @@ try {
   LottieView = null;
 }
 
-// Metro needs static require paths. Put the JSON files in  src/assets/lottie/
+// Metro needs static require paths. The JSON files live in  assets/lottie/  (project root)
 const FILES: Record<string, any> = {};
 try {
-  FILES.fireworks_party = require("../assets/lottie/fireworks_party.json");
-  FILES.fireworks_gold = require("../assets/lottie/fireworks_gold.json");
-  FILES.confetti_party = require("../assets/lottie/confetti_party.json");
-  FILES.confetti_gold = require("../assets/lottie/confetti_gold.json");
-  FILES.poppers_party = require("../assets/lottie/poppers_party.json");
-  FILES.poppers_gold = require("../assets/lottie/poppers_gold.json");
-  FILES.balloons = require("../assets/lottie/balloons.json");
+  FILES.fireworks_party = require("../../assets/lottie/fireworks_party.json");
+  FILES.fireworks_gold = require("../../assets/lottie/fireworks_gold.json");
+  FILES.confetti_party = require("../../assets/lottie/confetti_party.json");
+  FILES.confetti_gold = require("../../assets/lottie/confetti_gold.json");
+  FILES.poppers_party = require("../../assets/lottie/poppers_party.json");
+  FILES.poppers_gold = require("../../assets/lottie/poppers_gold.json");
+  FILES.balloons = require("../../assets/lottie/balloons.json");
 } catch {
   /* missing files -> fallback below */
 }

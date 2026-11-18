@@ -11,10 +11,12 @@ import {
   useWindowDimensions,
   ActivityIndicator,
   Alert,
+  AppState,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as Application from "expo-application";
+import { getClientInfo } from "../services/clientInfo";
+import { setAuthToken } from "../services/apiAuth";
 import {
   User,
   ShieldCheck,
@@ -27,7 +29,7 @@ import {
 
 import { UserSession } from "../services/UserSession";
 import { useAuth, UserDetails } from "../context/AuthContext";
-import { BASE_HOST, DEVICE_VERIFICATION_ENABLED } from "../constants/config";
+import { BASE_HOST } from "../constants/config";
 
 interface LoginScreenProps {
   onLoginSuccess: (userData: { empId: string; isAdmin: boolean }) => void;
@@ -42,7 +44,33 @@ type UserStatus =
   | "OTP_PENDING"
   | "OTP_REQUIRED"
   | "ACCOUNT_LOCKED"
+  | "ACCOUNT_INACTIVE"
   | "ERROR";
+
+const INACTIVE_MESSAGE = "Your account is inactive. Login and OTP are disabled. Please contact HR.";
+
+const isInactiveMessage = (msg?: string) =>
+  !!msg && /inactive|deactivated/i.test(msg);
+
+// Shown when the server cannot be reached (no internet, server down, proxy error page)
+const OFFLINE_MESSAGE = "Can't reach the server. Check your internet connection.";
+const OFFLINE_RETRY_MS = 5000;
+
+// A reply we can trust as the server's answer: anything else (5xx, HTML error page) counts as "not reachable"
+const readServerJson = async (res: Response): Promise<any> => {
+  if (res.status >= 500) throw new Error(`server ${res.status}`);
+  return res.json();
+};
+
+const clearRememberedEmpId = async () => {
+  try {
+    if (Platform.OS === "web") {
+      if (typeof window !== "undefined") window.localStorage.removeItem("paycore_remembered_emp_id");
+    } else {
+      await AsyncStorage.removeItem("paycore_remembered_emp_id");
+    }
+  } catch {}
+};
 
 const showUniversalAlert = (title: string, message: string) => {
   if (Platform.OS === "web") {
@@ -56,46 +84,6 @@ const showUniversalAlert = (title: string, message: string) => {
   }
 };
 
-const getClientInfo = async (
-  empId?: string
-): Promise<{ deviceId: string; platform: "MOBILE" | "WEB"; deviceModel: string }> => {
-  const base = await getBaseClientInfo();
-  // TEST MODE: device verification OFF -> every Employee ID gets its own device record,
-  // so one phone/browser can log in as many different IDs/roles as you want.
-  if (!DEVICE_VERIFICATION_ENABLED && empId) {
-    return { ...base, deviceId: `${base.deviceId}::${empId.trim().toUpperCase()}` };
-  }
-  return base;
-};
-
-const getBaseClientInfo = async (): Promise<{ deviceId: string; platform: "MOBILE" | "WEB"; deviceModel: string }> => {
-  // In LoginScreen.tsx
-if (Platform.OS === "web") {
-  let browserId = typeof window !== "undefined" ? window.localStorage.getItem("paycore_web_client_id") : null;
-  if (!browserId) {
-    browserId = "WEB-" + Math.random().toString(36).substring(2, 12) + "-" + Date.now();
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("paycore_web_client_id", browserId);
-    }
-  }
-  return {
-    deviceId: browserId,
-    platform: "WEB",
-    deviceModel: typeof navigator !== "undefined" ? navigator.userAgent.substring(0, 50) : "Browser",
-  };
-}
-
-  // Native Mobile (Android / iOS)
-  const mobileId = Platform.OS === "android"
-    ? Application.getAndroidId()
-    : await Application.getIosIdForVendorAsync();
-
-  return {
-    deviceId: mobileId || "unknown-mobile",
-    platform: "MOBILE",
-    deviceModel: `${Platform.OS}-${Platform.Version}`,
-  };
-};
 
 export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const { width } = useWindowDimensions();
@@ -109,6 +97,10 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const [loading, setLoading] = useState(false);
   const [serverNotice, setServerNotice] = useState("");
   const [activeDevOtp, setActiveDevOtp] = useState<string | null>(null);
+  // true = the last call could not reach the server: show the "check your internet" message + Retry, never the OTP button
+  const [offline, setOffline] = useState(false);
+  const rememberedIdRef = useRef<string | null>(null);
+  const checkBusy = useRef(false);
 
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
   const otpInputs = useRef<Array<TextInput | null>>([]);
@@ -130,6 +122,9 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     } else {
       await AsyncStorage.setItem("paycore_remembered_emp_id", resolvedEmpId);
     }
+
+    // 1b. The login token: sent with every API call from now on (services/apiAuth)
+    await setAuthToken(token || null);
 
     // 2. Store in the UserSession singleton
     UserSession.setUser({
@@ -161,17 +156,12 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     });
   };
 
-  // Silent Auto-Login on Mount
-  useEffect(() => {
-    const attemptSilentAutoLogin = async () => {
-      try {
-        const savedEmpId = Platform.OS === "web"
-          ? (typeof window !== "undefined" ? window.localStorage.getItem("paycore_remembered_emp_id") : null)
-          : await AsyncStorage.getItem("paycore_remembered_emp_id");
-
-        if (!savedEmpId) return;
-
-        setEmpId(savedEmpId);
+  // Silent auto-login with the remembered Employee ID: on mount, and again (automatically) while the
+  // server is not reachable - every 5 s and when the app comes back to the front.
+  const attemptSilentAutoLogin = async (savedEmpId: string) => {
+    if (checkBusy.current) return;
+    checkBusy.current = true;
+    try {
         setLoading(true);
 
         const client = await getClientInfo(savedEmpId);
@@ -186,7 +176,20 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
           }),
         });
 
-        const statusData = await statusRes.json();
+        const statusData = await readServerJson(statusRes);
+        // the server answered: whatever it says below is a real answer, not a network problem
+        setOffline(false);
+
+        // Inactive account: never auto-login, forget the remembered ID
+        if (statusData.status === "ACCOUNT_INACTIVE" || isInactiveMessage(statusData.message)) {
+          await clearRememberedEmpId();
+          setStatus("ACCOUNT_INACTIVE");
+          setOtpSent(false);
+          setIsFirstTime(false);
+          setActiveDevOtp(null);
+          setServerNotice(statusData.message || INACTIVE_MESSAGE);
+          return;
+        }
 
         if (statusData.status === "ALREADY_VERIFIED") {
           const loginRes = await fetch(`${API_BASE_URL}/direct-login`, {
@@ -199,7 +202,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
             }),
           });
 
-          const loginData = await loginRes.json();
+          const loginData = await readServerJson(loginRes);
           if (loginData.success && loginData.user) {
             await handleSuccessfulAuthentication(loginData.user, loginData.token);
             return;
@@ -210,14 +213,61 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         setStatus(statusData.status || "NO_RECORD");
         setServerNotice(statusData.message || "");
       } catch (err) {
-        console.warn("Silent auto-login skipped:", err);
+        // No network / server down: say so (and keep retrying) instead of looking like a new device
+        console.warn("Silent auto-login: server not reachable", err);
+        setOffline(true);
+        setOtpSent(false);
+        setActiveDevOtp(null);
+        setServerNotice(OFFLINE_MESSAGE);
       } finally {
+        checkBusy.current = false;
         setLoading(false);
       }
-    };
+  };
 
-    attemptSilentAutoLogin();
+  // On mount: auto-login with the remembered Employee ID
+  useEffect(() => {
+    (async () => {
+      let savedEmpId: string | null = null;
+      try {
+        savedEmpId = Platform.OS === "web"
+          ? (typeof window !== "undefined" ? window.localStorage.getItem("paycore_remembered_emp_id") : null)
+          : await AsyncStorage.getItem("paycore_remembered_emp_id");
+      } catch {
+        savedEmpId = null;
+      }
+      if (!savedEmpId) return;
+      rememberedIdRef.current = savedEmpId;
+      setEmpId(savedEmpId);
+      attemptSilentAutoLogin(savedEmpId);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Retry: the remembered ID signs in by itself once the server answers; a typed ID is checked again
+  const retryAfterOffline = () => {
+    const id = empId.trim().toUpperCase();
+    const remembered = (rememberedIdRef.current || "").trim().toUpperCase();
+    if (remembered && (!id || id === remembered)) attemptSilentAutoLogin(rememberedIdRef.current as string);
+    else if (id.length >= 3) checkUserStatusInDb(id);
+  };
+  const retryRef = useRef(retryAfterOffline);
+  retryRef.current = retryAfterOffline;
+
+  // While the server is not reachable: retry every 5 s and when the app comes back to the front
+  useEffect(() => {
+    if (!offline) return;
+    const timer = setInterval(() => {
+      if (AppState.currentState === "active") retryRef.current();
+    }, OFFLINE_RETRY_MS);
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s === "active") retryRef.current();
+    });
+    return () => {
+      clearInterval(timer);
+      sub.remove();
+    };
+  }, [offline]);
 
   const handleEmpIdChange = (text: string) => {
     const cleanId = text.trim().toUpperCase();
@@ -235,6 +285,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       setServerNotice("");
       setOtpSent(false);
       setIsFirstTime(false);
+      setOffline(false);
     }
   };
 
@@ -252,9 +303,16 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         }),
       });
 
-      const data = await res.json();
+      const data = await readServerJson(res);
+      setOffline(false);
 
-      if (data.status === "ALREADY_VERIFIED") {
+      if (data.status === "ACCOUNT_INACTIVE" || isInactiveMessage(data.message)) {
+        setStatus("ACCOUNT_INACTIVE");
+        setOtpSent(false);
+        setIsFirstTime(false);
+        setActiveDevOtp(null);
+        setServerNotice(data.message || INACTIVE_MESSAGE);
+      } else if (data.status === "ALREADY_VERIFIED") {
         setStatus("ALREADY_VERIFIED");
         setOtpSent(false);
         setIsFirstTime(false);
@@ -284,7 +342,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         setOtpSent(true);
         setServerNotice(data.message || `Enter 6-digit code for ${id}`);
 
-        if (data.devOtp) {
+        if (data.devOtp) { // shown only while the server has app.security.otp.expose-dev-otp=true
           setActiveDevOtp(data.devOtp);
           showUniversalAlert("Pending Security OTP", `Your verification code is: ${data.devOtp}`);
         }
@@ -295,7 +353,11 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         setServerNotice("First time login for this device. Please verify with OTP.");
       }
     } catch (e) {
-      setStatus("NO_RECORD");
+      // not reachable: show it (and retry), never pretend this is a new device
+      setOffline(true);
+      setOtpSent(false);
+      setActiveDevOtp(null);
+      setServerNotice(OFFLINE_MESSAGE);
     }
   };
 
@@ -314,9 +376,14 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         }),
       });
 
-      const data = await res.json();
+      const data = await readServerJson(res);
       if (data.success && data.user) {
         await handleSuccessfulAuthentication(data.user, data.token);
+      } else if (isInactiveMessage(data.message)) {
+        await clearRememberedEmpId();
+        setStatus("ACCOUNT_INACTIVE");
+        setServerNotice(data.message);
+        showUniversalAlert("Account Inactive", data.message);
       } else {
         showUniversalAlert(
           "Verification Required",
@@ -328,7 +395,9 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         setActiveDevOtp(null);
       }
     } catch (err) {
-      showUniversalAlert("Error", "Authentication server unreachable.");
+      setOffline(true);
+      setServerNotice(OFFLINE_MESSAGE);
+      showUniversalAlert("No connection", OFFLINE_MESSAGE);
     } finally {
       setLoading(false);
     }
@@ -340,6 +409,10 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       showUniversalAlert("Missing ID", "Please enter your Employee ID.");
       return;
     }
+    if (status === "ACCOUNT_INACTIVE") {
+      showUniversalAlert("Account Inactive", serverNotice || INACTIVE_MESSAGE);
+      return;
+    }
 
     setLoading(true);
     try {
@@ -349,22 +422,28 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         body: JSON.stringify({ empId: cleanId }),
       });
 
-      const data = await res.json();
+      const data = await readServerJson(res);
 
       if (data.success) {
         setServerNotice(data.message);
         setOtpSent(true);
         setStatus("OTP_PENDING");
 
-        if (data.devOtp) {
+        if (data.devOtp) { // shown only while the server has app.security.otp.expose-dev-otp=true
           setActiveDevOtp(data.devOtp);
           showUniversalAlert("One-Time Password", `Your verification OTP is: ${data.devOtp}`);
         }
+      } else if (isInactiveMessage(data.message)) {
+        setStatus("ACCOUNT_INACTIVE");
+        setOtpSent(false);
+        setActiveDevOtp(null);
+        setServerNotice(data.message);
+        showUniversalAlert("Account Inactive", data.message);
       } else {
         showUniversalAlert("Failed", data.message || "Failed to generate OTP.");
       }
     } catch (err) {
-      showUniversalAlert("Connection Error", "Cannot reach authentication server at " + API_BASE_URL);
+      showUniversalAlert("No connection", OFFLINE_MESSAGE);
     } finally {
       setLoading(false);
     }
@@ -393,7 +472,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         }),
       });
 
-      const data = await res.json();
+      const data = await readServerJson(res);
       if (data.success && data.user) {
         await handleSuccessfulAuthentication(data.user, data.token);
       } else {
@@ -408,7 +487,8 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         }
       }
     } catch (err) {
-      showUniversalAlert("Error", "OTP verification failed.");
+      // the OTP stays on screen: the user can tap again once the connection is back
+      showUniversalAlert("No connection", `${OFFLINE_MESSAGE} Your OTP was not checked - try again.`);
     } finally {
       setLoading(false);
     }
@@ -432,6 +512,15 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   };
 
   const handleSubmit = () => {
+    // Server not reachable: the button is "Retry" - never send an OTP because of a network problem
+    if (offline && !otpSent && status !== "OTP_PENDING") {
+      retryAfterOffline();
+      return;
+    }
+    if (status === "ACCOUNT_INACTIVE") {
+      showUniversalAlert("Account Inactive", serverNotice || INACTIVE_MESSAGE);
+      return;
+    }
     if (status === "ACCOUNT_LOCKED") {
       showUniversalAlert("Access Locked", serverNotice);
       return;
@@ -506,6 +595,10 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
  <Text className="text-sm font-semibold text-brand-muted mb-6">
                   {otpSent || status === "OTP_PENDING"
                     ? `Enter 6-digit code for ${empId.toUpperCase()}`
+                    : offline
+                      ? "No connection • Signing you in automatically when you're back online"
+                    : status === "ACCOUNT_INACTIVE"
+                      ? "Account Inactive • Access Disabled"
                     : status === "ALREADY_VERIFIED"
                       ? "Verified Employee Recognized • Direct Access Ready"
                       : status === "NEW_DEVICE"
@@ -515,7 +608,13 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                           : "Enter your Employee ID to continue"}
                 </Text>
 
-                {serverNotice ? (
+                {offline && !otpSent && status !== "OTP_PENDING" ? (
+                  <View className="bg-amber-50 border border-amber-300 rounded-xl p-3 mb-4">
+                    <Text className="text-[11px] font-bold text-amber-900">
+                      📶 {OFFLINE_MESSAGE} Retrying automatically…
+                    </Text>
+                  </View>
+                ) : serverNotice ? (
                   <View className="bg-brand-cardTint border border-brand-border rounded-xl p-3 mb-4">
                     <Text className="text-[11px] font-bold text-brand-dark">
                       💡 {serverNotice}
@@ -561,7 +660,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   </View>
                 )}
 
-                {status === "NO_RECORD" && !otpSent && (
+                {status === "NO_RECORD" && !otpSent && !offline && (
                   <TouchableOpacity
                     onPress={() => setIsFirstTime(!isFirstTime)}
                     className="flex-row items-center mb-7 py-1"
@@ -634,8 +733,8 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
 
                 <TouchableOpacity
                   onPress={handleSubmit}
-                  disabled={loading || status === "ACCOUNT_LOCKED"}
-                  className={`rounded-2xl py-4 flex-row items-center justify-center shadow-sm active:opacity-90 ${status === "ACCOUNT_LOCKED" ? "bg-gray-400" : "bg-brand-hero"
+                  disabled={loading || status === "ACCOUNT_LOCKED" || status === "ACCOUNT_INACTIVE"}
+                  className={`rounded-2xl py-4 flex-row items-center justify-center shadow-sm active:opacity-90 ${status === "ACCOUNT_LOCKED" || status === "ACCOUNT_INACTIVE" ? "bg-gray-400" : "bg-brand-hero"
                     }`}
                 >
                   {loading ? (
@@ -643,7 +742,11 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   ) : (
                     <>
                       <Text className="text-white font-black text-sm uppercase tracking-wider mr-2">
-                        {status === "ACCOUNT_LOCKED"
+                        {offline && !otpSent && status !== "OTP_PENDING"
+                          ? "RETRY"
+                          : status === "ACCOUNT_INACTIVE"
+                          ? "ACCOUNT INACTIVE"
+                          : status === "ACCOUNT_LOCKED"
                           ? "ACCOUNT LOCKED (24 HRS)"
                           : status === "ALREADY_VERIFIED"
                             ? "SIGN IN"

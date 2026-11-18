@@ -7,6 +7,7 @@ import * as Sharing from "expo-sharing";
 import ScreenContainer from "../components/ScreenContainer";
 import CrossPlatformDatePicker from "../components/CrossPlatformDatePicker";
 import { BASE_HOST } from "../constants/config";
+import { authHeaders } from "../services/apiAuth";
 import { useAuth } from "../context/AuthContext";
 import { UserSession } from "../services/UserSession";
 import { downloadPayslipPdf } from "../services/Payslipdownload";
@@ -44,6 +45,10 @@ const COLS: { key: string; label: string; w: number; align?: "right"; render: (r
   { key: "allow", label: "Daily allow.", w: 92, align: "right", render: (r) => inr(r.dailyAllowance) },
   { key: "pen", label: "Penalty", w: 84, align: "right", render: (r) => inr(r.attendancePenaltyInr) },
   { key: "lopcut", label: "LOP cut", w: 90, align: "right", render: (r) => inr(r.lopCut) },
+  { key: "mps", label: "Payable sal. (MPS)", w: 116, align: "right", render: (r) => (r.calculated ? inr(r.monthlyPayableSalary) : "—") },
+  { key: "basic", label: "Basic", w: 92, align: "right", render: (r) => (r.calculated ? inr(r.basicEarned) : "—") },
+  { key: "hra", label: "HRA", w: 86, align: "right", render: (r) => (r.calculated ? inr(r.hraEarned) : "—") },
+  { key: "da", label: "D.A.", w: 86, align: "right", render: (r) => (r.calculated ? inr(r.daEarned) : "—") },
   { key: "pf", label: "PF", w: 74, align: "right", render: (r) => inr(r.pfDeduction) },
   { key: "esi", label: "ESI", w: 70, align: "right", render: (r) => inr(r.esiDeduction) },
   { key: "oth", label: "Advance + other", w: 110, align: "right", render: (r) => inr(Number(r.advance) + Number(r.otherDeductions)) },
@@ -182,7 +187,7 @@ export default function SalaryViewScreen() {
         a.click();
         a.remove();
       } else {
-        const out = await FileSystem.downloadAsync(url, `${FileSystem.documentDirectory}${fileName}`);
+        const out = await FileSystem.downloadAsync(url, `${FileSystem.documentDirectory}${fileName}`, { headers: authHeaders() });
         if (out.status !== 200) throw new Error(`HTTP ${out.status}`);
         if (await Sharing.isAvailableAsync()) {
           await Sharing.shareAsync(out.uri, {

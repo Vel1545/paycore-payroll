@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -19,6 +19,7 @@ import {
 import * as Clipboard from 'expo-clipboard'; // <-- Added Expo Clipboard import
 import ScreenContainer from "../components/ScreenContainer";
 import { BASE_HOST } from "../constants/config";
+import { withAuthToken } from "../services/apiAuth";
 import { UserSession } from "../services/UserSession";
 import { useResponsive } from "../hooks/useResponsive";
 import { WebPageHeader } from "../components/web/webUi";
@@ -57,8 +58,22 @@ const STATUS_STYLES: Record<SubmissionStatus, { label: string; box: string; text
 const DOCUMENTS = [
   { key: "aadhaarFile", label: "Aadhaar Card Copy" },
   { key: "panFile", label: "PAN Card Copy" },
+  { key: "photoFile", label: "Passport Size Photo" },
+  { key: "sslcFile", label: "10th Marksheet" },
+  { key: "hscFile", label: "12th Marksheet" },
+  { key: "degreeFile", label: "Degree / Diploma Certificate" },
+  { key: "passportFile", label: "Passport" },
+  { key: "drivingLicenseFile", label: "Driving Licence" },
   { key: "bankPassbookFile", label: "Bank Passbook / Cancelled Cheque" },
-  { key: "resumeFile", label: "Resume & Certificates" },
+  { key: "resumeFile", label: "Resume" },
+];
+// fixed documents, then the extra course certificates the candidate attached (courseFile1, courseFile2 ...)
+const documentsFor = (files: string[]) => [
+  ...DOCUMENTS,
+  ...files
+    .filter((k) => /^courseFile\d+$/.test(k))
+    .sort((a, b) => Number(a.slice(10)) - Number(b.slice(10)))
+    .map((k) => ({ key: k, label: `Course Certificate ${k.slice(10)}` })),
 ];
 
 const DETAIL_SECTIONS: { title: string; fields: [string, string][] }[] = [
@@ -136,7 +151,7 @@ const listRows = (data: Record<string, any>): { title: string; lines: string[] }
   ];
 };
 
-export default function AdminOnboardingSubmissions({ navigation }: { navigation: any }) {
+export default function AdminOnboardingSubmissions({ navigation, route }: { navigation: any; route?: any }) {
   const { isWebDesktop } = useResponsive();
   const { width } = useWindowDimensions();
   const isDesktop = width >= 1024;
@@ -194,6 +209,21 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
       loadSubmissions();
     }, [loadSubmissions])
   );
+
+  // Opened from a notification: { tab: "completed", ref } -> show the Completed User Forms tab and open that candidate
+  const wantTab = route?.params?.tab;
+  const wantRef = route?.params?.ref;
+  useEffect(() => {
+    if (wantTab === "completed" || wantRef) setActiveTab("completed");
+  }, [wantTab, wantRef]);
+  useEffect(() => {
+    if (!wantRef || listLoading) return;
+    const hit = completedCandidates.find((c) => c.id === wantRef);
+    if (hit) openCandidate(hit);
+    // handled once: clear the params so going back to the list later does not re-open it
+    if (hit || completedCandidates.length > 0) navigation.setParams?.({ tab: undefined, ref: undefined });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantRef, completedCandidates, listLoading]);
 
   const closeCandidate = () => {
     openRef.current = null;
@@ -328,9 +358,10 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
     }
   };
 
-  const handleOpenDoc = async (fileKey: string) => {
-    if (!selectedCandidate) return;
-    const url = `${SUBMISSIONS_URL}/${encodeURIComponent(selectedCandidate.id)}/file/${fileKey}`;
+  // Opens a server download (document, Excel or ZIP): a new tab on the web, the browser on a phone.
+  // The server reads the file from the local folder or S3, so this works in both storage modes.
+  const openUrl = async (rawUrl: string, failMsg: string) => {
+    const url = withAuthToken(rawUrl); // the browser cannot send the login header
     if (Platform.OS === "web") {
       window.open(url, "_blank");
       return;
@@ -338,8 +369,25 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
     try {
       await Linking.openURL(url);
     } catch {
-      showMsg("Could not open", "Unable to open this document on this device.");
+      showMsg("Could not open", failMsg);
     }
+  };
+
+  const handleOpenDoc = (fileKey: string) => {
+    if (!selectedCandidate) return;
+    openUrl(`${SUBMISSIONS_URL}/${encodeURIComponent(selectedCandidate.id)}/file/${fileKey}`,
+      "Unable to open this document on this device.");
+  };
+
+  // all candidates: the shared Excel statement
+  const handleDownloadExcel = () =>
+    openUrl(`${API_BASE_URL}/onboarding/statement`, "Unable to download the Excel on this device.");
+
+  // one candidate: every document + a details Excel, as one ZIP
+  const handleDownloadAll = () => {
+    if (!selectedCandidate) return;
+    openUrl(`${SUBMISSIONS_URL}/${encodeURIComponent(selectedCandidate.id)}/download`,
+      "Unable to download the documents on this device.");
   };
 
   const query = searchQuery.trim().toLowerCase();
@@ -506,6 +554,14 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
               >
                 {listLoading ? <ActivityIndicator size="small" color="#5B4FD1" /> : <RefreshCw size={16} color="#5B4FD1" />}
               </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleDownloadExcel}
+                accessibilityLabel="Download onboarding Excel (all candidates)"
+                className="h-11 px-3.5 bg-emerald-600 rounded-2xl flex-row items-center justify-center gap-1.5 shadow-xs active:opacity-90"
+              >
+                <Download size={15} color="#FFFFFF" />
+                <Text className="text-[11px] font-black text-white">EXCEL</Text>
+              </TouchableOpacity>
             </View>
 
             {listError ? (
@@ -615,8 +671,22 @@ export default function AdminOnboardingSubmissions({ navigation }: { navigation:
                     )}
 
                     <View className="gap-2">
-                      <Text className="text-[11px] font-black text-[#1F1B3D] uppercase">Uploaded Documents</Text>
-                      {DOCUMENTS.map((doc) => {
+                      <View className="flex-row items-center justify-between">
+                        <Text className="text-[11px] font-black text-[#1F1B3D] uppercase">Uploaded Documents</Text>
+                        <TouchableOpacity
+                          onPress={handleDownloadAll}
+                          disabled={detail.files.length === 0}
+                          accessibilityLabel="Download all documents and details as ZIP"
+                          className={`px-3 py-1.5 rounded-lg flex-row items-center gap-1 ${detail.files.length ? "bg-[#5B4FD1]" : "bg-slate-300"}`}
+                        >
+                          <Download size={12} color="#FFFFFF" />
+                          <Text className="text-[10px] font-black text-white">DOWNLOAD ALL (ZIP)</Text>
+                        </TouchableOpacity>
+                      </View>
+                      <Text className="text-[10px] font-semibold text-[#7A76A6]">
+                        ZIP = every document below + an Excel with this person's form details.
+                      </Text>
+                      {documentsFor(detail.files).map((doc) => {
                         const provided = detail.files.includes(doc.key);
                         return (
                           <View key={doc.key} className="flex-row items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 gap-2">

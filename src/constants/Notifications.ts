@@ -1,6 +1,10 @@
 import { Platform } from "react-native";
 import Constants, { ExecutionEnvironment } from "expo-constants";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { BASE_HOST } from "../constants/config";
+
+// The Expo push token this phone last gave the server (removed again on logout)
+const PUSH_TOKEN_KEY = "paycore_push_token";
 
 // Expo Go (SDK 53+) cannot do push notifications, and even loading expo-notifications there shows a red error.
 // So the library is only loaded in a real build (APK / development build), never on web or in Expo Go.
@@ -125,12 +129,33 @@ export async function registerPushTokenWithServer(empId: string): Promise<void> 
       (Constants.expoConfig as any)?.extra?.eas?.projectId ?? (Constants as any).easConfig?.projectId;
     const token = (await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)).data;
 
-    await fetch(`${BASE_HOST}/api/notifications/token`, {
+    const res = await fetch(`${BASE_HOST}/api/notifications/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ empId, token, platform: Platform.OS }),
     });
+    if (res.ok) await AsyncStorage.setItem(PUSH_TOKEN_KEY, token);
   } catch (e) {
+    // Android without Firebase (google-services.json) lands here: the rest of the app keeps working
     console.warn("Could not register push token:", e);
+  }
+}
+
+// Call on logout: this phone stops receiving the logged-out employee's notifications.
+// Best effort - never blocks or fails the logout.
+export async function unregisterPushTokenFromServer(): Promise<void> {
+  if (!PUSH_SUPPORTED) return;
+  try {
+    const token = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
+    if (!token) return;
+    await AsyncStorage.removeItem(PUSH_TOKEN_KEY);
+    await fetch(`${BASE_HOST}/api/notifications/token/remove`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    await Notifications.setBadgeCountAsync(0).catch(() => {});
+  } catch {
+    /* offline: the next login on this phone re-assigns the token anyway */
   }
 }

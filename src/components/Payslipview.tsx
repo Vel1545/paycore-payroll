@@ -195,8 +195,17 @@ export default function PayslipView({ empId, month, mode, reloadKey = 0, showEmp
         <Line label="On-Duty" value={`${num(s.odDays)} days, ${num(s.odHours)}h`} hint="For reference. OD time is already inside present hours." />
       </Section>
 
+      <Section title="Monthly payable salary (MPS)">
+        <Line label="Fixed monthly salary" value={inr(s.monthlySalary)} hint={s.calculated ? `Day rate ${inr(s.dayRate)}` : undefined} />
+        <Line label={`LOP cut (${num(s.lopDaysTotal)} days)`} value={`-${inr(s.lopCut)}`} />
+        <Line label="Monthly payable salary" value={inr(s.monthlyPayableSalary)} bold hint="Fixed salary - LOP cut. Basic, HRA, D.A., PF and ESI are worked out from this." />
+        <Line label="  Basic (60%)" value={inr(s.basicEarned)} />
+        <Line label="  HRA (20%)" value={inr(s.hraEarned)} />
+        <Line label="  D.A. (20%)" value={inr(s.daEarned)} />
+      </Section>
+
       <Section title="Earnings">
-        <Line label="Monthly salary" value={inr(s.monthlySalary)} hint={s.calculated ? `Day rate ${inr(s.dayRate)}` : undefined} />
+        <Line label="Monthly salary" value={inr(s.monthlySalary)} />
         <Line label={`Overtime (${num(s.overtimeHours)}h)`} value={inr(s.overtimePay)} />
         <Line label="Daily allowance" value={inr(s.dailyAllowance)} />
         <Line label="Bonus" value={inr(s.bonus)} />
@@ -208,8 +217,16 @@ export default function PayslipView({ empId, month, mode, reloadKey = 0, showEmp
       <Section title="Deductions">
         <Line label={`LOP cut (${num(s.lopDaysTotal)} days)`} value={inr(s.lopCut)} />
         <Line label="Attendance penalty (late / early / shortfall)" value={inr(s.attendancePenaltyInr)} />
-        <Line label="Provident Fund (PF)" value={inr(s.pfDeduction)} hint={showEmployerShare ? `Employer PF ${inr(s.employerPf)}` : undefined} />
-        <Line label="ESI" value={inr(s.esiDeduction)} hint={showEmployerShare ? `Employer ESI ${inr(s.employerEsi)}` : undefined} />
+        <Line
+          label="Provident Fund (PF)"
+          value={inr(s.pfDeduction)}
+          hint={[Number(s.pfDeduction) > 0 ? "9.6% of MPS (12% of Basic + D.A.)" : "", showEmployerShare ? `Employer PF ${inr(s.employerPf)}` : ""].filter(Boolean).join(" • ") || undefined}
+        />
+        <Line
+          label="ESI"
+          value={inr(s.esiDeduction)}
+          hint={[Number(s.esiDeduction) > 0 ? "0.75% of MPS" : "", showEmployerShare ? `Employer ESI ${inr(s.employerEsi)}` : ""].filter(Boolean).join(" • ") || undefined}
+        />
         <Line label="Salary advance" value={inr(s.advance)} />
         <Line label="Other deductions" value={inr(s.otherDeductions)} />
         <Line label="Total deductions" value={inr(s.totalDeductions)} bold tone="#E4453C" />

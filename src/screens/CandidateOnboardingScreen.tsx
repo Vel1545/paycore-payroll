@@ -31,6 +31,52 @@ const ADDRESS_FIELDS: { key: keyof typeof EMPTY_ADDRESS; label: string; placehol
   { key: "pincode", label: "Pincode*", placeholder: "638107" },
 ];
 
+/** One document line: label (* when required, optional tag / note), the picked file name, Browse / Change and an optional Remove. */
+function DocRow({ label, required, tag, note, file, onPick, onRemove }: {
+  label: string; required: boolean; tag?: string; note?: string; file: any; onPick: () => void; onRemove?: () => void;
+}) {
+  return (
+    <View className={`flex-row items-center justify-between bg-slate-50 border rounded-2xl p-3.5 gap-3 ${required && !file ? "border-[#5B4FD1]/30" : "border-slate-200"}`}>
+      <View className="flex-row items-center gap-2.5 flex-1 pr-1">
+        <FileText size={18} color="#5B4FD1" />
+        <View className="flex-1">
+          <View className="flex-row items-center flex-wrap gap-1.5">
+            <Text className="text-xs font-bold text-[#1F1B3D]">
+              {label}
+              {required ? <Text className="text-[#E4453C]">*</Text> : <Text className="text-[10px] font-semibold text-slate-400"> (Optional)</Text>}
+            </Text>
+            {tag ? (
+              <View className="bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+                <Text className="text-[9px] font-black text-amber-700">{tag}</Text>
+              </View>
+            ) : null}
+          </View>
+          {file ? (
+            <Text className="text-[10px] text-slate-500 mt-0.5" numberOfLines={1}>{file.name}</Text>
+          ) : note ? (
+            <Text className="text-[10px] text-slate-400 mt-0.5">{note}</Text>
+          ) : null}
+        </View>
+      </View>
+      <View className="flex-row items-center gap-1.5 shrink-0">
+        {onRemove ? (
+          <TouchableOpacity onPress={onRemove} className="px-2.5 py-2 rounded-xl border bg-rose-50 border-rose-200">
+            <Text className="text-[10px] font-black text-rose-600">REMOVE</Text>
+          </TouchableOpacity>
+        ) : null}
+        <TouchableOpacity
+          onPress={onPick}
+          className={`px-3.5 py-2 rounded-xl border ${file ? "bg-emerald-50 border-emerald-200" : "bg-[#EEECFA] border-[#5B4FD1]/30"}`}
+        >
+          <Text className={`text-[10px] font-black ${file ? "text-emerald-700" : "text-[#5B4FD1]"}`}>
+            {file ? "CHANGE ✓" : "BROWSE"}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
 export default function CandidateOnboardingScreen({ route }: any) {
   const { width } = useWindowDimensions();
   const isDesktop = width >= 1024;
@@ -99,13 +145,24 @@ export default function CandidateOnboardingScreen({ route }: any) {
     { name: "", relationship: "", occupation: "", contact: "" }
   ]);
 
-  // Document Attachments
+  // Document Attachments (the keys are the field names the server expects)
   const [files, setFiles] = useState<Record<string, any>>({
     aadhaarFile: null,
     panFile: null,
+    photoFile: null,
+    sslcFile: null,
+    hscFile: null,
+    degreeFile: null,
+    passportFile: null,
+    drivingLicenseFile: null,
     bankPassbookFile: null,
     resumeFile: null,
   });
+  // Extra course certificates: one slot to start, "Add another" once the last slot has a file (sent as courseFile1, courseFile2 ...)
+  const MAX_COURSE_FILES = 5;
+  const [courseFiles, setCourseFiles] = useState<any[]>([null]);
+  const [isDegreeHolder, setIsDegreeHolder] = useState(false);
+  const [isSalesPerson, setIsSalesPerson] = useState(false);
 
   // Declaration Checkbox
   const [declarationAccepted, setDeclarationAccepted] = useState(false);
@@ -122,24 +179,51 @@ export default function CandidateOnboardingScreen({ route }: any) {
     Platform.OS === "web" ? window.alert(`${title}\n${msg}`) : Alert.alert(title, msg);
   };
 
-  // Pick a real file (PDF / JPG / PNG, up to 10 MB)
-  const handleFileUpload = async (fileKey: string) => {
+  // Pick a real file (PDF / JPG / PNG, up to 10 MB; photo: JPG / PNG only). Returns null when cancelled or invalid.
+  const pickFile = async (imageOnly = false) => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: ["image/*", "application/pdf"],
+        type: imageOnly ? ["image/jpeg", "image/png"] : ["image/*", "application/pdf"],
         copyToCacheDirectory: true,
       });
-      if (result.canceled || !result.assets?.length) return;
+      if (result.canceled || !result.assets?.length) return null;
       const f = result.assets[0];
       if (f.size && f.size > 10 * 1024 * 1024) {
         showMsg("File too large", "Each file must be 10 MB or smaller.");
-        return;
+        return null;
       }
-      setFiles({ ...files, [fileKey]: f });
+      if (imageOnly && /\.pdf$/i.test(f.name || "")) {
+        showMsg("Photo required", "Please choose a JPG or PNG photo.");
+        return null;
+      }
+      return f;
     } catch {
       showMsg("File Error", "Unable to select the document.");
+      return null;
     }
   };
+
+  const handleFileUpload = async (fileKey: string) => {
+    const f = await pickFile(fileKey === "photoFile");
+    if (f) setFiles((prev) => ({ ...prev, [fileKey]: f }));
+  };
+
+  const handleCourseFile = async (index: number) => {
+    const f = await pickFile();
+    if (f) setCourseFiles((prev) => prev.map((x, i) => (i === index ? f : x)));
+  };
+
+  const removeCourseSlot = (index: number) => {
+    setCourseFiles((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+      return next.length ? next : [null];
+    });
+  };
+
+  // Degree / diploma certificate is required when ticked, or when a UG / PG institution is entered.
+  const degreeRequired = isDegreeHolder || !!education.ug.institution.trim() || !!education.pg.institution.trim();
+  // Driving licence is required for sales staff (ticked, or "sales" in the department / designation).
+  const licenceRequired = isSalesPerson || /sales/i.test(`${formData.department} ${formData.designation}`);
 
   const addFamilyRow = () => {
     setFamilyMembers([...familyMembers, { name: "", relationship: "", occupation: "", contact: "" }]);
@@ -186,8 +270,19 @@ export default function CandidateOnboardingScreen({ route }: any) {
       showMsg("Check PAN", "PAN number is not valid (example: ABCDE1234F).");
       return;
     }
-    if (!files.aadhaarFile || !files.panFile) {
-      showMsg("Documents required", "Please attach your Aadhaar and PAN copies.");
+    const neededDocs: [string, string][] = [
+      ["aadhaarFile", "Aadhaar card copy"],
+      ["panFile", "PAN card copy"],
+      ["photoFile", "Passport size photo"],
+      ["sslcFile", "10th marksheet"],
+      ["bankPassbookFile", "Bank passbook / cancelled cheque"],
+      ["resumeFile", "Resume"],
+    ];
+    if (degreeRequired) neededDocs.push(["degreeFile", "Degree / diploma certificate"]);
+    if (licenceRequired) neededDocs.push(["drivingLicenseFile", "Driving licence (required for sales)"]);
+    const missingDocs = neededDocs.filter(([k]) => !files[k]).map(([, label]) => label);
+    if (missingDocs.length) {
+      showMsg("Documents required", `Please attach: ${missingDocs.join(", ")}.`);
       return;
     }
 
@@ -199,6 +294,8 @@ export default function CandidateOnboardingScreen({ route }: any) {
         workExperience: hasExperience ? workExperience : [],
         familyMembers,
         education,
+        isDegreeHolder: degreeRequired,
+        isSalesPerson: licenceRequired,
         declarationAccepted: true,
       };
 
@@ -206,8 +303,10 @@ export default function CandidateOnboardingScreen({ route }: any) {
       form.append("token", String(token));
       form.append("mobile", String(mobile));
       form.append("payload", JSON.stringify(payload));
-      for (const key of Object.keys(files)) {
-        const f = files[key];
+      // fixed documents by their own key, extra course certificates as courseFile1, courseFile2 ...
+      const attachments: [string, any][] = Object.keys(files).map((k) => [k, files[k]]);
+      courseFiles.filter(Boolean).forEach((f, i) => attachments.push([`courseFile${i + 1}`, f]));
+      for (const [key, f] of attachments) {
         if (!f) continue;
         if (Platform.OS === "web") {
           const blob: Blob = (f as any).file ?? (await (await fetch(f.uri)).blob());
@@ -839,33 +938,103 @@ export default function CandidateOnboardingScreen({ route }: any) {
               <Text className="text-xs md:text-sm font-black text-[#1F1B3D] uppercase tracking-wider">9. Documents Submitted (Upload)</Text>
             </View>
 
-            <View className="gap-3">
-              {[
-                { key: "aadhaarFile", label: "Aadhaar Card Copy*" },
-                { key: "panFile", label: "PAN Card Copy*" },
-                { key: "bankPassbookFile", label: "Bank Passbook / Cancelled Cheque" },
-                { key: "resumeFile", label: "Resume & Certificates" },
-              ].map((doc) => (
-                <View key={doc.key} className="flex-row items-center justify-between bg-slate-50 border border-slate-200 rounded-2xl p-3.5 gap-3">
-                  <View className="flex-row items-center gap-2.5 flex-1 pr-1">
-                    <FileText size={18} color="#5B4FD1" />
-                    <View className="flex-1">
-                      <Text className="text-xs font-bold text-[#1F1B3D]" numberOfLines={2}>{doc.label}</Text>
-                      {(files as any)[doc.key] ? (
-                        <Text className="text-[10px] text-slate-500 mt-0.5" numberOfLines={1}>{(files as any)[doc.key].name}</Text>
-                      ) : null}
-                    </View>
-                  </View>
-                  <TouchableOpacity 
-                    onPress={() => handleFileUpload(doc.key)}
-                    className={`px-3.5 py-2 rounded-xl border shrink-0 ${(files as any)[doc.key] ? "bg-emerald-50 border-emerald-200" : "bg-[#EEECFA] border-[#5B4FD1]/30"}`}
-                  >
-                    <Text className={`text-[10px] font-black ${(files as any)[doc.key] ? "text-emerald-700" : "text-[#5B4FD1]"}`}>
-                      {(files as any)[doc.key] ? "CHANGE ✓" : "BROWSE"}
-                    </Text>
-                  </TouchableOpacity>
+            <Text className="text-[11px] font-semibold text-[#7A76A6] mb-3">
+              PDF, JPG or PNG, up to 10 MB each. Items marked * are required.
+            </Text>
+
+            {/* who needs which document */}
+            <View className="gap-2 mb-4">
+              <View className="flex-row items-center justify-between bg-slate-50 px-3.5 py-2.5 rounded-xl border border-slate-200">
+                <Text className="text-xs font-bold text-[#1F1B3D] flex-1 pr-2">I hold a Degree / Diploma</Text>
+                <Switch value={degreeRequired} onValueChange={setIsDegreeHolder} disabled={degreeRequired && !isDegreeHolder}
+                  trackColor={{ false: "#CBD5E1", true: "#5B4FD1" }} />
+              </View>
+              <View className="flex-row items-center justify-between bg-slate-50 px-3.5 py-2.5 rounded-xl border border-slate-200">
+                <Text className="text-xs font-bold text-[#1F1B3D] flex-1 pr-2">I am joining as a Sales person</Text>
+                <Switch value={licenceRequired} onValueChange={setIsSalesPerson} disabled={licenceRequired && !isSalesPerson}
+                  trackColor={{ false: "#CBD5E1", true: "#5B4FD1" }} />
+              </View>
+            </View>
+
+            {[
+              {
+                title: "Identity & Photo",
+                docs: [
+                  { key: "aadhaarFile", label: "Aadhaar Card Copy", required: true },
+                  { key: "panFile", label: "PAN Card Copy", required: true },
+                  { key: "photoFile", label: "Passport Size Photo (JPG / PNG)", required: true },
+                ],
+              },
+              {
+                title: "Education",
+                docs: [
+                  { key: "sslcFile", label: "10th Marksheet", required: true },
+                  { key: "hscFile", label: "12th Marksheet", required: false },
+                  { key: "degreeFile", label: "Degree / Diploma Certificate", required: degreeRequired,
+                    note: degreeRequired ? undefined : "Required only for a degree / diploma holder" },
+                ],
+              },
+              {
+                title: "Other Documents",
+                docs: [
+                  { key: "passportFile", label: "Passport", required: false },
+                  { key: "drivingLicenseFile", label: "Driving Licence", required: licenceRequired, tag: "Required for Sales" },
+                  { key: "bankPassbookFile", label: "Bank Passbook / Cancelled Cheque", required: true },
+                  { key: "resumeFile", label: "Resume", required: true },
+                ],
+              },
+            ].map((group) => (
+              <View key={group.title} className="mb-4">
+                <Text className="text-[10px] font-black text-[#5B4FD1] uppercase tracking-wider mb-2">{group.title}</Text>
+                <View className="gap-2.5">
+                  {group.docs.map((doc: any) => (
+                    <DocRow
+                      key={doc.key}
+                      label={doc.label}
+                      required={doc.required}
+                      tag={doc.tag}
+                      note={doc.note}
+                      file={files[doc.key]}
+                      onPick={() => handleFileUpload(doc.key)}
+                    />
+                  ))}
                 </View>
-              ))}
+              </View>
+            ))}
+
+            {/* extra course certificates: add one, then "Add another" */}
+            <View>
+              <Text className="text-[10px] font-black text-[#5B4FD1] uppercase tracking-wider mb-2">
+                Extra Course Certificates (Optional)
+              </Text>
+              <View className="gap-2.5">
+                {courseFiles.map((f, i) => (
+                  <DocRow
+                    key={`course-${i}`}
+                    label={`Course Certificate ${i + 1}`}
+                    required={false}
+                    file={f}
+                    onPick={() => handleCourseFile(i)}
+                    onRemove={courseFiles.length > 1 || f ? () => removeCourseSlot(i) : undefined}
+                  />
+                ))}
+                {(() => {
+                  const canAdd = !!courseFiles[courseFiles.length - 1] && courseFiles.length < MAX_COURSE_FILES;
+                  return (
+                    <TouchableOpacity
+                      onPress={() => canAdd && setCourseFiles([...courseFiles, null])}
+                      disabled={!canAdd}
+                      className={`py-3 rounded-xl items-center border ${canAdd ? "bg-indigo-50 border-indigo-100" : "bg-slate-50 border-slate-200"}`}
+                    >
+                      <Text className={`text-xs font-black ${canAdd ? "text-[#5B4FD1]" : "text-slate-400"}`}>
+                        {courseFiles.length >= MAX_COURSE_FILES
+                          ? `Maximum ${MAX_COURSE_FILES} certificates`
+                          : "+ Add Another Certificate"}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })()}
+              </View>
             </View>
           </View>
 

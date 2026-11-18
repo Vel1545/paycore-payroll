@@ -11,8 +11,10 @@ import {
   ActivityIndicator,
   Platform,
   Modal,
+  Alert,
 } from "react-native";
 import {
+  Calculator,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -30,6 +32,9 @@ import {
 } from "lucide-react-native";
 import CrossPlatformDatePicker from "../components/CrossPlatformDatePicker";
 import { BASE_HOST } from "../constants/config";
+import { authHeaders } from "../services/apiAuth";
+import { UserSession } from "../services/UserSession";
+import { getSavedSession } from "../utils/authStorage";
 import { useResponsive } from "../hooks/useResponsive";
 import { Badge, IconBtn, WebPageHeader, ui } from "../components/web/webUi";
 
@@ -439,7 +444,7 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
       } else {
         // Mobile download using Expo FileSystem Legacy & Sharing
         const fileUri = `${FileSystem.documentDirectory}${fileName}`;
-        const downloadResult = await FileSystem.downloadAsync(url, fileUri);
+        const downloadResult = await FileSystem.downloadAsync(url, fileUri, { headers: authHeaders() });
 
         if (await Sharing.isAvailableAsync()) {
           await Sharing.shareAsync(downloadResult.uri, {
@@ -458,10 +463,69 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
     }
   };
 
+  // ---- Recalculate: re-run minutes / status / pay day for the selected dates with the current rules ----
+  const [isRecalculating, setIsRecalculating] = useState(false);
+
+  const showMessage = (title: string, msg: string) => {
+    if (Platform.OS === "web") window.alert(`${title}\n\n${msg}`);
+    else Alert.alert(title, msg);
+  };
+
+  const runRecalculate = async () => {
+    const fromIso = formatDateToISO(fromDate);
+    const toIso = formatDateToISO(toDate);
+    setIsRecalculating(true);
+    try {
+      const adminEmpId = UserSession.empId || (await getSavedSession()).verifiedEmpId || "";
+      const res = await fetch(
+        `${BASE_HOST}/api/admin/attendance/recompute?from=${fromIso}&to=${toIso}` +
+          `&empId=${encodeURIComponent(appliedEmp || "ALL")}&adminEmpId=${encodeURIComponent(adminEmpId)}`,
+        { method: "POST" },
+      );
+      const data: any = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showMessage("Recalculate failed", data?.message || `Server error (${res.status}).`);
+        return;
+      }
+      const errors: string[] = Array.isArray(data.errors) ? data.errors : [];
+      showMessage(
+        "Recalculation finished",
+        `Days checked: ${data.daysChecked ?? 0}\n` +
+          `Days updated: ${data.daysChanged ?? 0}\n` +
+          `Status changed (e.g. Half day → Present): ${data.statusChanged ?? 0}\n` +
+          `Salaries recalculated: ${data.salariesRecalculated ?? 0}` +
+          (data.skippedPaidMonthDays ? `\nSkipped (month already PAID): ${data.skippedPaidMonthDays} day(s)` : "") +
+          (errors.length ? `\n\nProblems (${errors.length}):\n${errors.slice(0, 5).join("\n")}` : ""),
+      );
+      fetchAuditData();
+    } catch {
+      showMessage("Recalculate failed", "Could not reach the server. Please try again.");
+    } finally {
+      setIsRecalculating(false);
+    }
+  };
+
+  const confirmRecalculate = () => {
+    if (isRecalculating) return;
+    const who = appliedEmp ? `employee ${appliedEmp}` : "ALL employees";
+    const msg =
+      `Recalculate worked minutes, late penalty, attendance status and pay day for ${who} ` +
+      `from ${formatDateToISO(fromDate)} to ${formatDateToISO(toDate)} with the current rules?\n\n` +
+      `Days edited by hand and PAID months are not changed. Salaries of the affected months are recalculated.`;
+    if (Platform.OS === "web") {
+      if (window.confirm(msg)) runRecalculate();
+      return;
+    }
+    Alert.alert("Recalculate attendance", msg, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Recalculate", onPress: runRecalculate },
+    ]);
+  };
+
   return (
     <View className="flex-1 bg-[#F8F7FD]">
       {/* 1. Top Header */}
-      {isWebDesktop ? <WebPageHeader title="Workforce Lifecycle Audit" onBack={() => { if (adminView !== "menu") { setAdminView("menu"); } else { navigation?.canGoBack?.() ? navigation.goBack() : navigation?.navigate("Home"); } }}><IconBtn label="Refresh" onPress={fetchAuditData}><RefreshCw size={16} color={ui.color.ink} /></IconBtn></WebPageHeader> : null}
+      {isWebDesktop ? <WebPageHeader title="Workforce Lifecycle Audit" onBack={() => { if (adminView !== "menu") { setAdminView("menu"); } else { navigation?.canGoBack?.() ? navigation.goBack() : navigation?.navigate("Home"); } }}><IconBtn label={isRecalculating ? "Recalculating…" : "Recalculate"} onPress={confirmRecalculate}>{isRecalculating ? <ActivityIndicator size="small" color={ui.color.ink} /> : <Calculator size={16} color={ui.color.ink} />}</IconBtn><IconBtn label="Refresh" onPress={fetchAuditData}><RefreshCw size={16} color={ui.color.ink} /></IconBtn></WebPageHeader> : null}
       {!isWebDesktop && (
       <View className="bg-[#5B4FD1] pt-10 pb-4 px-4 shadow-sm">
         <View className="flex-row items-center justify-between">
@@ -478,12 +542,21 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
             <ChevronLeft size={20} color="#FFFFFF" />
           </TouchableOpacity>
           <Text className="text-base font-black text-white">Workforce Lifecycle Audit</Text>
-          <TouchableOpacity
-            onPress={fetchAuditData}
-            className="w-9 h-9 bg-white/20 rounded-xl items-center justify-center active:opacity-80"
-          >
-            <RefreshCw size={16} color="#FFFFFF" />
-          </TouchableOpacity>
+          <View className="flex-row" style={{ gap: 8 }}>
+            <TouchableOpacity
+              onPress={confirmRecalculate}
+              disabled={isRecalculating}
+              className="w-9 h-9 bg-white/20 rounded-xl items-center justify-center active:opacity-80"
+            >
+              {isRecalculating ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Calculator size={16} color="#FFFFFF" />}
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={fetchAuditData}
+              className="w-9 h-9 bg-white/20 rounded-xl items-center justify-center active:opacity-80"
+            >
+              <RefreshCw size={16} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
       )}

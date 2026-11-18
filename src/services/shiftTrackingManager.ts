@@ -3,7 +3,7 @@ import * as Location from "expo-location";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Battery from "expo-battery";
 import * as Notifications from "expo-notifications";
-import { AppState, Platform } from "react-native";
+import { Alert, AppState, Platform } from "react-native";
 import Constants, { ExecutionEnvironment } from "expo-constants";
 import { BASE_HOST } from "../constants/config";
 
@@ -587,6 +587,25 @@ export function registerPingListeners(): () => void {
 }
 
 // ------------------------------- public API -------------------------------
+// "Prominent disclosure" required by Google Play before asking for background location.
+// Resolves true when the employee chooses Continue.
+function showBackgroundLocationDisclosure(): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(
+      "Location use during your shift",
+      "PayCore collects your location to record your work route during your shift, " +
+        "even when the app is closed or not in use.\n\n" +
+        "Location is collected only between check-in and check-out, and is shared only with your employer. " +
+        "On the next screen, choose \"Allow all the time\".",
+      [
+        { text: "No thanks", style: "cancel", onPress: () => resolve(false) },
+        { text: "Continue", onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) }
+    );
+  });
+}
+
 async function teardownTracking() {
   await AsyncStorage.setItem(KEY.active, "false");
   await AsyncStorage.multiRemove([KEY.empId, KEY.lastSent, KEY.lastGood]);
@@ -623,6 +642,15 @@ export async function startShiftTracking(
     (await AsyncStorage.getItem(KEY.empId)) === empId &&
     (await Location.hasStartedLocationUpdatesAsync(SHIFT_LOCATION_TASK).catch(() => false));
   if (alreadyRunning) return { started: true };
+
+  // Google Play policy: explain background location in the app BEFORE the system permission prompt
+  const bgBefore = await Location.getBackgroundPermissionsAsync().catch(() => null);
+  if (bgBefore?.status !== "granted") {
+    const accepted = await showBackgroundLocationDisclosure();
+    if (!accepted) {
+      return { started: false, warning: "Shift route tracking is off because location access was not allowed." };
+    }
+  }
 
   const fg = await Location.requestForegroundPermissionsAsync();
   if (fg.status !== "granted") {

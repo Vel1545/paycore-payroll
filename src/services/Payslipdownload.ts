@@ -4,13 +4,14 @@ import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import { BASE_HOST } from "../constants/config";
+import { authHeaders } from "./apiAuth";
 
 type Opts = {
   /** admin check: paints every field that has no data yellow */
   highlight?: boolean;
   /** payslip template name (organisation); leave empty for the default */
   template?: string;
-  /** add { Authorization: `Bearer ${token}` } here when the endpoint is protected */
+  /** extra headers; the login token is added automatically */
   headers?: Record<string, string>;
 };
 
@@ -38,7 +39,7 @@ export async function downloadPayslipPdf(empId: string, month: string, opts: Opt
   }
 
   const target = `${FileSystem.documentDirectory}${fileName}`;
-  const out = await FileSystem.downloadAsync(url, target, { headers: opts.headers });
+  const out = await FileSystem.downloadAsync(url, target, { headers: authHeaders(opts.headers) });
   if (out.status !== 200) {
     // the server sent {"message": "..."} instead of a PDF: show that message
     let msg = `HTTP ${out.status}`;

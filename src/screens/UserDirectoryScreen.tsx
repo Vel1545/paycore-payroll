@@ -11,6 +11,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import ScreenContainer from "../components/ScreenContainer";
 import { BASE_HOST } from "../constants/config";
+import { authHeaders } from "../services/apiAuth";
 import { UserSession } from "../services/UserSession";
 import { useResponsive } from "../hooks/useResponsive";
 import { Badge, Btn, WebPageHeader } from "../components/web/webUi";
@@ -378,7 +379,7 @@ export default function UserDirectoryScreen({ navigation }: any) {
         window.URL.revokeObjectURL(href);
       } else {
         const fileUri = `${FileSystem.documentDirectory}Employee_Directory.xlsx`;
-        const r = await FileSystem.downloadAsync(url, fileUri);
+        const r = await FileSystem.downloadAsync(url, fileUri, { headers: authHeaders() });
         if (r.status === 200) {
           if (await Sharing.isAvailableAsync()) {
             await Sharing.shareAsync(r.uri, {

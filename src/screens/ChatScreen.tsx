@@ -39,6 +39,7 @@ import {
 import * as DocumentPicker from "expo-document-picker";
 import ScreenContainer from "../components/ScreenContainer";
 import { BASE_HOST } from "../constants/config";
+import { withAuthToken } from "../services/apiAuth";
 import { useChatUnread } from "../utils/Usechatunread";
 import { playChatSound } from "../utils/chatSound";
 import { setActiveChatRoom } from "../constants/Notifications";
@@ -111,6 +112,14 @@ interface InboxItem {
 }
 
 const API_BASE_URL = `${BASE_HOST}/api/workspace`;
+
+// Files in our bucket come back as "/api/workspace/file?key=...": make it a full link with who is opening it
+// (the server checks room membership). Older messages keep their full https link unchanged.
+const attachmentLink = (raw: string | undefined | null, empId: string): string | undefined => {
+  if (!raw) return undefined;
+  if (!raw.startsWith("/")) return raw;
+  return `${BASE_HOST}${raw}${raw.includes("?") ? "&" : "?"}empId=${encodeURIComponent(empId)}`;
+};
 
 const MAX_FILE_SIZE_MB = 10;
 const POLL_MESSAGES_MS = 5000; // open chat refreshes every 5 seconds
@@ -291,16 +300,21 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
         senderId: m.senderEmpId,
         senderName: m.senderName || m.senderEmpId,
         text: m.message || "",
-        timestamp: m.createdAt
-          ? new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-          : "Just now",
+timestamp: m.createdAt ? new Date(m.createdAt).toLocaleString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }) : "Just now",
         attachment:
           m.attachmentName || m.attachment_name
             ? {
                 name: m.attachmentName || m.attachment_name,
                 sizeMb: m.attachmentSize || m.attachment_size || 1.0,
                 type: m.attachmentType || m.attachment_type || "application/pdf",
-                url: m.attachmentUrl || m.attachment_url || undefined,
+                url: attachmentLink(m.attachmentUrl || m.attachment_url, currentEmpId),
               }
             : undefined,
         isSelf: m.senderEmpId === currentEmpId,
@@ -783,11 +797,12 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
     }
   };
 
-  const handleDownloadAttachment = async (url?: string) => {
-    if (!url) {
+  const handleDownloadAttachment = async (rawUrl?: string) => {
+    if (!rawUrl) {
       notify("File Unavailable", "This document does not have a valid cloud URL.");
       return;
     }
+    const url = withAuthToken(rawUrl); // only adds the token for our own server
     if (Platform.OS === "web") {
       window.open(url, "_blank");
     } else {

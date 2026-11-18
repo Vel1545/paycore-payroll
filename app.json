@@ -1,20 +1,15 @@
 {
   "expo": {
-    "name": "paycore-payroll",
+    "name": "PayCore",
     "slug": "paycore-payroll",
     "version": "1.0.0",
     "scheme": "paycore",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.femi.payroll",
+      "bundleIdentifier": "com.femi9.payroll",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -25,8 +20,7 @@
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.femi.payroll",
-      "googleServicesFile": "./google-services.json",
+      "package": "com.femi9.payroll",
       "config": {
         "googleMaps": {
           "apiKey": "YOUR_GOOGLE_MAPS_ANDROID_API_KEY"
@@ -40,6 +34,17 @@
         "FOREGROUND_SERVICE_LOCATION",
         "POST_NOTIFICATIONS",
         "CAMERA"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.SYSTEM_ALERT_WINDOW"
       ]
     },
     "web": {
@@ -56,7 +61,15 @@
       "@react-native-community/datetimepicker",
       "expo-image",
       "expo-sharing",
-      "expo-splash-screen",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff",
+          "imageWidth": 200
+        }
+      ],
       "expo-web-browser",
       [
         "expo-camera",
@@ -82,14 +95,24 @@
           "cameraPermission": "Allow Payroll to take your profile picture."
         }
       ],
-      ["expo-notifications",
-       {
+      [
+        "expo-notifications",
+        {
           "icon": "./assets/notification-icon.png",
           "color": "#1E40AF",
-          "sounds": ["./assets/bell.wav"]
+          "sounds": [
+            "./assets/sounds/bell.wav"
+          ]
         }
       ],
-      "expo-audio"
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "enableBackgroundPlayback": false
+        }
+      ]
     ],
     "runtimeVersion": {
       "policy": "appVersion"

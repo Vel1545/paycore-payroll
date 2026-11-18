@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
 import NotificationBell from "../components/Notificationbell";
+import BirthdayTodayCard from "../components/BirthdayTodayCard";
 import {
   Bell, LogOut, ChevronRight, ArrowUpRight,
   Clock, Calendar as CalendarIcon, Fingerprint,
@@ -641,6 +642,9 @@ const handleLogoutPress = async () => {
               ) : null}
             </View>
           </View>
+
+          {/* Today's birthdays (hidden when there are none) */}
+          <BirthdayTodayCard empId={empId} onOpen={() => navigation.navigate("Celebrations")} />
 
           {/* 4. CALENDAR MATRIX */}
           {allow("ATTENDANCE") ? (

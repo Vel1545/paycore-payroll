@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "426321452263",
+    "project_id": "payroll-femi9",
+    "storage_bucket": "payroll-femi9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:426321452263:android:6f2ab943fb86b17bf41642",
+        "android_client_info": {
+          "package_name": "com.femi.payroll.test"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDS2xzj1F4glqyeveoLfCT8DFC5OqP-gTw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:426321452263:android:d8e60d5e083b2b0ff41642",
+        "android_client_info": {
+          "package_name": "com.femi9.payroll"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDS2xzj1F4glqyeveoLfCT8DFC5OqP-gTw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

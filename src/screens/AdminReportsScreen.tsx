@@ -29,6 +29,7 @@ import {
 } from "lucide-react-native";
 import ScreenContainer from "../components/ScreenContainer";
 import { BASE_HOST } from "../constants/config";
+import { withAuthToken } from "../services/apiAuth";
 import { useResponsive } from "../hooks/useResponsive";
 import { Badge, WebPageHeader } from "../components/web/webUi";
 
@@ -310,7 +311,7 @@ const [salaryFilter, setSalaryFilter] = useState("");
   console.log(`📥 Exporting [${reportName}] as ${format} with filters:`, exportUrl);
 
   if (Platform.OS === "web") {
-    window.open(exportUrl, "_blank");
+    window.open(withAuthToken(exportUrl), "_blank");
   } else {
     // Mobile native file handling or Linking
   }
