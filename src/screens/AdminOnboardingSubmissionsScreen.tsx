@@ -23,6 +23,7 @@ import { withAuthToken } from "../services/apiAuth";
 import { UserSession } from "../services/UserSession";
 import { useResponsive } from "../hooks/useResponsive";
 import { WebPageHeader } from "../components/web/webUi";
+import BulkImportPanel from "../components/BulkImportPanel";
 
 type SubmissionStatus = "SUBMITTED" | "WAITING" | "APPROVED" | "REJECTED";
 
@@ -157,7 +158,7 @@ export default function AdminOnboardingSubmissions({ navigation, route }: { navi
   const isDesktop = width >= 1024;
 
   // Tabs: "generate" or "completed"
-  const [activeTab, setActiveTab] = useState<"generate" | "completed">("generate");
+  const [activeTab, setActiveTab] = useState<"generate" | "completed" | "bulk">("generate");
   const [searchQuery, setSearchQuery] = useState("");
 
   // Link Generator State
@@ -419,7 +420,7 @@ export default function AdminOnboardingSubmissions({ navigation, route }: { navi
       )}
 
       {/* Segmented Switcher Tabs */}
-      <View className="web:lg:self-start web:lg:w-[480px] flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl border border-[#E7E4F5] mb-4">
+      <View className="web:lg:self-start web:lg:w-[640px] flex-row bg-[#EEECFA]/70 p-1.5 rounded-2xl border border-[#E7E4F5] mb-4">
         <TouchableOpacity
           onPress={() => setActiveTab("generate")}
           className={`flex-1 py-2.5 rounded-xl items-center justify-center ${activeTab === "generate" ? "bg-[#5B4FD1] shadow-xs" : ""}`}
@@ -436,7 +437,22 @@ export default function AdminOnboardingSubmissions({ navigation, route }: { navi
             Completed User Forms ({completedCandidates.length})
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setActiveTab("bulk")}
+          className={`flex-1 py-2.5 rounded-xl items-center justify-center ${activeTab === "bulk" ? "bg-[#5B4FD1] shadow-xs" : ""}`}
+        >
+          <Text className={`text-xs font-black ${activeTab === "bulk" ? "text-white" : "text-[#7A76A6]"}`}>
+            Bulk Import
+          </Text>
+        </TouchableOpacity>
       </View>
+
+      {/* TAB 3: BULK IMPORT (Excel into users / user_configs) */}
+      {activeTab === "bulk" && (
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 60 }} className="flex-1">
+          <BulkImportPanel isDesktop={isDesktop} />
+        </ScrollView>
+      )}
 
       {/* TAB 1: GENERATE LINK */}
       {activeTab === "generate" && (

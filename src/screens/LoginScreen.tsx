@@ -25,6 +25,9 @@ import {
   KeyRound,
   CheckCircle,
   Key,
+  Lock,
+  Eye,
+  EyeOff,
 } from "lucide-react-native";
 
 import { UserSession } from "../services/UserSession";
@@ -105,6 +108,38 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
   const otpInputs = useRef<Array<TextInput | null>>([]);
   const debounceTimer = useRef<any>(null);
+
+  // ---- Password login (server auth.password-mode OPTIONAL / REQUIRED). "OFF" = the old OTP-only login below.
+  const [pwMode, setPwMode] = useState<string>("OFF");
+  const [pwSet, setPwSet] = useState(false);
+  const [minPwLen, setMinPwLen] = useState(6);
+  const [statusReady, setStatusReady] = useState(false); // the server answered for the typed ID
+  const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  // what the OTP is for: LEGACY = old OTP login, DEVICE = new device after the password, SET = first login / forgot password
+  const [otpPurpose, setOtpPurpose] = useState<"LEGACY" | "DEVICE" | "SET">("LEGACY");
+  const [otpValidMin, setOtpValidMin] = useState(10);
+  const pwFlow = pwMode === "OPTIONAL" || pwMode === "REQUIRED";
+  const debounceIdRef = useRef<string | null>(null); // the ID whose status check is the latest
+
+  const applyPasswordInfo = (data: any) => {
+    if (data && typeof data.passwordMode === "string") {
+      setPwMode(data.passwordMode);
+      setPwSet(!!data.passwordSet);
+      if (Number(data.minPasswordLength) > 0) setMinPwLen(Number(data.minPasswordLength));
+    }
+    setStatusReady(true);
+  };
+
+  const resetPasswordFields = () => {
+    setPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setOtp(["", "", "", "", "", ""]);
+    setOtpPurpose("LEGACY");
+  };
 
   // Helper to structure and save user payload to both Context and UserSession
   const handleSuccessfulAuthentication = async (backendUser: any, token?: string) => {
@@ -210,7 +245,19 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         }
 
         // If revoked or new device detected, stop silent login and prompt user
-        setStatus(statusData.status || "NO_RECORD");
+        applyPasswordInfo(statusData);
+        const pwOn = statusData.passwordMode === "OPTIONAL" || statusData.passwordMode === "REQUIRED";
+        if (pwOn && statusData.status === "OTP_PENDING") {
+          // password login: a waiting OTP is only used for the first-login / forgot-password screen
+          setStatus("NEW_DEVICE");
+          if (!statusData.passwordSet) {
+            setOtpPurpose("SET");
+            setOtpSent(true);
+            if (statusData.devOtp) setActiveDevOtp(statusData.devOtp);
+          }
+        } else {
+          setStatus(statusData.status || "NO_RECORD");
+        }
         setServerNotice(statusData.message || "");
       } catch (err) {
         // No network / server down: say so (and keep retrying) instead of looking like a new device
@@ -273,6 +320,11 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     const cleanId = text.trim().toUpperCase();
     setEmpId(cleanId);
     setActiveDevOtp(null);
+    setStatusReady(false);
+    setPwSet(false);
+    setOtpSent(false);
+    resetPasswordFields();
+    debounceIdRef.current = cleanId;
 
     if (debounceTimer.current) clearTimeout(debounceTimer.current);
 
@@ -305,6 +357,38 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
 
       const data = await readServerJson(res);
       setOffline(false);
+      if (id !== (debounceIdRef.current || id)) return; // the user typed another ID meanwhile
+      applyPasswordInfo(data);
+      const pwOn = data.passwordMode === "OPTIONAL" || data.passwordMode === "REQUIRED";
+
+      if (pwOn && data.status === "OTP_PENDING") {
+        // password login: show the password (or, with no password yet, the OTP + new password screen)
+        setStatus("NEW_DEVICE");
+        if (data.passwordSet) {
+          setOtpSent(false);
+          setActiveDevOtp(null);
+          setServerNotice("");
+        } else {
+          setOtpPurpose("SET");
+          setOtpSent(true);
+          setServerNotice(data.message || "Enter the OTP and choose your password.");
+          if (data.devOtp) setActiveDevOtp(data.devOtp);
+        }
+        return;
+      }
+      if (pwOn && data.status !== "ALREADY_VERIFIED" && data.status !== "ACCOUNT_INACTIVE"
+          && data.status !== "ACCOUNT_LOCKED" && !isInactiveMessage(data.message)) {
+        setStatus(data.status === "OTP_REQUIRED" || data.status === "NEW_DEVICE" ? data.status : "NO_RECORD");
+        setOtpSent(false);
+        setIsFirstTime(false);
+        setActiveDevOtp(null);
+        setServerNotice(
+          data.passwordSet
+            ? "Enter your password to sign in."
+            : "First login: we will send an OTP to your e-mail (also shown here), then you choose your password."
+        );
+        return;
+      }
 
       if (data.status === "ACCOUNT_INACTIVE" || isInactiveMessage(data.message)) {
         setStatus("ACCOUNT_INACTIVE");
@@ -403,7 +487,9 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     }
   };
 
-  const handleRequestOtp = async () => {
+  const handleRequestOtp = async (purpose?: "LEGACY" | "DEVICE" | "SET") => {
+    const usePurpose = purpose ?? otpPurpose;
+    setOtpPurpose(usePurpose);
     const cleanId = empId.trim().toUpperCase();
     if (!cleanId) {
       showUniversalAlert("Missing ID", "Please enter your Employee ID.");
@@ -427,11 +513,14 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       if (data.success) {
         setServerNotice(data.message);
         setOtpSent(true);
-        setStatus("OTP_PENDING");
+        setOtp(["", "", "", "", "", ""]);
+        if (Number(data.validityMinutes) > 0) setOtpValidMin(Number(data.validityMinutes));
+        // password login keeps its own screens; the old login switches to its OTP screen
+        if (!pwFlow) setStatus("OTP_PENDING");
 
         if (data.devOtp) { // shown only while the server has app.security.otp.expose-dev-otp=true
           setActiveDevOtp(data.devOtp);
-          showUniversalAlert("One-Time Password", `Your verification OTP is: ${data.devOtp}`);
+          if (!pwFlow) showUniversalAlert("One-Time Password", `Your verification OTP is: ${data.devOtp}`);
         }
       } else if (isInactiveMessage(data.message)) {
         setStatus("ACCOUNT_INACTIVE");
@@ -494,6 +583,170 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     }
   };
 
+  // ---- Password login handlers -----------------------------------------------------------------
+  const isLockMessage = (msg?: string) => !!msg && /limit exceeded/i.test(msg);
+
+  const handlePasswordLogin = async () => {
+    const cleanId = empId.trim().toUpperCase();
+    if (!password) {
+      showUniversalAlert("Password needed", "Please enter your password.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const client = await getClientInfo(cleanId);
+      const res = await fetch(`${API_BASE_URL}/password-login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          empId: cleanId,
+          password,
+          deviceId: client.deviceId,
+          deviceModel: client.deviceModel,
+          platform: client.platform,
+        }),
+      });
+      const data = await readServerJson(res);
+      if (data.success && data.user) {
+        await handleSuccessfulAuthentication(data.user, data.token);
+        return;
+      }
+      if (data.status === "PASSWORD_NOT_SET") {
+        setPwSet(false);
+        setPassword("");
+        setServerNotice(data.message);
+        return;
+      }
+      if (data.status === "OTP_REQUIRED") {
+        setOtpPurpose("DEVICE");
+        setOtpSent(true);
+        setOtp(["", "", "", "", "", ""]);
+        setServerNotice(data.message || "New device: enter the OTP.");
+        if (Number(data.validityMinutes) > 0) setOtpValidMin(Number(data.validityMinutes));
+        setActiveDevOtp(data.devOtp || null);
+        return;
+      }
+      if (isInactiveMessage(data.message)) {
+        await clearRememberedEmpId();
+        setStatus("ACCOUNT_INACTIVE");
+        setServerNotice(data.message);
+        showUniversalAlert("Account Inactive", data.message);
+        return;
+      }
+      showUniversalAlert("Sign in failed", data.message || "Could not sign in.");
+      setPassword("");
+    } catch {
+      showUniversalAlert("No connection", OFFLINE_MESSAGE);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // first login / forgot password: OTP + new password
+  const handleSetPassword = async () => {
+    const fullOtp = otp.join("");
+    if (fullOtp.length !== 6) {
+      showUniversalAlert("Incomplete Code", "Please enter all 6 digits of the OTP.");
+      return;
+    }
+    if (newPassword.length < minPwLen) {
+      showUniversalAlert("Password too short", `Your password needs at least ${minPwLen} characters.`);
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      showUniversalAlert("Passwords differ", "The two passwords are not the same. Please type them again.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const cleanId = empId.trim().toUpperCase();
+      const client = await getClientInfo(cleanId);
+      const res = await fetch(`${API_BASE_URL}/otp-set-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          empId: cleanId,
+          otp: fullOtp,
+          newPassword,
+          deviceId: client.deviceId,
+          deviceModel: client.deviceModel,
+          platform: client.platform,
+        }),
+      });
+      const data = await readServerJson(res);
+      if (data.success && data.user) {
+        await handleSuccessfulAuthentication(data.user, data.token);
+        return;
+      }
+      showUniversalAlert("Could not set the password", data.message || "Please try again.");
+      setOtp(["", "", "", "", "", ""]);
+      if (isLockMessage(data.message)) {
+        setStatus("ACCOUNT_LOCKED");
+        setServerNotice(data.message);
+        setActiveDevOtp(null);
+      }
+    } catch {
+      showUniversalAlert("No connection", `${OFFLINE_MESSAGE} Nothing was saved - try again.`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // new device: the OTP after the correct password
+  const handleVerifyDeviceOtp = async () => {
+    const fullOtp = otp.join("");
+    if (fullOtp.length !== 6) {
+      showUniversalAlert("Incomplete Code", "Please enter all 6 digits.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const cleanId = empId.trim().toUpperCase();
+      const client = await getClientInfo(cleanId);
+      const res = await fetch(`${API_BASE_URL}/password-otp-verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          empId: cleanId,
+          otp: fullOtp,
+          deviceId: client.deviceId,
+          deviceModel: client.deviceModel,
+          platform: client.platform,
+        }),
+      });
+      const data = await readServerJson(res);
+      if (data.success && data.user) {
+        await handleSuccessfulAuthentication(data.user, data.token);
+        return;
+      }
+      setOtp(["", "", "", "", "", ""]);
+      if (data.message && /password again/i.test(data.message)) {
+        // too much time since the password: start again from the password
+        setOtpSent(false);
+        setOtpPurpose("LEGACY");
+        setActiveDevOtp(null);
+        setPassword("");
+      }
+      if (isLockMessage(data.message)) {
+        setStatus("ACCOUNT_LOCKED");
+        setServerNotice(data.message);
+        setActiveDevOtp(null);
+      }
+      showUniversalAlert("Invalid OTP", data.message || "OTP is wrong. Enter the correct OTP.");
+    } catch {
+      showUniversalAlert("No connection", `${OFFLINE_MESSAGE} Your OTP was not checked - try again.`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const backToId = () => {
+    setOtpSent(false);
+    setStatus("NO_RECORD");
+    setActiveDevOtp(null);
+    resetPasswordFields();
+  };
+
   const handleOtpChange = (value: string, index: number) => {
     const clean = value.replace(/[^0-9]/g, "");
     const updatedOtp = [...otp];
@@ -527,6 +780,17 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     }
     if (status === "ALREADY_VERIFIED") {
       handleDirectLogin();
+      return;
+    }
+    if (pwFlow) {
+      if (!statusReady && !otpSent) return; // still checking the typed Employee ID
+      if (otpSent) {
+        if (otpPurpose === "DEVICE") handleVerifyDeviceOtp();
+        else handleSetPassword();
+        return;
+      }
+      if (pwSet) handlePasswordLogin();
+      else handleRequestOtp("SET");
       return;
     }
     if (otpSent || status === "OTP_PENDING") {
@@ -588,12 +852,25 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
             >
               <View className="bg-brand-card border border-brand-border rounded-3xl p-8 md:p-10 shadow-sm">
                 <Text className="text-2xl font-black text-brand-dark tracking-tight mb-1">
-                  {otpSent || status === "OTP_PENDING"
+                  {pwFlow && otpSent
+                    ? otpPurpose === "DEVICE"
+                      ? "Verify New Device"
+                      : "Set Your Password"
+                    : otpSent || status === "OTP_PENDING"
                     ? "Verify Security OTP"
                     : "Sign In to Workspace"}
                 </Text>
  <Text className="text-sm font-semibold text-brand-muted mb-6">
-                  {otpSent || status === "OTP_PENDING"
+                  {pwFlow && otpSent
+                    ? otpPurpose === "DEVICE"
+                      ? `Enter the 6-digit OTP for ${empId.toUpperCase()}`
+                      : `Enter the OTP for ${empId.toUpperCase()} and choose a password (at least ${minPwLen} characters)`
+                    : pwFlow && statusReady && !offline && status !== "ALREADY_VERIFIED"
+                        && status !== "ACCOUNT_INACTIVE" && status !== "ACCOUNT_LOCKED"
+                    ? pwSet
+                      ? "Enter your Employee ID and password"
+                      : "First login • Verify with OTP and set your password"
+                    : otpSent || status === "OTP_PENDING"
                     ? `Enter 6-digit code for ${empId.toUpperCase()}`
                     : offline
                       ? "No connection • Signing you in automatically when you're back online"
@@ -636,7 +913,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                       </View>
                     </View>
                     <View className="bg-amber-200 px-2.5 py-1 rounded-lg">
-                      <Text className="text-[10px] font-bold text-amber-900">Valid 5m</Text>
+                      <Text className="text-[10px] font-bold text-amber-900">Valid {otpValidMin}m</Text>
                     </View>
                   </View>
                 )}
@@ -660,7 +937,35 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                   </View>
                 )}
 
-                {status === "NO_RECORD" && !otpSent && !offline && (
+                {/* Password login: the password field (the ID is already recognised and has a password) */}
+                {pwFlow && statusReady && pwSet && !otpSent && !offline && status !== "ALREADY_VERIFIED"
+                  && status !== "ACCOUNT_INACTIVE" && status !== "ACCOUNT_LOCKED" && (
+                  <View className="mb-6">
+                    <Text className="text-xs font-black text-brand-dark uppercase tracking-wider mb-2">Password</Text>
+                    <View className="flex-row items-center bg-brand-cardTint border border-brand-border rounded-2xl px-4 py-3.5">
+                      <Lock size={20} color="#5C4D41" />
+                      <TextInput
+                        value={password}
+                        onChangeText={setPassword}
+                        placeholder="Your password"
+                        placeholderTextColor="#8C7A6B"
+                        secureTextEntry={!showPw}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        onSubmitEditing={handleSubmit}
+                        className="flex-1 ml-3 text-sm font-bold text-brand-dark"
+                      />
+                      <TouchableOpacity onPress={() => setShowPw(!showPw)} className="pl-2">
+                        {showPw ? <EyeOff size={18} color="#5C4D41" /> : <Eye size={18} color="#5C4D41" />}
+                      </TouchableOpacity>
+                    </View>
+                    <TouchableOpacity onPress={() => handleRequestOtp("SET")} disabled={loading} className="self-end mt-2.5 py-1">
+                      <Text className="text-xs font-extrabold text-brand-primary underline">Forgot password?</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {!pwFlow && status === "NO_RECORD" && !otpSent && !offline && (
                   <TouchableOpacity
                     onPress={() => setIsFirstTime(!isFirstTime)}
                     className="flex-row items-center mb-7 py-1"
@@ -704,13 +1009,42 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                       ))}
                     </View>
 
+                    {/* First login / forgot password: the new password under the OTP */}
+                    {pwFlow && otpPurpose === "SET" && (
+                      <View className="mb-5 gap-3">
+                        {[
+                          { label: "New password", value: newPassword, set: setNewPassword, ph: `At least ${minPwLen} characters` },
+                          { label: "Type it again", value: confirmPassword, set: setConfirmPassword, ph: "Same password again" },
+                        ].map((f) => (
+                          <View key={f.label}>
+                            <Text className="text-xs font-black text-brand-dark uppercase tracking-wider mb-2">{f.label}</Text>
+                            <View className="flex-row items-center bg-brand-cardTint border border-brand-border rounded-2xl px-4 py-3.5">
+                              <Lock size={18} color="#5C4D41" />
+                              <TextInput
+                                value={f.value}
+                                onChangeText={f.set}
+                                placeholder={f.ph}
+                                placeholderTextColor="#8C7A6B"
+                                secureTextEntry={!showPw}
+                                autoCapitalize="none"
+                                autoCorrect={false}
+                                className="flex-1 ml-3 text-sm font-bold text-brand-dark"
+                              />
+                              <TouchableOpacity onPress={() => setShowPw(!showPw)} className="pl-2">
+                                {showPw ? <EyeOff size={18} color="#5C4D41" /> : <Eye size={18} color="#5C4D41" />}
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        ))}
+                        {!!confirmPassword && confirmPassword !== newPassword && (
+                          <Text className="text-[11px] font-bold text-red-600">The two passwords are not the same.</Text>
+                        )}
+                      </View>
+                    )}
+
                     <View className="flex-row items-center justify-between">
                       <TouchableOpacity
-                        onPress={() => {
-                          setOtpSent(false);
-                          setStatus("NO_RECORD");
-                          setActiveDevOtp(null);
-                        }}
+                        onPress={backToId}
                         className="flex-row items-center py-1"
                       >
                         <KeyRound size={15} color="#5C4D41" />
@@ -719,7 +1053,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                         </Text>
                       </TouchableOpacity>
                       <TouchableOpacity
-                        onPress={handleRequestOtp}
+                        onPress={() => handleRequestOtp()}
                         className="flex-row items-center py-1"
                       >
                         <RefreshCw size={15} color="#0D9488" />
@@ -750,6 +1084,12 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                           ? "ACCOUNT LOCKED (24 HRS)"
                           : status === "ALREADY_VERIFIED"
                             ? "SIGN IN"
+                            : pwFlow && otpSent
+                              ? otpPurpose === "DEVICE" ? "VERIFY & SIGN IN" : "SET PASSWORD & SIGN IN"
+                            : pwFlow && !statusReady
+                              ? "ENTER YOUR EMPLOYEE ID"
+                            : pwFlow
+                              ? pwSet ? "SIGN IN" : "SEND OTP"
                             : otpSent || status === "OTP_PENDING"
                               ? "AUTHENTICATE SESSION"
                               : status === "NEW_DEVICE"

@@ -87,6 +87,8 @@ const STAY_RADIUS_M = 100; // consecutive points within this are one "stay"
 const STOP_MIN_MINUTES = 5; // a stay at least this long counts as a stop (shorter ones are just passing by)
 const APPROX_STAY_RADIUS_M = 600; // approximate (coarse) fixes are grouped more loosely
 const MAX_ROUTE_WAYPOINTS = 8;
+const PAGE_SIZE = 50; // rows per page in every list
+const MAX_RANGE_DAYS = 31; // From - To filter (the server allows the same)
 // Turn on only after the events_json column, the /trace-events endpoint and tracking.events-enabled=true are live.
 // While false, no request is sent to /trace-events and gaps are worked out from the pings instead.
 const USE_SERVER_EVENTS = false;
@@ -109,7 +111,52 @@ interface StaffRow {
   batteryPercentage?: number | null;
   latestLatitude?: number | null;
   latestLongitude?: number | null;
+  // tracking health (newer backend): last point quality / remarks, check-in / out, what the phone reported
+  activeWorkMode?: string | null;
+  lastQuality?: string | null;
+  lastRemarks?: string | null;
+  lastTs?: string | null;
+  punchInHm?: string | null;
+  punchOutHm?: string | null;
+  clientCode?: string | null;
+  clientMessage?: string | null;
+  clientAt?: string | null;
 }
+
+// What the admin sees per employee: a badge and the reason in words
+interface TrackStatus {
+  key: "OK" | "DELAYED" | "STOPPED" | "NEVER" | "WEAK" | "NOFIX" | "OUT" | "IOS" | "NODATA" | "HISTORY";
+  label: string;
+  tone: "green" | "amber" | "red" | "slate";
+  dot: string;
+  reason?: string | null;
+  phone?: string | null; // what the phone itself reported (permission refused, GPS off, restarted ...)
+}
+
+// Everyone over a date range: one row per employee per day
+interface RangeStaffRow extends StaffRow {
+  traceDate: string;
+  punchInTime?: string | null;
+}
+
+// One employee over a date range: a stored GPS point plus its day
+interface RangePoint {
+  date: string;
+  time: string;
+  ts?: string;
+  latitude: number | null;
+  longitude: number | null;
+  accuracyMeters?: number | null;
+  batteryPercentage?: number | null;
+  locationName?: string;
+  quality?: "GOOD" | "LOW" | "STALE";
+  remarks?: string;
+  source?: string;
+}
+
+type RangeData =
+  | { kind: "staff"; total: number; items: RangeStaffRow[] }
+  | { kind: "points"; total: number; items: RangePoint[] };
 
 interface DirectoryUser {
   empId: string;
@@ -206,6 +253,19 @@ const parseYmd = (s?: string): Date | null => {
 };
 const fmtDateLong = (d: Date) =>
   d.toLocaleDateString("en-IN", { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
+const fmtDateShort = (d: Date) => d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+const addDays = (d: Date, n: number) => {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() + n);
+  return x;
+};
+// whole days from a to b (b - a), ignoring the time of day
+const daysBetween = (a: Date, b: Date) =>
+  Math.round(
+    (new Date(b.getFullYear(), b.getMonth(), b.getDate()).getTime() -
+      new Date(a.getFullYear(), a.getMonth(), a.getDate()).getTime()) /
+      86400000
+  );
 
 const distM = (lat1: number, lon1: number, lat2: number, lon2: number) => {
   const R = 6371000;
@@ -541,6 +601,65 @@ const MiniStat = ({
   </View>
 );
 
+// The reason under a tracking badge, and what the phone itself reported (if anything)
+const StatusLines = ({ status, big }: { status: TrackStatus; big?: boolean }) => {
+  if (!status.reason && !status.phone) return null;
+  const color =
+    status.tone === "red" ? "text-rose-700" : status.tone === "amber" ? "text-amber-700" : status.tone === "green" ? "text-emerald-700" : "text-[#7A76A6]";
+  const size = big ? "text-[12px]" : "text-[10px]";
+  return (
+    <View className="mt-1">
+      {status.reason ? (
+        <Text className={`${size} font-bold ${color}`} numberOfLines={2}>
+          {status.reason}
+        </Text>
+      ) : null}
+      {status.phone ? (
+        <View className="flex-row items-start mt-0.5">
+          <Smartphone size={big ? 12 : 10} color="#B45309" style={{ marginTop: 2 }} />
+          <Text className={`${size} font-semibold text-amber-700 ml-1 flex-1`} numberOfLines={2}>
+            Phone: {status.phone}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+};
+
+// "Showing 51–100 of 230" + Prev / Next (50 rows per page)
+const Pager = ({ page, total, onChange }: { page: number; total: number; onChange: (p: number) => void }) => {
+  if (total <= 0) return null;
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const first = (page - 1) * PAGE_SIZE + 1;
+  const last = Math.min(total, page * PAGE_SIZE);
+  const btn = (label: string, to: number, disabled: boolean, Icon: any, iconFirst: boolean) => (
+    <TouchableOpacity
+      onPress={() => !disabled && onChange(to)}
+      disabled={disabled}
+      style={{ opacity: disabled ? 0.35 : 1 }}
+      className="h-9 px-3 rounded-xl bg-white border border-[#E7E4F5] flex-row items-center active:bg-[#EEECFA]"
+    >
+      {iconFirst ? <Icon size={14} color="#5B4FD1" /> : null}
+      <Text className="text-[11px] font-black text-[#5B4FD1] mx-1">{label}</Text>
+      {!iconFirst ? <Icon size={14} color="#5B4FD1" /> : null}
+    </TouchableOpacity>
+  );
+  return (
+    <View className="flex-row items-center justify-between mt-2 mb-1 px-1">
+      <Text className="text-[11px] font-bold text-[#7A76A6]">
+        Showing {first}–{last} of {total}
+        {pages > 1 ? `  ·  Page ${page} of ${pages}` : ""}
+      </Text>
+      {pages > 1 ? (
+        <View className="flex-row" style={{ gap: 6 }}>
+          {btn("Prev", page - 1, page <= 1, ChevronLeft, true)}
+          {btn("Next", page + 1, page >= pages, ChevronRight, false)}
+        </View>
+      ) : null}
+    </View>
+  );
+};
+
 const EmptyState = ({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) => (
   <View className="items-center justify-center px-8 py-14">
     <View className="w-16 h-16 rounded-full bg-[#EEECFA] items-center justify-center">{icon}</View>
@@ -557,10 +676,24 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
   const isFocused = useIsFocused();
   const mapRef = useRef<any>(null);
 
+  // Date filter: From (selectedDate) - To. Opens on today (From = To = today).
+  // From = To -> the one-day view (timeline, map, live actions). From < To -> range lists, 50 per page.
   const [selectedDate, setSelectedDate] = useState<Date>(() => parseYmd(route?.params?.date) ?? new Date());
-  const [showIosPicker, setShowIosPicker] = useState(false);
+  const [toDate, setToDate] = useState<Date>(() => parseYmd(route?.params?.date) ?? new Date());
+  const [pickerFor, setPickerFor] = useState<null | "from" | "to">(null); // iPhone inline picker
   const dateStr = toYmd(selectedDate);
-  const isToday = dateStr === toYmd(new Date());
+  const toStr = toYmd(toDate);
+  const isRange = toStr !== dateStr;
+  const isToday = !isRange && dateStr === toYmd(new Date());
+  // "Open day" from a range remembers the range, so the admin can go back to it
+  const [prevRange, setPrevRange] = useState<{ from: Date; to: Date } | null>(null);
+
+  // Page of the list on screen (everyone, one person's day, or a range list)
+  const [page, setPage] = useState(1);
+  const [rangeData, setRangeData] = useState<RangeData | null>(null);
+  const [rangeLoading, setRangeLoading] = useState(false);
+  const [rangeError, setRangeError] = useState<string | null>(null);
+  const rangeReq = useRef(0);
 
   const [directory, setDirectory] = useState<DirectoryUser[]>([]);
   const [staff, setStaff] = useState<StaffRow[]>([]);
@@ -614,8 +747,13 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
           rows = d
             // an old backend ignores ?date= and returns today's staff: never show them under another date
             .filter((r: any) => r.traceDate == null || r.traceDate === ymd)
-            // hide staff with no GPS data (old backend sends no pointCount, so nothing is listed)
-            .filter((r: any) => (r.pointCount ?? 0) > 0)
+            // staff with GPS data, plus checked-in sales staff with none (shown as "Never started" with the reason)
+            .filter(
+              (r: any) =>
+                (r.pointCount ?? 0) > 0 ||
+                String(r.activeWorkMode || "").toUpperCase() === "SALES" ||
+                !!r.clientCode
+            )
             .map((r: any) => ({ ...r, lastTime: r.lastPingTime }));
         }
       }
@@ -778,6 +916,52 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
     }
   };
 
+  // Date range lists come from the server one page (50 rows) at a time
+  const loadRange = async (empId: string | null, from: string, to: string, pageNo: number, silent: boolean) => {
+    const my = ++rangeReq.current;
+    if (!silent) setRangeLoading(true);
+    try {
+      const qs = `from=${from}&to=${to}&page=${pageNo}&size=${PAGE_SIZE}`;
+      const url = empId
+        ? `${API_ATTENDANCE}/traces-range?empId=${encodeURIComponent(empId)}&${qs}`
+        : `${API_ATTENDANCE}/active-fleet?${qs}`;
+      const res = await fetch(url, { cache: "no-store" });
+      if (my !== rangeReq.current) return;
+      if (res.status === 404) {
+        setRangeError("The server does not support date ranges yet. Update the backend, or pick a single day.");
+        setRangeData(null);
+        return;
+      }
+      if (!res.ok) {
+        setRangeError(res.status === 400 ? `Pick a range of at most ${MAX_RANGE_DAYS} days.` : "Could not load this range. Pull to refresh.");
+        setRangeData(null);
+        return;
+      }
+      const d = await res.json();
+      if (my !== rangeReq.current) return;
+      // an old backend ignores from/to and returns one day as a plain list
+      if (Array.isArray(d) || !Array.isArray(d?.items)) {
+        setRangeError("The server does not support date ranges yet. Update the backend, or pick a single day.");
+        setRangeData(null);
+        return;
+      }
+      setRangeError(null);
+      setRangeData(
+        empId
+          ? { kind: "points", total: Number(d.total) || 0, items: d.items }
+          : {
+              kind: "staff",
+              total: Number(d.total) || 0,
+              items: d.items.map((r: any) => ({ ...r, lastTime: r.lastPingTime })),
+            }
+      );
+    } catch (e) {
+      if (my === rangeReq.current) setRangeError("Can't reach the server. Check your internet connection.");
+    } finally {
+      if (my === rangeReq.current) setRangeLoading(false);
+    }
+  };
+
   // Directory for search suggestions (all employees, not only those with data)
   useEffect(() => {
     (async () => {
@@ -804,8 +988,23 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
 
   useEffect(() => {
     dateRef.current = dateStr;
-    loadStaff(dateStr);
-  }, [dateStr]);
+    if (!isRange) loadStaff(dateStr);
+  }, [dateStr, isRange]);
+
+  // Back to page 1 whenever the filter changes
+  useEffect(() => {
+    setPage(1);
+  }, [dateStr, toStr, selected?.empId, viewMode, deptFilter]);
+
+  // Date range: load the page on screen (one employee if chosen, otherwise everyone)
+  useEffect(() => {
+    if (!isRange) {
+      setRangeData(null);
+      setRangeError(null);
+      return;
+    }
+    loadRange(selected?.empId ?? null, dateStr, toStr, page, false);
+  }, [isRange, selected?.empId, dateStr, toStr, page]);
 
   useEffect(() => {
     setPing({ phase: "idle" });
@@ -817,8 +1016,8 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
     dateRef.current = dateStr;
     setPoints([]);
     setEvents([]);
-    if (selected) loadDay(selected.empId, dateStr, false);
-  }, [selected?.empId, dateStr]);
+    if (selected && !isRange) loadDay(selected.empId, dateStr, false);
+  }, [selected?.empId, dateStr, isRange]);
 
   // Auto-refresh only for today, while this screen is visible and the app is active
   useEffect(() => {
@@ -834,34 +1033,84 @@ export default function LiveTrackingScreen({ navigation, route }: any) {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([
-      loadStaff(dateStr),
-      selected ? loadDay(selected.empId, dateStr, true) : Promise.resolve(),
-    ]);
+    if (isRange) {
+      await loadRange(selected?.empId ?? null, dateStr, toStr, page, true);
+    } else {
+      await Promise.all([
+        loadStaff(dateStr),
+        selected ? loadDay(selected.empId, dateStr, true) : Promise.resolve(),
+      ]);
+    }
     setRefreshing(false);
   };
 
   // ----------------------------- date controls -----------------------------
-  const shiftDay = (delta: number) => {
-    const d = new Date(selectedDate);
-    d.setDate(d.getDate() + delta);
-    if (toYmd(d) > toYmd(new Date())) return; // no future dates
-    setSelectedDate(d);
+  // No future dates; To never before From; at most 31 days (the other end moves to fit)
+  const capToday = (d: Date) => (toYmd(d) > toYmd(new Date()) ? new Date() : d);
+  const setDay = (d: Date) => {
+    const x = capToday(d);
+    setSelectedDate(x);
+    setToDate(x);
+  };
+  const setFrom = (d: Date) => {
+    const f = capToday(d);
+    let t = toDate;
+    if (toYmd(f) > toYmd(t)) t = f;
+    if (daysBetween(f, t) >= MAX_RANGE_DAYS) t = addDays(f, MAX_RANGE_DAYS - 1);
+    setPrevRange(null);
+    setSelectedDate(f);
+    setToDate(capToday(t));
+  };
+  const setTo = (d: Date) => {
+    const t = capToday(d);
+    let f = selectedDate;
+    if (toYmd(t) < toYmd(f)) f = t;
+    if (daysBetween(f, t) >= MAX_RANGE_DAYS) f = addDays(t, -(MAX_RANGE_DAYS - 1));
+    setPrevRange(null);
+    setSelectedDate(f);
+    setToDate(t);
+  };
+  const setQuickRange = (days: number) => {
+    const today = new Date();
+    setPrevRange(null);
+    setSelectedDate(addDays(today, -(days - 1)));
+    setToDate(today);
+  };
+  // From a range list: open one day (timeline + map), remembering the range
+  const openDay = (ymd: string) => {
+    const d = parseYmd(ymd);
+    if (!d) return;
+    setPrevRange({ from: selectedDate, to: toDate });
+    setDay(d);
+  };
+  const backToRange = () => {
+    if (!prevRange) return;
+    setSelectedDate(prevRange.from);
+    setToDate(prevRange.to);
+    setPrevRange(null);
   };
 
-  const openDatePicker = () => {
+  // One-day view: step a day back / forward
+  const shiftDay = (delta: number) => {
+    const d = addDays(selectedDate, delta);
+    if (toYmd(d) > toYmd(new Date())) return; // no future dates
+    setPrevRange(null);
+    setDay(d);
+  };
+
+  const openDatePicker = (which: "from" | "to") => {
     if (Platform.OS === "android") {
-DateTimePickerAndroid.open({
-  value: selectedDate,
-  mode: "date",
-  maximumDate: new Date(),
-  onValueChange: (_event: any, d?: Date) => {
-    if (d) setSelectedDate(d);
-  },
-  onDismiss: () => {},
-});
+      DateTimePickerAndroid.open({
+        value: which === "from" ? selectedDate : toDate,
+        mode: "date",
+        maximumDate: new Date(),
+        onValueChange: (_event: any, d?: Date) => {
+          if (d) (which === "from" ? setFrom : setTo)(d);
+        },
+        onDismiss: () => {},
+      });
     } else if (Platform.OS === "ios") {
-      setShowIosPicker(true);
+      setPickerFor(which);
     }
   };
 
@@ -1084,23 +1333,106 @@ DateTimePickerAndroid.open({
     return { label: "No signal", dot: "bg-rose-500", tone: "red" as const };
   };
 
-  const kpi = useMemo(() => {
-    let active = 0;
-    let idle = 0;
-    let off = 0;
-    shownStaff.forEach((s) => {
-      const m = minutesSinceHHmm(s.lastTime);
-      if (m == null) return;
-      if (m <= 90) active += 1;
-      else if (m <= 180) idle += 1;
-      else off += 1;
-    });
-    return { active, idle, off };
-  }, [shownStaff]);
+  // Tracking health of one employee today. Expected rhythm: a point every ~2 min when moving,
+  // at least one every 10 min when standing still. The phone's own report (if any) explains the cause.
+  const trackingStatus = (s: StaffRow): TrackStatus => {
+    const phoneProblem =
+      s.clientCode && s.clientCode !== "STARTED" && s.clientMessage
+        ? `${s.clientMessage}${s.clientAt && !s.clientMessage.includes(s.clientAt) ? ` · reported ${s.clientAt}` : ""}`
+        : null;
+    if (!isToday) {
+      return {
+        key: "HISTORY",
+        label: "History",
+        tone: "slate",
+        dot: "bg-slate-300",
+        reason: s.punchOutHm ? `Checked out ${s.punchOutHm}` : null,
+        phone: phoneProblem,
+      };
+    }
+    if (s.punchOutHm) {
+      return { key: "OUT", label: "Checked out", tone: "slate", dot: "bg-slate-300", reason: `Checked out ${s.punchOutHm} · tracking ended` };
+    }
+    if (s.clientCode === "IOS_NOT_SUPPORTED") {
+      return {
+        key: "IOS",
+        label: "iPhone",
+        tone: "slate",
+        dot: "bg-slate-300",
+        reason: "Not tracked on iPhone – only check-in and check-out locations are saved",
+      };
+    }
+    const tsMs = s.lastTs ? Date.parse(s.lastTs) : NaN;
+    const mins = !isNaN(tsMs) ? Math.max(0, Math.round((Date.now() - tsMs) / 60000)) : minutesSinceHHmm(s.lastTime);
+    const sinceIn = minutesSinceHHmm(s.punchInHm);
+    if ((s.pointCount ?? 0) <= 1 && (sinceIn == null || sinceIn >= 15)) {
+      return {
+        key: "NEVER",
+        label: "Never started",
+        tone: "red",
+        dot: "bg-rose-500",
+        reason: phoneProblem ?? "Only the check-in point – tracking did not start on the phone",
+      };
+    }
+    if (mins == null) return { key: "NODATA", label: "No data", tone: "slate", dot: "bg-slate-300", phone: phoneProblem };
+    if (mins > 30) {
+      return {
+        key: "STOPPED",
+        label: "Tracking stopped",
+        tone: "red",
+        dot: "bg-rose-500",
+        reason: `Stopped at ${s.lastTime ?? "--:--"} · no point for ${fmtDuration(mins)}`,
+        phone: phoneProblem,
+      };
+    }
+    if (mins > 15) {
+      return {
+        key: "DELAYED",
+        label: "Delayed",
+        tone: "amber",
+        dot: "bg-amber-400",
+        reason: `No point for ${mins} min (expected every 10 min)`,
+        phone: phoneProblem,
+      };
+    }
+    if (s.lastQuality === "STALE") {
+      return { key: "NOFIX", label: "Location unavailable", tone: "amber", dot: "bg-amber-400", reason: s.lastRemarks || "No GPS fix", phone: phoneProblem };
+    }
+    if (s.lastQuality === "LOW") {
+      return { key: "WEAK", label: "GPS weak", tone: "amber", dot: "bg-amber-400", reason: s.lastRemarks || "Weak GPS signal", phone: phoneProblem };
+    }
+    return {
+      key: "OK",
+      label: "Tracking OK",
+      tone: "green",
+      dot: "bg-emerald-500",
+      reason: mins <= 1 ? "Last point just now" : `Last point ${mins} min ago`,
+      phone: phoneProblem,
+    };
+  };
 
-  const selectedFresh = freshInfo(
-    (selected && staffMap.get(selected.empId)?.lastTime) || (summary.last !== "--:--" ? summary.last : null)
-  );
+  const kpi = useMemo(() => {
+    let ok = 0;
+    let delayed = 0;
+    let stopped = 0;
+    shownStaff.forEach((s) => {
+      const k = trackingStatus(s).key;
+      if (k === "OK") ok += 1;
+      else if (k === "DELAYED" || k === "WEAK" || k === "NOFIX") delayed += 1;
+      else if (k === "STOPPED" || k === "NEVER") stopped += 1;
+    });
+    return { ok, delayed, stopped };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownStaff, isToday]);
+
+  const selectedRow = selected ? staffMap.get(selected.empId) : undefined;
+  const selectedFresh: TrackStatus =
+    selectedRow && !isRange
+      ? trackingStatus(selectedRow)
+      : {
+          key: "HISTORY",
+          ...freshInfo(summary.last !== "--:--" ? summary.last : null),
+        };
 
   // ----- map -----
   const renderMapPanel = () => (
@@ -1368,6 +1700,12 @@ DateTimePickerAndroid.open({
 
     const pingCount = flatItems.filter((i) => i.kind === "ping").length;
 
+    // 50 rows per page; "last" still means the last row of the whole day (LATEST tag, rail line)
+    const offset = (page - 1) * PAGE_SIZE;
+    const rows = viewMode === "grouped" ? timeline : flatItems;
+    const pageTimeline = timeline.slice(offset, offset + PAGE_SIZE);
+    const pageFlat = flatItems.slice(offset, offset + PAGE_SIZE);
+
     return (
       <View className="px-4 web:lg:px-8 pt-3">
         <View className="flex-row self-start mb-3 bg-white border border-[#E7E4F5] rounded-full p-1">
@@ -1387,9 +1725,11 @@ DateTimePickerAndroid.open({
           })}
         </View>
 
+        <Pager page={page} total={rows.length} onChange={setPage} />
+
         {viewMode === "grouped"
-          ? timeline.map((item, i) => {
-              const last = i === timeline.length - 1;
+          ? pageTimeline.map((item, i) => {
+              const last = offset + i === timeline.length - 1;
               if (item.kind === "event") {
                 return rail(item.key, eventDot(item.status), eventRing(item.status), last, eventCard(item));
               }
@@ -1409,8 +1749,8 @@ DateTimePickerAndroid.open({
                 )
               );
             })
-          : flatItems.map((item, i) => {
-              const last = i === flatItems.length - 1;
+          : pageFlat.map((item, i) => {
+              const last = offset + i === flatItems.length - 1;
               return item.kind === "ping"
                 ? rail(
                     item.key,
@@ -1423,6 +1763,8 @@ DateTimePickerAndroid.open({
                   )
                 : rail(item.key, eventDot(item.status), eventRing(item.status), last, eventCard(item));
             })}
+
+        {rows.length > PAGE_SIZE ? <Pager page={page} total={rows.length} onChange={setPage} /> : null}
       </View>
     );
   };
@@ -1454,9 +1796,9 @@ DateTimePickerAndroid.open({
           {isToday && (
             <View className="flex-row items-center">
               {[
-                ["bg-emerald-500", "Active"],
-                ["bg-amber-400", "Idle"],
-                ["bg-rose-500", "No signal"],
+                ["bg-emerald-500", "OK"],
+                ["bg-amber-400", "Delayed"],
+                ["bg-rose-500", "Stopped"],
               ].map(([c, l]) => (
                 <View key={l} className="flex-row items-center ml-3">
                   <View className={`w-2 h-2 rounded-full mr-1 ${c}`} />
@@ -1467,8 +1809,10 @@ DateTimePickerAndroid.open({
           )}
         </View>
 
-        {shownStaff.map((s) => {
-          const f = freshInfo(s.lastTime);
+        <Pager page={page} total={shownStaff.length} onChange={setPage} />
+
+        {shownStaff.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((s) => {
+          const f = trackingStatus(s);
           return (
             <TouchableOpacity
               key={s.empId}
@@ -1504,6 +1848,7 @@ DateTimePickerAndroid.open({
                       </>
                     ) : null}
                   </View>
+                  <StatusLines status={f} />
                 </View>
                 <View className="items-end mr-1">
                   <Pill text={f.label} tone={f.tone} />
@@ -1516,6 +1861,173 @@ DateTimePickerAndroid.open({
             </TouchableOpacity>
           );
         })}
+
+        {shownStaff.length > PAGE_SIZE ? <Pager page={page} total={shownStaff.length} onChange={setPage} /> : null}
+      </View>
+    );
+  };
+
+  // ----- date range: everyone (one row per employee per day) -----
+  const rangeLabel = `${fmtDateShort(selectedDate)} – ${fmtDateShort(toDate)}`;
+
+  const renderRangeState = () => {
+    if (rangeError) {
+      return (
+        <EmptyState icon={<AlertTriangle size={30} color="#D97706" />} title="Could not show this range" text={rangeError} />
+      );
+    }
+    if (rangeLoading && !rangeData) {
+      return (
+        <View className="items-center justify-center py-16">
+          <ActivityIndicator size="large" color="#5B4FD1" />
+          <Text className="text-xs font-bold text-[#7A76A6] mt-3">Loading {rangeLabel}...</Text>
+        </View>
+      );
+    }
+    return null;
+  };
+
+  const renderRangeOverviewBody = () => {
+    const state = renderRangeState();
+    if (state) return state;
+    const data = rangeData?.kind === "staff" ? rangeData : null;
+    if (!data || data.total === 0) {
+      return (
+        <EmptyState
+          icon={<MapPinOff size={30} color="#7A76A6" />}
+          title={`No location data for ${rangeLabel}`}
+          text="Field staff are tracked only while checked in. Pick other dates."
+        />
+      );
+    }
+    return (
+      <View className="px-4 web:lg:px-8 pt-4">
+        <Text className="text-sm font-black text-[#1F1B3D] mb-1 px-1">
+          Field staff by day <Text className="text-[#7A76A6]">· {rangeLabel}</Text>
+        </Text>
+        <Pager page={page} total={data.total} onChange={setPage} />
+        {data.items.map((s) => (
+          <TouchableOpacity
+            key={`${s.empId}-${s.traceDate}`}
+            onPress={() => selectEmployee(s.empId, s.userName)}
+            activeOpacity={0.85}
+            className="mb-2.5"
+          >
+            <Card className="p-3.5 flex-row items-center">
+              <Avatar name={s.userName} size={46} />
+              <View className="flex-1 ml-3 pr-2">
+                <Text className="text-[13px] font-black text-[#1F1B3D]" numberOfLines={1}>
+                  {s.userName}
+                </Text>
+                <Text className="text-[10px] font-bold text-[#7A76A6] mt-0.5" numberOfLines={1}>
+                  {s.empId}
+                  {s.department ? `  ·  ${s.department}` : ""}
+                  {phoneOf(s.empId) ? `  ·  ${phoneOf(s.empId)}` : ""}
+                </Text>
+                <View className="flex-row items-center mt-1.5">
+                  <Clock size={11} color="#7A76A6" />
+                  <Text className="text-[10px] font-bold text-[#7A76A6] ml-1">
+                    {s.firstTime ?? "--:--"} – {s.lastTime ?? "--:--"}
+                  </Text>
+                  {s.batteryPercentage != null && s.batteryPercentage > 0 ? (
+                    <>
+                      <Battery size={11} color="#7A76A6" style={{ marginLeft: 10 }} />
+                      <Text className="text-[10px] font-bold text-[#7A76A6] ml-1">{s.batteryPercentage}%</Text>
+                    </>
+                  ) : null}
+                </View>
+              </View>
+              <View className="items-end mr-1">
+                <Pill text={fmtDateShort(parseYmd(s.traceDate) ?? new Date())} tone="purple" />
+                <Text className="text-[10px] font-black text-[#5B4FD1] mt-1.5">
+                  {s.pointCount != null ? `${s.pointCount} pts` : "—"}
+                </Text>
+              </View>
+              <ChevronRight size={16} color="#A6A2CE" />
+            </Card>
+          </TouchableOpacity>
+        ))}
+        {data.total > PAGE_SIZE ? <Pager page={page} total={data.total} onChange={setPage} /> : null}
+      </View>
+    );
+  };
+
+  // ----- date range: one employee (every location, newest first, grouped by day) -----
+  const renderRangePersonBody = () => {
+    const state = renderRangeState();
+    if (state) return state;
+    const data = rangeData?.kind === "points" ? rangeData : null;
+    if (!data || data.total === 0) {
+      return (
+        <EmptyState
+          icon={<MapPinOff size={30} color="#7A76A6" />}
+          title={`No location data for ${rangeLabel}`}
+          text={`${selectedName} has no recorded locations in this range. Field staff are tracked only while checked in.`}
+        />
+      );
+    }
+    let lastDate = "";
+    return (
+      <View className="px-4 web:lg:px-8 pt-3">
+        <Pager page={page} total={data.total} onChange={setPage} />
+        {data.items.map((p, i) => {
+          const header = p.date !== lastDate;
+          lastDate = p.date;
+          const hasPos = p.latitude != null && p.longitude != null && !isNaN(Number(p.latitude)) && !isNaN(Number(p.longitude));
+          const lat = Number(p.latitude);
+          const lng = Number(p.longitude);
+          const stale = p.quality === "STALE";
+          const approx = p.quality === "LOW" || stale;
+          const placeholder = p.accuracyMeters === 0 && p.batteryPercentage === 0;
+          const battery = placeholder ? null : p.batteryPercentage ?? null;
+          return (
+            <View key={`${p.date}-${i}-${p.ts ?? p.time}`}>
+              {header && (
+                <View className="flex-row items-center justify-between mt-3 mb-2 px-1">
+                  <Text className="text-[12px] font-black text-[#1F1B3D]">
+                    {fmtDateLong(parseYmd(p.date) ?? new Date())}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => openDay(p.date)}
+                    className="flex-row items-center px-3 py-1.5 rounded-xl bg-[#EEECFA] active:opacity-80"
+                  >
+                    <MapIcon size={12} color="#5B4FD1" />
+                    <Text className="text-[11px] font-black text-[#5B4FD1] ml-1.5">Open day</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              <View className="bg-white border border-[#E7E4F5] rounded-2xl p-3.5 mb-2 flex-row items-start" style={CARD}>
+                <View className="flex-1 pr-2">
+                  <View className="flex-row flex-wrap items-center gap-1.5">
+                    <Text className="text-xs font-black text-[#5B4FD1]">{p.time}</Text>
+                    {p.source === "PUNCH" ? <Pill text="Check-in / out" tone="purple" /> : null}
+                    {approx ? <Pill text={stale ? "Last known" : "Approximate"} tone="amber" /> : null}
+                  </View>
+                  <Text className="text-[12px] font-bold text-[#1F1B3D] mt-1" numberOfLines={2}>
+                    {p.locationName || (hasPos ? `${lat.toFixed(4)}, ${lng.toFixed(4)}` : "No position")}
+                  </Text>
+                  {hasPos ? (
+                    <Text className="text-[10px] font-semibold text-[#7A76A6] mt-0.5">
+                      Lat: {lat.toFixed(5)}, Lng: {lng.toFixed(5)}
+                      {p.accuracyMeters ? `  ·  ±${p.accuracyMeters}m` : ""}
+                      {battery != null ? `  ·  ${battery}% bat` : ""}
+                    </Text>
+                  ) : null}
+                  {p.remarks ? <Text className="text-[10px] font-semibold text-amber-700 mt-1">Remarks: {p.remarks}</Text> : null}
+                </View>
+                {hasPos ? (
+                  <TouchableOpacity
+                    onPress={() => openPin(lat, lng)}
+                    className="w-9 h-9 rounded-xl bg-[#EEECFA] items-center justify-center active:opacity-75"
+                  >
+                    <ExternalLink size={14} color="#5B4FD1" />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </View>
+          );
+        })}
+        {data.total > PAGE_SIZE ? <Pager page={page} total={data.total} onChange={setPage} /> : null}
       </View>
     );
   };
@@ -1711,7 +2223,7 @@ DateTimePickerAndroid.open({
   return (
     <SafeAreaView className="flex-1 bg-[#F6F5FC]" edges={["top"]}>
       {/* ------------------------------ Header ------------------------------ */}
-      {isWebDesktop ? <WebPageHeader title="Location Tracking" subtitle={isToday ? "Live · refreshes every minute" : `History · ${fmtDateLong(selectedDate)}`} onBack={() => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Home"))}><IconBtn label="Refresh" onPress={onRefresh}>{refreshing ? <ActivityIndicator size="small" color={ui.color.primary} /> : <RefreshCw size={16} color={ui.color.ink} />}</IconBtn></WebPageHeader> : null}
+      {isWebDesktop ? <WebPageHeader title="Location Tracking" subtitle={isToday ? "Live · refreshes every minute" : isRange ? `History · ${rangeLabel}` : `History · ${fmtDateLong(selectedDate)}`} onBack={() => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Home"))}><IconBtn label="Refresh" onPress={onRefresh}>{refreshing ? <ActivityIndicator size="small" color={ui.color.primary} /> : <RefreshCw size={16} color={ui.color.ink} />}</IconBtn></WebPageHeader> : null}
       {!isWebDesktop && (
       <View className="bg-[#5B4FD1]">
         <View style={CONTENT} className="px-5 web:lg:px-8 pt-3 web:lg:pt-5 pb-4 web:lg:pb-5">
@@ -1730,7 +2242,11 @@ DateTimePickerAndroid.open({
                 <View className="flex-row items-center mt-0.5">
                   <View className={`w-2 h-2 rounded-full mr-1.5 ${isToday ? "bg-emerald-400" : "bg-white/50"}`} />
                   <Text className="text-[11px] font-bold text-purple-100" numberOfLines={1}>
-                    {isToday ? "Live · refreshes every minute" : `History · ${fmtDateLong(selectedDate)}`}
+                    {isToday
+                      ? "Live · refreshes every minute"
+                      : isRange
+                      ? `History · ${rangeLabel}`
+                      : `History · ${fmtDateLong(selectedDate)}`}
                   </Text>
                 </View>
               </View>
@@ -1748,8 +2264,12 @@ DateTimePickerAndroid.open({
             <View className="flex-row gap-2.5 mt-4">
               {[
                 { label: "Tracked today", value: shownStaff.length, dot: "bg-white" },
-                { label: "Active now", value: kpi.active, dot: "bg-emerald-400" },
-                { label: "Idle / no signal", value: kpi.idle + kpi.off, dot: kpi.off ? "bg-rose-400" : "bg-amber-300" },
+                { label: "Tracking OK", value: kpi.ok, dot: "bg-emerald-400" },
+                {
+                  label: "Delayed / stopped",
+                  value: kpi.delayed + kpi.stopped,
+                  dot: kpi.stopped ? "bg-rose-400" : "bg-amber-300",
+                },
               ].map((k) => (
                 <View key={k.label} className="flex-1 web:lg:flex-none web:lg:w-56 bg-white/15 border border-white/20 rounded-2xl px-3 py-2.5">
                   <View className="flex-row items-center">
@@ -1780,8 +2300,8 @@ DateTimePickerAndroid.open({
             <View style={{ flexDirection: "row", gap: 12, paddingHorizontal: 32, marginTop: 20 }}>
               {[
                 { label: "Tracked today", value: shownStaff.length, dot: ui.color.primary },
-                { label: "Active now", value: kpi.active, dot: "#1FAE5C" },
-                { label: "Idle / no signal", value: kpi.idle + kpi.off, dot: kpi.off ? ui.color.danger : "#D08A0C" },
+                { label: "Tracking OK", value: kpi.ok, dot: "#1FAE5C" },
+                { label: "Delayed / stopped", value: kpi.delayed + kpi.stopped, dot: kpi.stopped ? ui.color.danger : "#D08A0C" },
               ].map((k) => (
                 <WebCard key={k.label} style={{ width: 220, padding: 14 }}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -1797,67 +2317,84 @@ DateTimePickerAndroid.open({
           <View className="px-4 web:lg:px-8 mt-3 web:lg:mt-5">
             <Card className="p-3">
               <View className="flex-row flex-wrap items-center" style={{ gap: 8 }}>
-                {/* Date: back, day, forward (and a jump back to today) */}
+                {/* Dates: From - To (one day = From and To the same). Arrows step a single day. */}
                 <View className="flex-row items-center">
-                  <TouchableOpacity
-                    onPress={() => shiftDay(-1)}
-                    className="w-8 h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] items-center justify-center active:bg-[#EEECFA]"
-                  >
-                    <ChevronLeft size={15} color="#1F1B3D" />
-                  </TouchableOpacity>
-
-                  {Platform.OS === "web" ? (
-                    <View className="mx-1.5 h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] flex-row items-center px-2.5">
-                      <CalendarDays size={14} color="#5B4FD1" />
-                      <input
-                        type="date"
-                        value={dateStr}
-                        max={toYmd(new Date())}
-                        onChange={(e) => {
-                          const d = parseYmd(e.target.value);
-                          if (d) setSelectedDate(d);
-                        }}
-                        style={{
-                          backgroundColor: "transparent",
-                          border: "none",
-                          outline: "none",
-                          fontFamily: "inherit",
-                          fontSize: 12,
-                          fontWeight: 800,
-                          color: "#1F1B3D",
-                          marginLeft: 6,
-                          width: 112,
-                          cursor: "pointer",
-                        }}
-                      />
-                      {isToday && <View className="w-2 h-2 rounded-full bg-emerald-500 ml-1" />}
-                    </View>
-                  ) : (
+                  {!isRange && (
                     <TouchableOpacity
-                      onPress={openDatePicker}
-                      activeOpacity={0.8}
-                      className="mx-1.5 h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] flex-row items-center px-2.5"
+                      onPress={() => shiftDay(-1)}
+                      className="w-8 h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] items-center justify-center active:bg-[#EEECFA] mr-1.5"
                     >
-                      <CalendarDays size={14} color="#5B4FD1" />
-                      <Text className="text-xs font-black text-[#1F1B3D] ml-1.5">
-                        {selectedDate.toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}
-                      </Text>
-                      {isToday && <View className="w-2 h-2 rounded-full bg-emerald-500 ml-1.5" />}
+                      <ChevronLeft size={15} color="#1F1B3D" />
                     </TouchableOpacity>
                   )}
 
-                  <TouchableOpacity
-                    onPress={() => shiftDay(1)}
-                    disabled={isToday}
-                    style={{ opacity: isToday ? 0.35 : 1 }}
-                    className="w-8 h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] items-center justify-center active:bg-[#EEECFA]"
-                  >
-                    <ChevronRight size={15} color="#1F1B3D" />
-                  </TouchableOpacity>
+                  {(["from", "to"] as const).map((which) => {
+                    const value = which === "from" ? selectedDate : toDate;
+                    const label = which === "from" ? "From" : "To";
+                    return (
+                      <React.Fragment key={which}>
+                        {which === "to" && <Text className="text-[11px] font-black text-[#7A76A6] mx-1">–</Text>}
+                        {Platform.OS === "web" ? (
+                          <View className="h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] justify-center px-2.5">
+                            <Text className="text-[8px] font-black text-[#7A76A6] uppercase tracking-wider">{label}</Text>
+                            <input
+                              type="date"
+                              aria-label={`${label} date`}
+                              value={toYmd(value)}
+                              max={toYmd(new Date())}
+                              onChange={(e) => {
+                                const d = parseYmd(e.target.value);
+                                if (d) (which === "from" ? setFrom : setTo)(d);
+                              }}
+                              style={{
+                                backgroundColor: "transparent",
+                                border: "none",
+                                outline: "none",
+                                fontFamily: "inherit",
+                                fontSize: 12,
+                                fontWeight: 800,
+                                color: "#1F1B3D",
+                                width: 112,
+                                cursor: "pointer",
+                                padding: 0,
+                              }}
+                            />
+                          </View>
+                        ) : (
+                          <TouchableOpacity
+                            onPress={() => openDatePicker(which)}
+                            activeOpacity={0.8}
+                            className="h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] justify-center px-2.5"
+                          >
+                            <Text className="text-[8px] font-black text-[#7A76A6] uppercase tracking-wider">{label}</Text>
+                            <View className="flex-row items-center">
+                              <CalendarDays size={12} color="#5B4FD1" />
+                              <Text className="text-xs font-black text-[#1F1B3D] ml-1">{fmtDateShort(value)}</Text>
+                            </View>
+                          </TouchableOpacity>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+
+                  {!isRange && (
+                    <TouchableOpacity
+                      onPress={() => shiftDay(1)}
+                      disabled={isToday}
+                      style={{ opacity: isToday ? 0.35 : 1 }}
+                      className="w-8 h-11 rounded-xl bg-[#F6F5FC] border border-[#E7E4F5] items-center justify-center active:bg-[#EEECFA] ml-1.5"
+                    >
+                      <ChevronRight size={15} color="#1F1B3D" />
+                    </TouchableOpacity>
+                  )}
 
                   {!isToday && (
                     <TouchableOpacity
-                      onPress={() => setSelectedDate(new Date())}
+                      onPress={() => {
+                        setPrevRange(null);
+                        setDay(new Date());
+                      }}
+                      accessibilityLabel="Back to today"
                       className="ml-1.5 w-9 h-11 rounded-xl bg-[#5B4FD1] items-center justify-center active:opacity-90"
                     >
                       <RotateCcw size={14} color="#FFFFFF" />
@@ -1911,17 +2448,68 @@ DateTimePickerAndroid.open({
                 </View>
               </View>
 
-              {Platform.OS === "ios" && showIosPicker && (
+              {/* Quick ranges (and the way back after "Open day") */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ paddingTop: 10, paddingRight: 4, alignItems: "center" }}
+              >
+                {[
+                  { key: "today", label: "Today", on: isToday, press: () => { setPrevRange(null); setDay(new Date()); } },
+                  {
+                    key: "yesterday",
+                    label: "Yesterday",
+                    on: !isRange && dateStr === toYmd(addDays(new Date(), -1)),
+                    press: () => { setPrevRange(null); setDay(addDays(new Date(), -1)); },
+                  },
+                  {
+                    key: "7",
+                    label: "Last 7 days",
+                    on: toStr === toYmd(new Date()) && dateStr === toYmd(addDays(new Date(), -6)),
+                    press: () => setQuickRange(7),
+                  },
+                  {
+                    key: "30",
+                    label: "Last 30 days",
+                    on: toStr === toYmd(new Date()) && dateStr === toYmd(addDays(new Date(), -29)),
+                    press: () => setQuickRange(30),
+                  },
+                ].map((q) => (
+                  <TouchableOpacity
+                    key={q.key}
+                    onPress={q.press}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: q.on }}
+                    className={`mr-2 px-3 py-1.5 rounded-full border ${q.on ? "bg-[#EEECFA] border-[#5B4FD1]" : "bg-white border-[#E7E4F5]"}`}
+                  >
+                    <Text className={`text-xs font-bold ${q.on ? "text-[#5B4FD1]" : "text-[#1F1B3D]"}`}>{q.label}</Text>
+                  </TouchableOpacity>
+                ))}
+                {prevRange && !isRange ? (
+                  <TouchableOpacity
+                    onPress={backToRange}
+                    className="mr-2 px-3 py-1.5 rounded-full bg-[#5B4FD1] flex-row items-center"
+                  >
+                    <ChevronLeft size={13} color="#FFFFFF" />
+                    <Text className="text-xs font-black text-white ml-0.5">
+                      Back to {fmtDateShort(prevRange.from)} – {fmtDateShort(prevRange.to)}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
+              </ScrollView>
+
+              {Platform.OS === "ios" && pickerFor && (
                 <DateTimePicker
-                  value={selectedDate}
+                  value={pickerFor === "from" ? selectedDate : toDate}
                   mode="date"
                   display="inline"
                   maximumDate={new Date()}
                   onValueChange={(_event: any, d?: Date) => {
-                    setShowIosPicker(false);
-                    if (d) setSelectedDate(d);
+                    const which = pickerFor;
+                    setPickerFor(null);
+                    if (d) (which === "from" ? setFrom : setTo)(d);
                   }}
-                  onDismiss={() => setShowIosPicker(false)}
+                  onDismiss={() => setPickerFor(null)}
                 />
               )}
 
@@ -1946,15 +2534,23 @@ DateTimePickerAndroid.open({
                             </Text>
                             <Text className="text-[10px] font-semibold text-[#7A76A6]">{u.empId}</Text>
                           </View>
-                          <Pill
-                            text={row ? `${row.pointCount ?? "•"} pts on this date` : "No data on this date"}
-                            tone={row ? "green" : "slate"}
-                          />
+                          {!isRange ? (
+                            <Pill
+                              text={row ? `${row.pointCount ?? "•"} pts on this date` : "No data on this date"}
+                              tone={row ? "green" : "slate"}
+                            />
+                          ) : null}
                         </TouchableOpacity>
                       );
                     })
                   )}
                 </View>
+              ) : isRange ? (
+                <Text className="text-[11px] font-semibold text-[#7A76A6] pt-2.5 px-1">
+                  {selected
+                    ? `Showing ${selectedName}'s locations for ${rangeLabel}. Clear the search to see everyone.`
+                    : `Showing everyone for ${rangeLabel}. Search an employee to see only their locations.`}
+                </Text>
               ) : (
                 <>
                 {departments.length > 0 && (
@@ -2011,7 +2607,11 @@ DateTimePickerAndroid.open({
                           active ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-[#F6F5FC] border-[#E7E4F5]"
                         }`}
                       >
-                        <View className={`w-2.5 h-2.5 rounded-full mr-2 ${freshnessDot(s.lastTime)}`} />
+                        <View
+                          className={`w-2.5 h-2.5 rounded-full mr-2 ${
+                            staffMap.has(s.empId) ? trackingStatus(s).dot : freshnessDot(s.lastTime)
+                          }`}
+                        />
                         <View>
                           <Text className={`text-xs font-black ${active ? "text-white" : "text-[#1F1B3D]"}`}>{s.userName}</Text>
                           <Text className={`text-[9px] font-bold ${active ? "text-purple-200" : "text-[#7A76A6]"}`}>
@@ -2059,9 +2659,21 @@ DateTimePickerAndroid.open({
                   </View>
                 </View>
 
+                {!isRange && (selectedFresh.reason || selectedFresh.phone) ? (
+                  <View className="mt-3 pt-3 border-t border-[#F1EFFB]">
+                    <StatusLines status={selectedFresh} big />
+                  </View>
+                ) : null}
                 {canPing && isToday ? renderPingResults() : null}
+                {isRange && rangeData?.kind === "points" ? (
+                  <Text className="text-[11px] font-bold text-[#7A76A6] mt-3 pt-3 border-t border-[#F1EFFB]">
+                    {rangeData.total} location{rangeData.total === 1 ? "" : "s"}  ·  {rangeLabel}  ·  tap "Open day" for the map
+                  </Text>
+                ) : null}
               </Card>
 
+              {!isRange && (
+              <>
               <View className="flex-row flex-wrap gap-2 mt-2.5">
                 <MiniStat icon={<Clock size={13} color="#5B4FD1" />} label="First ping" value={summary.first} basis={statBasis} />
                 <MiniStat icon={<Clock size={13} color="#5B4FD1" />} label="Last ping" value={summary.last} basis={statBasis} />
@@ -2100,10 +2712,13 @@ DateTimePickerAndroid.open({
                   </Card>
                 </View>
               )}
+              </>
+              )}
             </View>
           )}
 
-          {/* View switch */}
+          {/* View switch (one day only: a range is a paged list; "Open day" shows its map) */}
+          {!isRange && (
           <View className="mx-4 web:lg:mx-8 mt-4 web:lg:self-start web:lg:w-[320px] flex-row bg-[#EEECFA] rounded-2xl p-1">
             {(["timeline", "map"] as const).map((t) => {
               const active = tab === t;
@@ -2122,8 +2737,17 @@ DateTimePickerAndroid.open({
               );
             })}
           </View>
+          )}
 
-          {tab === "map" ? renderMapPanel() : selected ? renderTimelineBody() : renderOverviewBody()}
+          {isRange
+            ? selected
+              ? renderRangePersonBody()
+              : renderRangeOverviewBody()
+            : tab === "map"
+            ? renderMapPanel()
+            : selected
+            ? renderTimelineBody()
+            : renderOverviewBody()}
         </View>
       </ScrollView>
     </SafeAreaView>

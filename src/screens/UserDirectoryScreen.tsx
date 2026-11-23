@@ -244,6 +244,48 @@ export default function UserDirectoryScreen({ navigation }: any) {
     else { setSortBy(f); setSortOrder("asc"); }
   };
 
+  // ---------------------------------------------------------------- login password (set? reset)
+  const [pwInfo, setPwInfo] = useState<{ passwordSet: boolean; passwordSetAt?: string | null; lockedUntil?: string | null } | null>(null);
+  const [pwBusy, setPwBusy] = useState(false);
+  const PW_API = `${BASE_HOST}/api/admin/users`;
+
+  const loadPwInfo = async (empId: string) => {
+    setPwInfo(null);
+    try {
+      setPwInfo(await api(`${PW_API}/${encodeURIComponent(empId)}/password`));
+    } catch {
+      setPwInfo(null); // older server: the password line is simply not shown
+    }
+  };
+
+  const doResetPassword = async (empId: string) => {
+    setPwBusy(true);
+    try {
+      const r = await api(`${PW_API}/${encodeURIComponent(empId)}/reset-password?adminEmpId=${encodeURIComponent(adminEmpId)}`,
+        { method: "POST" });
+      const m = r?.message || "Password reset.";
+      if (Platform.OS === "web") window.alert(m); else Alert.alert("Password reset", m);
+      await loadPwInfo(empId);
+    } catch (e: any) {
+      const m = e.message || "Please try again.";
+      if (Platform.OS === "web") window.alert(m); else Alert.alert("Could not reset", m);
+    } finally {
+      setPwBusy(false);
+    }
+  };
+
+  const resetPassword = (empId: string) => {
+    const msg = `Reset the login password of ${empId}? At the next login they verify with the OTP (e-mail / screen) and choose a new password. A phone that is already verified keeps working.`;
+    if (Platform.OS === "web") {
+      if (window.confirm(msg)) doResetPassword(empId);
+    } else {
+      Alert.alert("Reset password", msg, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Reset", style: "destructive", onPress: () => doResetPassword(empId) },
+      ]);
+    }
+  };
+
   // ---------------------------------------------------------------- detail popup
   const openDetail = async (empId: string) => {
     setOpenId(empId);
@@ -251,6 +293,7 @@ export default function UserDirectoryScreen({ navigation }: any) {
     setDetailError(null);
     setEditing(false);
     setDetailLoading(true);
+    loadPwInfo(empId);
     try {
       setDetail(await api(`${API}/${encodeURIComponent(empId)}?adminEmpId=${encodeURIComponent(adminEmpId)}`));
     } catch (e: any) {
@@ -669,6 +712,31 @@ export default function UserDirectoryScreen({ navigation }: any) {
                   </View>
                 ))}
                 {READ_ONLY_JSON.map(b => renderJsonBlock(b.title, detail[b.key]))}
+                {pwInfo && openId && (
+                  <View className="mb-4">
+                    <Text className="text-[11px] font-black text-[#5B4FD1] uppercase tracking-wider mb-1">Login password</Text>
+                    <View className="bg-white border border-[#E7E4F5] rounded-2xl p-4 flex-row items-center justify-between">
+                      <View className="flex-1 pr-3">
+                        <Text className="text-xs font-black text-[#1F1B3D]">
+                          {pwInfo.passwordSet ? "Password set" : "No password yet"}
+                          {pwInfo.lockedUntil ? " • locked (wrong passwords)" : ""}
+                        </Text>
+                        <Text className="text-[10.5px] font-semibold text-[#7A76A6] mt-0.5">
+                          {pwInfo.passwordSet
+                            ? `Since ${String(pwInfo.passwordSetAt || "").slice(0, 16).replace("T", " ")}`
+                            : "Sets it at the next login with the OTP"}
+                        </Text>
+                      </View>
+                      {pwInfo.passwordSet && (
+                        <TouchableOpacity onPress={() => resetPassword(openId)} disabled={pwBusy}
+                          className="border border-rose-200 bg-rose-50 rounded-xl px-3 py-2">
+                          {pwBusy ? <ActivityIndicator size="small" color="#BE123C" />
+                            : <Text className="text-[11px] font-black text-rose-700">Reset password</Text>}
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </View>
+                )}
                 <Text className="text-[10px] font-semibold text-[#7A76A6] text-center">
                   Address, bank, role and password are view-only here. Work settings (shift, leave quota) are on the Add / Edit User page.
                 </Text>

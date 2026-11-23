@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, Alert, TextInput, Modal, Platform } from "react-native";
-import { Search, RotateCw, X, Calculator, Download, Pencil, History } from "lucide-react-native";
+import { Search, RotateCw, X, Calculator, Download, Pencil, History, Wallet } from "lucide-react-native";
+import { useNavigation } from "@react-navigation/native";
 import WebBackButton from "../components/WebBackButton";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
@@ -58,9 +59,13 @@ const COLS: { key: string; label: string; w: number; align?: "right"; render: (r
 ];
 const NAME_W = 170;
 const STATUS_W = 112;
+const SEL_W = 40; // tick box (Calculate selected)
+const ACT_W = 46; // recalculate this row
+const rowKey = (r: Row) => `${r.empId}|${r.salaryMonth}`;
 
 export default function SalaryViewScreen() {
   const { isWebDesktop } = useResponsive();
+  const navigation = useNavigation<any>();
   const today = new Date();
   const [fromDate, setFromDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
   const [toDate, setToDate] = useState(today);
@@ -93,6 +98,11 @@ export default function SalaryViewScreen() {
   const [dayLog, setDayLog] = useState<any[]>([]);
   const [histOpen, setHistOpen] = useState(false);
   const [histLoading, setHistLoading] = useState(false);
+
+  // One row recalculating (row icon), rows ticked for "Calculate selected", and the progress of that batch
+  const [rowBusy, setRowBusy] = useState<Record<string, boolean>>({});
+  const [picked, setPicked] = useState<Record<string, boolean>>({});
+  const [batch, setBatch] = useState<{ done: number; total: number } | null>(null);
 
   const [detailKey, setDetailKey] = useState<{ empId: string; month: string } | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -139,6 +149,11 @@ export default function SalaryViewScreen() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // A new filter shows other rows: forget the ticks
+  useEffect(() => {
+    setPicked({});
+  }, [fromIso, toIsoStr, dept, appliedSearch]);
 
   const notify = (title: string, msg: string) => (Platform.OS === "web" ? window.alert(`${title}\n${msg}`) : Alert.alert(title, msg));
 
@@ -428,6 +443,87 @@ export default function SalaryViewScreen() {
     }
   };
 
+  // ---- Recalculate only some people (instead of "Calculate all") ----
+  // Same server call as the detail screen's Recalculate: one employee, one month. A PAID month is never touched.
+  const calcOneRow = async (empId: string, month: string): Promise<{ ok: boolean; message?: string }> => {
+    try {
+      const res = await fetch(`${API}/calculate?empId=${encodeURIComponent(empId)}&month=${month}`, { method: "POST" });
+      const json = await res.json().catch(() => ({}));
+      return res.ok ? { ok: true } : { ok: false, message: json.message || `HTTP ${res.status}` };
+    } catch {
+      return { ok: false, message: "Could not reach the server" };
+    }
+  };
+
+  // Row icon: recalculate this employee for this month
+  const recalcRow = async (r: Row) => {
+    const k = rowKey(r);
+    if (rowBusy[k] || batch) return;
+    setRowBusy((b) => ({ ...b, [k]: true }));
+    const out = await calcOneRow(r.empId, r.salaryMonth);
+    setRowBusy((b) => {
+      const n = { ...b };
+      delete n[k];
+      return n;
+    });
+    if (!out.ok) notify("Could not calculate", `${r.userName} (${r.salaryMonth}): ${out.message}`);
+    await load();
+  };
+
+  const isPaid = (r: Row) => String(r.status || "").toUpperCase() === "PAID";
+  const pickable = rows.filter((r) => !isPaid(r));
+  const pickedRows = rows.filter((r) => picked[rowKey(r)]);
+  const allPicked = pickable.length > 0 && pickable.every((r) => picked[rowKey(r)]);
+  const togglePick = (r: Row) => {
+    if (isPaid(r)) return;
+    const k = rowKey(r);
+    setPicked((p) => {
+      const n = { ...p };
+      if (n[k]) delete n[k];
+      else n[k] = true;
+      return n;
+    });
+  };
+  const toggleAll = () => {
+    if (allPicked) setPicked({});
+    else {
+      const n: Record<string, boolean> = {};
+      pickable.forEach((r) => (n[rowKey(r)] = true));
+      setPicked(n);
+    }
+  };
+
+  // "Calculate selected": the ticked rows one after another (keeps the server load small), with progress
+  const runSelected = () => {
+    const list = pickedRows.filter((r) => !isPaid(r));
+    if (list.length === 0 || batch || calculating) return;
+    const go = async () => {
+      setBatch({ done: 0, total: list.length });
+      const failed: string[] = [];
+      for (let i = 0; i < list.length; i++) {
+        const r = list[i];
+        const out = await calcOneRow(r.empId, r.salaryMonth);
+        if (!out.ok) failed.push(`${r.userName} (${r.salaryMonth}): ${out.message}`);
+        setBatch({ done: i + 1, total: list.length });
+      }
+      setBatch(null);
+      setPicked({});
+      await load();
+      const ok = list.length - failed.length;
+      notify(
+        failed.length ? "Calculated with errors" : "Done",
+        `${ok} of ${list.length} salary record(s) recalculated (saved as DRAFT).` +
+          (failed.length ? `\n\nNot calculated:\n${failed.slice(0, 10).join("\n")}${failed.length > 10 ? `\n…and ${failed.length - 10} more` : ""}` : "")
+      );
+    };
+    const msg = `Recalculate salary for the ${list.length} selected record(s)? Drafts are overwritten; PAID months are not touched.`;
+    if (Platform.OS === "web") {
+      if (window.confirm(msg)) go();
+    } else {
+      Alert.alert("Calculate selected", msg, [{ text: "Cancel", style: "cancel" }, { text: "Calculate", onPress: go }]);
+    }
+  };
+
   // suggestions while typing: name or employee id contains the text (max 6)
   const suggestions = (() => {
     const t = searchText.trim().toLowerCase();
@@ -438,7 +534,19 @@ export default function SalaryViewScreen() {
       .slice(0, 6);
   })();
 
-  const tableWidth = NAME_W + COLS.reduce((s, c) => s + c.w, 0) + STATUS_W;
+  // the daily allowance column only when some row has one (from Nov 2026 it is paid on the Daily Allowance page)
+  const cols = COLS.filter((c) => c.key !== "allow" || rows.some((r) => Number(r.dailyAllowance) > 0));
+  const tableWidth = SEL_W + ACT_W + NAME_W + cols.reduce((s, c) => s + c.w, 0) + STATUS_W;
+
+  const TickBox = ({ on, disabled }: { on: boolean; disabled?: boolean }) => (
+    <View
+      className={`w-5 h-5 rounded-md border items-center justify-center ${
+        on ? "bg-[#5B4FD1] border-[#5B4FD1]" : disabled ? "bg-[#F1F0F7] border-[#E7E4F5]" : "bg-white border-[#A6A2CE]"
+      }`}
+    >
+      {on ? <Text className="text-white text-[11px] font-black">✓</Text> : null}
+    </View>
+  );
 
   const Chip = ({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) => (
     <TouchableOpacity
@@ -522,6 +630,13 @@ export default function SalaryViewScreen() {
           </View>
           )}
           <View className="flex-row">
+            <TouchableOpacity
+              onPress={() => navigation?.navigate?.("DailyAllowance")}
+              className="px-3.5 h-10 rounded-2xl bg-white border border-[#E7E4F5] flex-row items-center justify-center mr-2"
+            >
+              <Wallet size={15} color="#5B4FD1" />
+              <Text className="text-xs font-black text-[#5B4FD1] ml-1.5">Daily Allowance</Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={load} className="w-10 h-10 rounded-2xl bg-white border border-[#E7E4F5] items-center justify-center mr-2">
               {loading ? <ActivityIndicator size="small" color="#5B4FD1" /> : <RotateCw size={16} color="#5B4FD1" />}
             </TouchableOpacity>
@@ -536,9 +651,9 @@ export default function SalaryViewScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               onPress={runAll}
-              disabled={calculating}
+              disabled={calculating || !!batch}
               className="px-3.5 h-10 rounded-2xl bg-[#5B4FD1] flex-row items-center justify-center"
-              style={{ opacity: calculating ? 0.6 : 1 }}
+              style={{ opacity: calculating || batch ? 0.6 : 1 }}
             >
               {calculating ? <ActivityIndicator size="small" color="#fff" /> : <Calculator size={15} color="#fff" />}
               <Text className="text-xs font-black text-white ml-1.5">Calculate all</Text>
@@ -685,13 +800,48 @@ export default function SalaryViewScreen() {
           </View>
         )}
 
+        {/* Recalculate only some people: tick rows (or "all shown" after a department / search filter) */}
+        {(pickedRows.length > 0 || batch) && (
+          <View className="flex-row flex-wrap items-center bg-[#EEECFA] border border-[#D9D5F5] rounded-2xl px-3 py-2.5 mb-3" style={{ gap: 8 }}>
+            <Text className="text-xs font-black text-[#1F1B3D] flex-1" style={{ minWidth: 160 }}>
+              {batch ? `Calculating ${batch.done} / ${batch.total}…` : `${pickedRows.length} selected`}
+            </Text>
+            {!batch && (
+              <TouchableOpacity onPress={() => setPicked({})} className="px-3 h-9 rounded-xl bg-white border border-[#E7E4F5] items-center justify-center">
+                <Text className="text-xs font-black text-[#7A76A6]">Clear</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              onPress={runSelected}
+              disabled={!!batch || calculating}
+              className="px-3.5 h-9 rounded-xl bg-[#5B4FD1] flex-row items-center justify-center"
+              style={{ opacity: batch || calculating ? 0.6 : 1 }}
+            >
+              {batch ? <ActivityIndicator size="small" color="#fff" /> : <Calculator size={14} color="#fff" />}
+              <Text className="text-xs font-black text-white ml-1.5">
+                {batch ? "Working…" : `Calculate selected (${pickedRows.length})`}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Table */}
         <View className="bg-white border border-[#E7E4F5] rounded-3xl overflow-hidden">
           <ScrollView horizontal showsHorizontalScrollIndicator>
             <View style={{ width: tableWidth }}>
-              <View className="flex-row bg-[#EEECFA] py-2.5">
+              <View className="flex-row items-center bg-[#EEECFA] py-2.5">
+                <TouchableOpacity
+                  onPress={toggleAll}
+                  disabled={pickable.length === 0 || !!batch}
+                  accessibilityLabel={allPicked ? "Clear all ticks" : "Select all shown"}
+                  className="items-center justify-center"
+                  style={{ width: SEL_W }}
+                >
+                  <TickBox on={allPicked} disabled={pickable.length === 0} />
+                </TouchableOpacity>
+                <View style={{ width: ACT_W }} />
                 <Text className="text-[10px] font-black text-[#5B4FD1] uppercase px-3" style={{ width: NAME_W }}>Employee</Text>
-                {COLS.map((c) => (
+                {cols.map((c) => (
                   <Text key={c.key} className="text-[10px] font-black text-[#5B4FD1] uppercase px-2" style={{ width: c.w, textAlign: c.align || "left" }}>
                     {c.label}
                   </Text>
@@ -707,13 +857,33 @@ export default function SalaryViewScreen() {
                 <TouchableOpacity
                   key={`${r.empId}-${r.salaryMonth}`}
                   onPress={() => { setDetailTab("SLIP"); setDetailKey({ empId: r.empId, month: r.salaryMonth }); }}
-                  className="flex-row items-center py-3 border-t border-[#F0EEFA] active:bg-[#F6F5FC]"
+                  className={`flex-row items-center py-3 border-t border-[#F0EEFA] active:bg-[#F6F5FC] ${picked[rowKey(r)] ? "bg-[#F6F5FC]" : ""}`}
                 >
+                  <TouchableOpacity
+                    onPress={() => togglePick(r)}
+                    disabled={isPaid(r) || !!batch}
+                    accessibilityLabel={`Select ${r.userName} ${r.salaryMonth}`}
+                    className="items-center justify-center self-stretch"
+                    style={{ width: SEL_W }}
+                  >
+                    <TickBox on={!!picked[rowKey(r)]} disabled={isPaid(r)} />
+                  </TouchableOpacity>
+                  <View className="items-center justify-center" style={{ width: ACT_W }}>
+                    <TouchableOpacity
+                      onPress={() => recalcRow(r)}
+                      disabled={isPaid(r) || !!rowBusy[rowKey(r)] || !!batch}
+                      accessibilityLabel={`Recalculate ${r.userName} ${r.salaryMonth}`}
+                      className="w-8 h-8 rounded-xl bg-[#EEECFA] items-center justify-center"
+                      style={{ opacity: isPaid(r) ? 0.3 : 1 }}
+                    >
+                      {rowBusy[rowKey(r)] ? <ActivityIndicator size="small" color="#5B4FD1" /> : <RotateCw size={14} color="#5B4FD1" />}
+                    </TouchableOpacity>
+                  </View>
                   <View className="px-3" style={{ width: NAME_W }}>
                     <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>{r.userName}</Text>
                     <Text className="text-[10px] font-bold text-[#7A76A6]" numberOfLines={1}>{r.empId}{r.department ? ` • ${r.department}` : ""}</Text>
                   </View>
-                  {COLS.map((c) => (
+                  {cols.map((c) => (
                     <Text
                       key={c.key}
                       className={`text-[11px] px-2 ${c.key === "net" ? "font-black text-[#1FAE5C]" : "font-bold text-[#1F1B3D]"}`}
@@ -731,7 +901,10 @@ export default function SalaryViewScreen() {
             </View>
           </ScrollView>
         </View>
-        <Text className="text-[11px] font-bold text-[#A6A2CE] mt-2">Tap a row for the full salary breakdown.</Text>
+        <Text className="text-[11px] font-bold text-[#A6A2CE] mt-2">
+          Tap a row for the full salary breakdown. ↻ recalculates that one person; tick rows (or the top box for all shown) and use
+          "Calculate selected" for a few people. PAID months cannot be recalculated.
+        </Text>
       </View>
 
       {/* Single person detail */}

@@ -39,7 +39,9 @@ import {
 } from "lucide-react-native";
 import ScreenContainer from "../components/ScreenContainer";
 import { UserSession } from "../services/UserSession";
-import { startShiftTracking, stopShiftTracking } from "../services/shiftTrackingManager";
+import { startShiftTracking, stopShiftTracking, reportTrackingStatus } from "../services/shiftTrackingManager";
+import { getTrackingReadiness, readinessMissing } from "../services/trackingReadiness";
+import TrackingSetupModal from "../components/TrackingSetupModal";
 import { BASE_HOST } from "../constants/config";
 import { useIsFocused } from "@react-navigation/native";
 import { useResponsive } from "../hooks/useResponsive";
@@ -677,6 +679,27 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
   };
 
   // ----------------------------- tracking (never affects a punch result) -----------------------------
+  // Setup screen (Allow all the time, precise, GPS, battery): after a sales check-in, and at most once a day when the
+  // Punch screen opens during a tracked shift - only when something on the phone would stop the tracking.
+  const [setupVisible, setSetupVisible] = useState(false);
+  const maybeShowTrackingSetup = async (force: boolean) => {
+    if (Platform.OS !== "android") return;
+    try {
+      const r = await getTrackingReadiness();
+      if (r.batteryUnrestricted === false) {
+        reportTrackingStatus(EMP_ID, "BATTERY_RESTRICTED",
+          "Battery optimisation is ON for PayCore - the phone may stop tracking in the background").catch(() => {});
+      }
+      if (!readinessMissing(r)) return;
+      const key = `tracking_setup_shown_${new Date().toISOString().slice(0, 10)}`;
+      if (!force && (await AsyncStorage.getItem(key))) return;
+      await AsyncStorage.setItem(key, "1");
+      setSetupVisible(true);
+    } catch {
+      /* the setup screen is only a helper */
+    }
+  };
+
   const startTrackingIfNeeded = async (requires?: boolean) => {
     const track = requires ?? (exemptRef.current || activeModeRef.current === "SALES");
     if (!track) return;
@@ -686,6 +709,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
     } catch (e) {
       console.warn("Could not start tracking:", e);
     }
+    maybeShowTrackingSetup(true);
   };
 
   // Resume after an app restart / stop after check-out. Tried once per screen mount so a denied
@@ -698,7 +722,9 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
 
     if ((state === "WORKING" || state === "ON_BREAK") && !trackingResumeTried.current) {
       trackingResumeTried.current = true;
-      startShiftTracking(EMP_ID, "SALES").catch((e) => console.warn("Resume tracking failed:", e));
+      startShiftTracking(EMP_ID, "SALES")
+        .catch((e) => console.warn("Resume tracking failed:", e))
+        .finally(() => maybeShowTrackingSetup(false));
     } else if (state === "CHECKED_OUT" && prev !== "CHECKED_OUT") {
       stopShiftTracking().catch(() => {});
     }
@@ -1952,6 +1978,8 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
           </View>
         </Modal>
       </ScrollView>
+      {/* sales staff: phone settings that keep the shift route tracking running */}
+      <TrackingSetupModal visible={setupVisible} onClose={() => setSetupVisible(false)} />
     </ScreenContainer>
   );
 }

@@ -18,9 +18,9 @@ import {
  
   FileText, 
   Clock, 
-  Calculator, 
-  DollarSign, 
-  Layers, 
+  Calculator,
+  IndianRupee,
+  Layers,
   CheckCircle2,
   Users,
   Edit3,
@@ -32,6 +32,7 @@ import { BASE_HOST } from "../constants/config";
 import { withAuthToken } from "../services/apiAuth";
 import { useResponsive } from "../hooks/useResponsive";
 import { Badge, WebPageHeader } from "../components/web/webUi";
+import { formatINR } from "../utils/currency";
 
 interface AdminReportsScreenProps {
   navigation: any;
@@ -426,10 +427,10 @@ const [salaryFilter, setSalaryFilter] = useState("");
             {/* Base Salary Input */}
             <View>
               <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">
-                Base Monthly Salary (USD)
+                Base Monthly Salary (₹)
               </Text>
               <View className="flex-row items-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-2.5">
-                <DollarSign size={16} color="#5B4FD1" />
+                <IndianRupee size={16} color="#5B4FD1" />
                 <TextInput
                   value={calcBasicSalary}
                   onChangeText={setCalcBasicSalary}
@@ -486,7 +487,7 @@ const [salaryFilter, setSalaryFilter] = useState("");
                   </Text>
                   <View className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 justify-center">
                     <Text className="text-xs font-bold text-[#1F1B3D]">
-                      ${calculatedSalary.weeklyRate.toFixed(2)} / wk
+                      {formatINR(calculatedSalary.weeklyRate, "always")} / wk
                     </Text>
                   </View>
                 </View>
@@ -496,7 +497,7 @@ const [salaryFilter, setSalaryFilter] = useState("");
                 <Text className="text-[11px] font-bold text-[#7A76A6]">
                   Standard Daily Wage Rate:{" "}
                   <Text className="text-[#5B4FD1] font-black">
-                    ${calculatedSalary.dailyRate.toFixed(2)} / day
+                    {formatINR(calculatedSalary.dailyRate, "always")} / day
                   </Text>{" "}
                   (Based on {totalMonthDays} days)
                 </Text>
@@ -537,15 +538,15 @@ const [salaryFilter, setSalaryFilter] = useState("");
               Automated Calculated Take-Home Salary
             </Text>
             <Text className="text-3xl font-black text-white mt-1.5 tracking-tight">
-              ${calculatedSalary.netSalary.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {formatINR(calculatedSalary.netSalary, "always")}
             </Text>
 
             <View className="flex-row justify-between pt-3 mt-3 border-t border-white/20">
               <Text className="text-xs font-medium text-white/80">
-                Gross: <Text className="font-black text-white">${calculatedSalary.grossSalary.toFixed(2)}</Text>
+                Gross: <Text className="font-black text-white">{formatINR(calculatedSalary.grossSalary, "always")}</Text>
               </Text>
               <Text className="text-xs font-medium text-rose-200">
-                Deductions: <Text className="font-black text-white">-${calculatedSalary.totalDeductions.toFixed(2)}</Text>
+                Deductions: <Text className="font-black text-white">-{formatINR(calculatedSalary.totalDeductions, "always")}</Text>
               </Text>
             </View>
           </View>
@@ -558,34 +559,34 @@ const [salaryFilter, setSalaryFilter] = useState("");
 
             <View className="py-2.5 flex-row justify-between items-center">
               <Text className="text-xs font-bold text-[#7A76A6]">Computed Basic Pay</Text>
-              <Text className="text-xs font-black text-[#1F1B3D]">${calculatedSalary.earnedBasic.toFixed(2)}</Text>
+              <Text className="text-xs font-black text-[#1F1B3D]">{formatINR(calculatedSalary.earnedBasic, "always")}</Text>
             </View>
 
             <View className="py-2.5 flex-row justify-between items-center">
               <Text className="text-xs font-bold text-[#7A76A6]">Fixed Allowances</Text>
-              <Text className="text-xs font-black text-[#1F1B3D]">${calculatedSalary.allowances.toFixed(2)}</Text>
+              <Text className="text-xs font-black text-[#1F1B3D]">{formatINR(calculatedSalary.allowances, "always")}</Text>
             </View>
 
             {calculatedSalary.otPay > 0 && (
               <View className="py-2.5 flex-row justify-between items-center">
-                <Text className="text-xs font-bold text-[#7A76A6]">Overtime ({overtimeHours}h @ ${otHourlyRate}/h)</Text>
-                <Text className="text-xs font-black text-emerald-600">+${calculatedSalary.otPay.toFixed(2)}</Text>
+                <Text className="text-xs font-bold text-[#7A76A6]">Overtime ({overtimeHours}h @ {formatINR(otHourlyRate)}/h)</Text>
+                <Text className="text-xs font-black text-emerald-600">+{formatINR(calculatedSalary.otPay, "always")}</Text>
               </View>
             )}
 
             <View className="py-2.5 flex-row justify-between items-center">
               <Text className="text-xs font-bold text-[#7A76A6]">Employee PF ({pfPercent}%)</Text>
-              <Text className="text-xs font-black text-[#E4453C]">-${calculatedSalary.pfAmount.toFixed(2)}</Text>
+              <Text className="text-xs font-black text-[#E4453C]">-{formatINR(calculatedSalary.pfAmount, "always")}</Text>
             </View>
 
             <View className="py-2.5 flex-row justify-between items-center">
               <Text className="text-xs font-bold text-[#7A76A6]">TDS Income Tax ({tdsBasePercent}%)</Text>
-              <Text className="text-xs font-black text-[#E4453C]">-${calculatedSalary.tdsAmount.toFixed(2)}</Text>
+              <Text className="text-xs font-black text-[#E4453C]">-{formatINR(calculatedSalary.tdsAmount, "always")}</Text>
             </View>
 
             <View className="py-2.5 flex-row justify-between items-center">
               <Text className="text-xs font-bold text-[#7A76A6]">Health Insurance</Text>
-              <Text className="text-xs font-black text-[#E4453C]">-${calculatedSalary.insurance.toFixed(2)}</Text>
+              <Text className="text-xs font-black text-[#E4453C]">-{formatINR(calculatedSalary.insurance, "always")}</Text>
             </View>
           </View>
         </ScrollView>
@@ -688,7 +689,7 @@ const [salaryFilter, setSalaryFilter] = useState("");
             <TextInput
               value={salaryFilter}
               onChangeText={setSalaryFilter}
-              placeholder="e.g. > $3000 or All"
+              placeholder="e.g. > ₹30,000 or All"
               className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-xs font-bold text-[#1F1B3D]"
             />
           </View>
@@ -1044,10 +1045,10 @@ const [salaryFilter, setSalaryFilter] = useState("");
             <View>
               <View className="flex-row justify-between mb-1.5">
                 <Text className="text-xs font-bold text-[#1F1B3D]">Monthly Health Insurance Premium</Text>
-                <Text className="text-xs font-black text-[#E4453C]">${healthInsuranceDeduction}</Text>
+                <Text className="text-xs font-black text-[#E4453C]">{formatINR(healthInsuranceDeduction)}</Text>
               </View>
               <View className="flex-row items-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-2.5">
-                <Text className="text-xs font-bold text-[#7A76A6] mr-1">$</Text>
+                <Text className="text-xs font-bold text-[#7A76A6] mr-1">₹</Text>
                 <TextInput 
                   value={healthInsuranceDeduction} 
                   onChangeText={setHealthInsuranceDeduction}

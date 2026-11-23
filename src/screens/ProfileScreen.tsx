@@ -30,6 +30,7 @@ import { BASE_HOST } from "../constants/config";
 import WebBackButton from "../components/WebBackButton";
 import { useResponsive } from "../hooks/useResponsive";
 import { Avatar, WebPageHeader } from "../components/web/webUi";
+import ChangePasswordForm from "../components/ChangePasswordForm";
 
 interface ProfileScreenProps {
   navigation: {
@@ -200,6 +201,8 @@ const handleLogoutPress = () => {
                 <X size={18} color="#7A76A6" />
               </TouchableOpacity>
             </View>
+
+            {activeModal === "password" && <ChangePasswordForm onDone={() => setActiveModal(null)} />}
 
             {activeModal === "personal" && (
               <View className="space-y-2.5">

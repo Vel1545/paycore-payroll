@@ -207,7 +207,8 @@ export default function PayslipView({ empId, month, mode, reloadKey = 0, showEmp
       <Section title="Earnings">
         <Line label="Monthly salary" value={inr(s.monthlySalary)} />
         <Line label={`Overtime (${num(s.overtimeHours)}h)`} value={inr(s.overtimePay)} />
-        <Line label="Daily allowance" value={inr(s.dailyAllowance)} />
+        {/* from Nov 2026 the daily allowance is paid separately (Allowance section), so it is 0 here and hidden */}
+        {Number(s.dailyAllowance) > 0 ? <Line label="Daily allowance" value={inr(s.dailyAllowance)} /> : null}
         <Line label="Bonus" value={inr(s.bonus)} />
         <Line label="Gift" value={inr(s.gift)} />
         <Line label="Approved claims" value={inr(s.claims)} />

@@ -488,7 +488,8 @@ const handleSubmitOvertime = async () => {
           size: file.size,
           uri: file.uri,
           mimeType: file.mimeType,
-        });
+          ...((file as any).file ? { file: (file as any).file } : {}), // website: the browser File for the upload
+        } as AttachedFile);
       }
     } catch {
       Alert.alert("File Error", "Unable to select document.");
@@ -637,30 +638,50 @@ const handleSubmitLeave = async () => {
     }
     setSubmitting(true);
     try {
-      const payload = {
-        claimType: expenseCategory,
-        amount: parseFloat(expenseAmount.replace(/[^0-9.]/g, "")) || 0,
-        expenseDate: formatDateIso(expenseDate),
-        description: expenseDescription.trim() || "Reimbursement claim",
-        attachmentUrl: attachedFile ? attachedFile.name : null,
-      };
+      const amount = parseFloat(expenseAmount.replace(/[^0-9.]/g, "")) || 0;
+      // The bill FILE goes with the claim: the server stores it in the bucket
+      // (Claims/<Name>_<EmpID>/<Name>_<bill date>_CLM<code>) before the claim is created.
+      const form = new FormData();
+      form.append("claimType", String(expenseCategory));
+      form.append("amount", String(amount));
+      form.append("expenseDate", formatDateIso(expenseDate));
+      form.append("description", expenseDescription.trim() || "Reimbursement claim");
+      const fileName = attachedFile.name || "bill";
+      if (Platform.OS === "web") {
+        const blob: Blob = (attachedFile as any).file ?? (await (await fetch(attachedFile.uri)).blob());
+        form.append("file", blob, fileName);
+      } else {
+        form.append("file", { uri: attachedFile.uri, name: fileName, type: attachedFile.mimeType || "application/octet-stream" } as any);
+      }
 
-      const res = await fetch(`${API_BASE_URL}/users/${UserSession.empId}/expense`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      let res = await fetch(`${API_BASE_URL}/users/${UserSession.empId}/expense-with-bill`, { method: "POST", body: form });
+      if (res.status === 404 || res.status === 405) {
+        // older server: the claim without the file (as before)
+        res = await fetch(`${API_BASE_URL}/users/${UserSession.empId}/expense`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            claimType: expenseCategory,
+            amount,
+            expenseDate: formatDateIso(expenseDate),
+            description: expenseDescription.trim() || "Reimbursement claim",
+            attachmentUrl: fileName,
+          }),
+        });
+      }
 
       if (res.ok) {
-        const msg = "Expense claim submitted successfully!";
+        const msg = "Expense claim submitted with the bill.";
         Platform.OS === "web" ? window.alert(msg) : Alert.alert("Success", msg);
         setExpenseDescription("");
         setAttachedFile(null);
       } else {
-        throw new Error();
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.message || j?.error || "Could not submit the expense claim.");
       }
-    } catch {
-      Alert.alert("Error", "Could not submit expense claim.");
+    } catch (e: any) {
+      const msg = e?.message || "Could not submit the expense claim.";
+      Platform.OS === "web" ? window.alert(msg) : Alert.alert("Error", msg);
     } finally {
       setSubmitting(false);
     }
@@ -1094,11 +1115,13 @@ const handleSubmitAdvance = async () => {
           <View className="flex-row mb-3">
             <View className="flex-1 mr-2">
               <Text className="text-[10px] font-bold text-[#7A76A6] uppercase tracking-wider mb-1.5">
-                Amount (USD)
+                Amount (₹)
               </Text>
               <TextInput
                 value={expenseAmount}
                 onChangeText={setExpenseAmount}
+                placeholder="e.g. 1,250"
+                placeholderTextColor="#A6A2CE"
                 keyboardType="numeric"
                 className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-sm font-black text-[#5B4FD1]"
               />

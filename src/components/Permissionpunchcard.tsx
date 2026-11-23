@@ -50,9 +50,24 @@ export default function Permissionpunchcard({ kind }: Props) {
     };
   }, [load]);
 
+  // OD needs the location. A permission sends it when the phone can give it (the admin sees start / end on the map),
+  // but a missing location never blocks the permission.
+  const locationNeeded = kind === "OD" || data?.locationRequired === true;
+  const getFixOptional = async () => {
+    if (locationNeeded) return getFix();
+    try {
+      return await Promise.race([
+        getFix(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 12000)),
+      ]);
+    } catch {
+      return {};
+    }
+  };
+
   const getFix = async () => {
     const perm = await Location.requestForegroundPermissionsAsync();
-    if (perm.status !== "granted") throw new Error("Location permission is required for permission / OD punch.");
+    if (perm.status !== "granted") throw new Error("Location permission is required for an OD punch.");
     const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
     const acc = loc.coords.accuracy != null ? Math.round(loc.coords.accuracy) : null;
     return {
@@ -83,7 +98,7 @@ export default function Permissionpunchcard({ kind }: Props) {
     setBusy(true);
     setMsg(null);
     try {
-      const fix = await getFix();
+      const fix = await getFixOptional();
       const j = await post("start", { empId, kind, ...fix, purpose: purpose.trim() });
       setPurpose("");
       setMsg({ ok: true, text: j?.message || "Started." });
@@ -99,11 +114,13 @@ export default function Permissionpunchcard({ kind }: Props) {
     setBusy(true);
     setMsg(null);
     try {
-      const fix = await getFix();
+      const fix = await getFixOptional();
       const j = await post("end", { empId, ...fix });
       setMsg({
         ok: true,
-        text: `${j?.message || "Sent to the admin for verification."} Counted as ${j?.chargedMinutes ?? "-"} min.`,
+        text: j?.autoApproved
+          ? j?.message || "Permission recorded and approved automatically."
+          : `${j?.message || "Sent to the admin for verification."} Counted as ${j?.chargedMinutes ?? "-"} min.`,
       });
       await load();
     } catch (e: any) {
@@ -127,14 +144,23 @@ export default function Permissionpunchcard({ kind }: Props) {
     <View className="bg-[#EEECFA] border border-[#5B4FD1]/25 rounded-xl p-3 mb-3">
       <View className="flex-row items-center mb-1">
         <MapPin size={14} color="#5B4FD1" />
-        <Text className="text-xs font-black text-[#5B4FD1] ml-1.5">Punch {label} (location only)</Text>
+        <Text className="text-xs font-black text-[#5B4FD1] ml-1.5">Punch {label}</Text>
       </View>
 
       {kind === "PERMISSION" ? (
-        <Text className="text-[10.5px] font-semibold text-[#7A76A6] mb-2">
-          Paid permission left this month: {balance} hr. A permission of 1 hour or less is counted as 1 hour; time beyond your
-          paid balance is unpaid. The admin verifies every punch.
-        </Text>
+        <>
+          <Text className="text-[10.5px] font-semibold text-[#7A76A6] mb-1">
+            Paid permission left this month: {balance} hr. After check-in you can start a permission any time in your shift - no
+            request needed. Before check-in, or in the last hour of your shift, raise a request first.
+          </Text>
+          <Text className="text-[10.5px] font-semibold text-[#7A76A6] mb-2">
+            1 hour or less counts as 1 hour and is approved automatically; longer ones are checked by the admin. Time beyond your
+            paid balance is unpaid.
+            {data.dailyLimitMinutes > 0
+              ? ` Today: ${data.usedTodayMinutes ?? 0} of ${data.dailyLimitMinutes} min used.`
+              : ""}
+          </Text>
+        </>
       ) : (
         <Text className="text-[10.5px] font-semibold text-[#7A76A6] mb-2">
           No limit on OD hours. Start when you leave for the work and End when you are back. The admin verifies every punch.

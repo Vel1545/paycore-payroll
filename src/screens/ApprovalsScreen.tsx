@@ -39,10 +39,67 @@ import { useAuth } from "../context/AuthContext";
 import { UserSession } from "../services/UserSession";
 import { BASE_HOST } from "../constants/config";
 import { useResponsive } from "../hooks/useResponsive";
+import { formatINR } from "../utils/currency";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
+import { authHeaders } from "../services/apiAuth";
+
+// Claim bill: View (opens it) / Download (saves it). Admins open any claim, employees their own (server checks).
+async function openClaimBill(item: { id: string; userId: string; billName?: string | null }, download: boolean) {
+  const url = `${BASE_HOST}/api/admin/workflow/users/${encodeURIComponent(item.userId)}/claims/${encodeURIComponent(item.id)}/bill`
+    + (download ? "?download=true" : "");
+  const name = (item.billName || `Bill_${item.id}`).replace(/[^A-Za-z0-9._-]/g, "_");
+  const fail = (m: string) => (Platform.OS === "web" ? window.alert(m) : Alert.alert("Bill", m));
+  try {
+    if (Platform.OS === "web") {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        return fail(j?.message || `Could not open the bill (HTTP ${res.status}).`);
+      }
+      const href = window.URL.createObjectURL(await res.blob());
+      if (download) {
+        const a = document.createElement("a");
+        a.href = href;
+        a.setAttribute("download", name);
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } else {
+        window.open(href, "_blank");
+      }
+      setTimeout(() => window.URL.revokeObjectURL(href), 60000);
+      return;
+    }
+    const out = await FileSystem.downloadAsync(url, `${FileSystem.cacheDirectory}${name}`, { headers: authHeaders() });
+    if (out.status !== 200) {
+      let msg = `Could not open the bill (HTTP ${out.status}).`;
+      try {
+        msg = JSON.parse(await FileSystem.readAsStringAsync(out.uri))?.message || msg;
+      } catch {
+        /* keep */
+      }
+      await FileSystem.deleteAsync(out.uri, { idempotent: true });
+      return fail(msg);
+    }
+    if (await Sharing.isAvailableAsync()) {
+      const lower = name.toLowerCase();
+      await Sharing.shareAsync(out.uri, {
+        mimeType: lower.endsWith(".pdf") ? "application/pdf" : lower.endsWith(".png") ? "image/png" : "image/jpeg",
+        dialogTitle: download ? "Save the bill" : "Open the bill",
+      });
+    } else {
+      fail(`Saved: ${out.uri}`);
+    }
+  } catch (e: any) {
+    fail(e?.message || "Could not open the bill.");
+  }
+}
 import { Btn, IconBtn, WebPageHeader, ui } from "../components/web/webUi";
 
 interface InboxRequest {
   id: string;
+  canCancel?: boolean; // own permission request that has not started yet (pending or approved)
   userId: string;
   userName: string;
   category: "Leave" | "Permission" | "Expense" | "Advance" | "Shift" | "Overtime" | "OD";
@@ -53,6 +110,8 @@ interface InboxRequest {
   status: "PENDING" | "APPROVED" | "REJECTED";
   balance?: number;
   amount?: string;
+  hasBill?: boolean; // claim: the bill file is stored (older claims have only a file name)
+  billName?: string | null;
   requestedHours?: number;
   requestedDays?: number;
   approvedHours?: number;
@@ -250,6 +309,40 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
     start.setDate(now.getDate() - (preset === "7D" ? 7 : 30));
     setStartDate(start.toISOString().split("T")[0]);
     setEndDate(endStr);
+  };
+
+  // Employee: cancel an own permission before it starts (an approved one gives the permission balance back)
+  const cancelPermission = (item: InboxRequest) => {
+    const run = async () => {
+      setProcessingId(item.id);
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/users/${encodeURIComponent(String(currentUserId))}/requests/${encodeURIComponent(item.id)}/cancel`,
+          { method: "POST" }
+        );
+        const j = await res.json().catch(() => ({}));
+        const msg = j?.message || (res.ok ? "Permission cancelled." : `Could not cancel (${res.status}).`);
+        if (Platform.OS === "web") window.alert(msg);
+        else Alert.alert(res.ok ? "Cancelled" : "Not cancelled", msg);
+        if (res.ok) await fetchInbox();
+      } catch {
+        if (Platform.OS === "web") window.alert("Could not reach the server. Please try again.");
+        else Alert.alert("No connection", "Could not reach the server. Please try again.");
+      } finally {
+        setProcessingId(null);
+      }
+    };
+    const ask = `Cancel this permission?\n${item.details || ""}${
+      item.status?.toUpperCase() === "APPROVED" ? "\n\nIt is already approved: your permission balance will be given back." : ""
+    }`;
+    if (Platform.OS === "web") {
+      if (window.confirm(ask)) run();
+    } else {
+      Alert.alert("Cancel permission", ask, [
+        { text: "Keep", style: "cancel" },
+        { text: "Cancel permission", style: "destructive", onPress: run },
+      ]);
+    }
   };
 
   // Open Decision Modal for Admin
@@ -890,7 +983,7 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
                       {userRole === "ADMIN" ? item.type : item.details}
                     </Text>
                     {item.amount && (
-                      <Text className="text-xs font-black text-[#5B4FD1]">{item.amount}</Text>
+                      <Text className="text-xs font-black text-[#5B4FD1]">{formatINR(item.amount)}</Text>
                     )}
                     {item.balance !== undefined && (
                       <Text className="text-[10px] font-black text-emerald-600">
@@ -926,6 +1019,29 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
                       "{item.note}"
                     </Text>
                   ) : null}
+
+                  {/* Claim bill: view / download (stored in the bucket) */}
+                  {item.category === "Expense" && (
+                    <View className="flex-row items-center justify-between mt-1.5 pt-1.5 border-t border-slate-200/60">
+                      {item.hasBill ? (
+                        <>
+                          <Text className="text-[10.5px] font-bold text-[#1F1B3D] flex-1 pr-2" numberOfLines={1}>
+                            Bill: {item.billName}
+                          </Text>
+                          <TouchableOpacity onPress={() => openClaimBill(item, false)} className="px-2.5 py-1 rounded-lg bg-white border border-[#5B4FD1]/30 mr-1.5">
+                            <Text className="text-[10px] font-black text-[#5B4FD1]">View</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => openClaimBill(item, true)} className="px-2.5 py-1 rounded-lg bg-[#5B4FD1]">
+                            <Text className="text-[10px] font-black text-white">Download</Text>
+                          </TouchableOpacity>
+                        </>
+                      ) : (
+                        <Text className="text-[10.5px] font-bold text-amber-700">
+                          Bill not uploaded (submitted from an older app version){userRole === "ADMIN" ? " - ask the employee for the bill" : ""}
+                        </Text>
+                      )}
+                    </View>
+                  )}
                 </View>
 
                 {/* Submission Date */}
@@ -995,7 +1111,11 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
                         </Text>
                       </View>
 
-                      {item.actionedBy && item.actionedAt ? (
+                      {item.status?.toUpperCase() === "CANCELLED" ? (
+                        <Text className="text-[10px] font-bold text-[#7A76A6]">
+                          {userRole === "ADMIN" ? "Cancelled by the employee" : "Cancelled by you"}
+                        </Text>
+                      ) : item.actionedBy && item.actionedAt ? (
                         <Text className="text-[10px] font-bold text-[#7A76A6]">
                           {isApproved ? "Approved by" : "Rejected by"} {item.actionedBy} • {item.actionedAt}
                         </Text>
@@ -1013,6 +1133,21 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
                           Remarks: {item.rejectionReason}
                         </Text>
                       </View>
+                    ) : null}
+
+                    {/* Own permission that has not started yet: cancel (also after approval) */}
+                    {userRole !== "ADMIN" && item.canCancel ? (
+                      <TouchableOpacity
+                        onPress={() => cancelPermission(item)}
+                        disabled={isBusy}
+                        className="bg-white border border-[#E4453C]/40 py-2.5 rounded-xl items-center justify-center"
+                      >
+                        {isBusy ? (
+                          <ActivityIndicator size="small" color="#E4453C" />
+                        ) : (
+                          <Text className="text-xs font-black text-[#E4453C]">Cancel permission</Text>
+                        )}
+                      </TouchableOpacity>
                     ) : null}
                   </View>
                 )}
@@ -1042,8 +1177,27 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
                   activeItem?.category?.toLowerCase() === "claim" || 
                   activeItem?.category?.toLowerCase() === "advance") && (
                   <View>
+                    {activeItem?.category === "Expense" && (
+                      activeItem?.hasBill ? (
+                        <View className="flex-row items-center bg-[#EEECFA] border border-[#5B4FD1]/20 rounded-xl px-3 py-2 mb-2">
+                          <Text className="text-[11px] font-bold text-[#1F1B3D] flex-1 pr-2" numberOfLines={1}>
+                            Verify the bill: {activeItem?.billName}
+                          </Text>
+                          <TouchableOpacity onPress={() => activeItem && openClaimBill(activeItem, false)} className="px-2.5 py-1 rounded-lg bg-white border border-[#5B4FD1]/30 mr-1.5">
+                            <Text className="text-[10px] font-black text-[#5B4FD1]">View</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => activeItem && openClaimBill(activeItem, true)} className="px-2.5 py-1 rounded-lg bg-[#5B4FD1]">
+                            <Text className="text-[10px] font-black text-white">Download</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : (
+                        <Text className="text-[11px] font-bold text-amber-700 mb-2">
+                          No bill stored for this claim (older app version). Ask the employee for the bill before approving.
+                        </Text>
+                      )
+                    )}
                     <Text className="text-[11px] font-bold text-[#1F1B3D] mb-1">
-                      Approved Amount (Requested: {activeItem?.amount || "N/A"})
+                      Approved Amount (Requested: {activeItem?.amount ? formatINR(activeItem.amount) : "N/A"})
                     </Text>
                     <TextInput
                       value={customAmount}

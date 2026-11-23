@@ -24,7 +24,13 @@ const GOOD_ACCURACY_M = 100;
 const FIX_ATTEMPT_TIMEOUTS_MS = [15000, 20000, 25000]; // 3 attempts to get a position
 const SEND_BACKOFF_MS = [0, 3000, 10000]; // 3 attempts to send to the server
 const SEND_TIMEOUT_MS = 20000;
-const MAX_OUTBOX = 100;
+const MAX_OUTBOX = 2000; // a full day without network
+const BATCH_SIZE = 50; // points per upload request
+// Battery saving: after this long without moving, the phone samples with low power (a precise fix is still taken
+// for every 10-minute heartbeat). Any movement switches back to high accuracy at once.
+const LOW_POWER_AFTER_MS = 30 * 60 * 1000;
+const LOW_SAMPLE_INTERVAL_MS = 4 * 60 * 1000;
+const BATCH_URL = `${BASE_HOST}/api/attendance/location-ping/batch`;
 
 const KEY = {
   empId: "active_tracking_emp_id",
@@ -32,6 +38,8 @@ const KEY = {
   lastSent: "tracking_last_sent_point",
   outbox: "tracking_outbox_v1",
   lastGood: "tracking_last_good_fix",
+  mode: "tracking_power_mode", // HIGH | LOW
+  lastMoveAt: "tracking_last_move_at",
 };
 
 // GOOD = accurate fix, LOW = weak fix, STALE = no usable fix (last known position is shown)
@@ -95,7 +103,39 @@ const distanceM = (lat1: number, lon1: number, lat2: number, lon2: number) => {
 };
 
 // ------------------------------- outbox (send retry) -------------------------------
-async function loadOutbox(): Promise<PingPayload[]> {
+// Points are saved here FIRST and deleted only after the server confirmed them.
+// New app builds: SQLite (one row per point, crash-safe). Older builds without the SQLite module (OTA update):
+// the same list in AsyncStorage as before. The module is loaded at run time, so an older build never crashes.
+let sqliteDb: any = null;
+let sqliteTried = false;
+
+async function queueDb(): Promise<any> {
+  if (sqliteTried) return sqliteDb;
+  sqliteTried = true;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const SQLite = require("expo-sqlite");
+    const db = await SQLite.openDatabaseAsync("tracking_queue.db");
+    await db.execAsync(
+      "CREATE TABLE IF NOT EXISTS outbox (ping_id TEXT PRIMARY KEY NOT NULL, captured_at INTEGER NOT NULL, payload TEXT NOT NULL)"
+    );
+    sqliteDb = db;
+    // points queued by an older app version: move them into SQLite once
+    const raw = await AsyncStorage.getItem(KEY.outbox);
+    const old: PingPayload[] = raw ? JSON.parse(raw) : [];
+    for (const p of old) {
+      await db.runAsync("INSERT OR IGNORE INTO outbox (ping_id, captured_at, payload) VALUES (?, ?, ?)", [
+        p.pingId, p.capturedAtMs || Date.now(), JSON.stringify(p),
+      ]);
+    }
+    if (old.length) await AsyncStorage.removeItem(KEY.outbox);
+  } catch {
+    sqliteDb = null; // no SQLite in this build: AsyncStorage below
+  }
+  return sqliteDb;
+}
+
+async function loadOutboxAsync(): Promise<PingPayload[]> {
   try {
     const raw = await AsyncStorage.getItem(KEY.outbox);
     return raw ? JSON.parse(raw) : [];
@@ -104,15 +144,67 @@ async function loadOutbox(): Promise<PingPayload[]> {
   }
 }
 
-async function saveOutbox(items: PingPayload[]) {
-  await AsyncStorage.setItem(KEY.outbox, JSON.stringify(items.slice(-MAX_OUTBOX)));
+async function queueCount(): Promise<number> {
+  const db = await queueDb();
+  if (db) {
+    try {
+      const r: { n: number } | null = await db.getFirstAsync("SELECT COUNT(*) AS n FROM outbox");
+      return r?.n ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+  return (await loadOutboxAsync()).length;
+}
+
+/** Oldest points first. */
+async function queuePeek(limit: number): Promise<PingPayload[]> {
+  const db = await queueDb();
+  if (db) {
+    const rows: { payload: string }[] = await db.getAllAsync("SELECT payload FROM outbox ORDER BY captured_at LIMIT ?", [limit]);
+    return rows.map((r) => JSON.parse(r.payload));
+  }
+  return (await loadOutboxAsync()).slice(0, limit);
+}
+
+async function queueRemove(ids: string[]) {
+  if (!ids.length) return;
+  const db = await queueDb();
+  if (db) {
+    for (const id of ids) await db.runAsync("DELETE FROM outbox WHERE ping_id = ?", [id]);
+    return;
+  }
+  const gone = new Set(ids);
+  const items = (await loadOutboxAsync()).filter((i) => !gone.has(i.pingId));
+  await AsyncStorage.setItem(KEY.outbox, JSON.stringify(items));
+}
+
+async function queueClear() {
+  const db = await queueDb();
+  if (db) {
+    await db.runAsync("DELETE FROM outbox");
+    return;
+  }
+  await AsyncStorage.setItem(KEY.outbox, JSON.stringify([]));
 }
 
 function enqueue(p: PingPayload) {
   return withLock(async () => {
-    const items = await loadOutbox();
+    const db = await queueDb();
+    if (db) {
+      await db.runAsync("INSERT OR IGNORE INTO outbox (ping_id, captured_at, payload) VALUES (?, ?, ?)", [
+        p.pingId, p.capturedAtMs || Date.now(), JSON.stringify(p),
+      ]);
+      // keep the newest MAX_OUTBOX points
+      await db.runAsync(
+        "DELETE FROM outbox WHERE ping_id IN (SELECT ping_id FROM outbox ORDER BY captured_at DESC LIMIT -1 OFFSET ?)",
+        [MAX_OUTBOX]
+      );
+      return;
+    }
+    const items = await loadOutboxAsync();
     if (!items.some((i) => i.pingId === p.pingId)) items.push(p);
-    await saveOutbox(items);
+    await AsyncStorage.setItem(KEY.outbox, JSON.stringify(items.slice(-MAX_OUTBOX)));
   });
 }
 
@@ -157,7 +249,8 @@ async function sendOnce(p: PingPayload): Promise<SendResult> {
       await noteDiag("stop", "Server said SHIFT_NOT_ACTIVE (no active check-in)");
       return "STOP";
     }
-    if (res.status >= 500 || res.status === 408 || res.status === 429) return "RETRY";
+    // busy server, expired login (the token is renewed and tried again later) or outdated app: keep the point
+    if (res.status >= 500 || res.status === 408 || res.status === 429 || res.status === 401 || res.status === 426) return "RETRY";
     await noteDiag("drop", `Server refused a point (HTTP ${res.status}${code ? " " + code : ""})`);
     return "DROP"; // other 4xx: this payload will never be accepted
   } catch {
@@ -167,26 +260,94 @@ async function sendOnce(p: PingPayload): Promise<SendResult> {
   }
 }
 
-// Sends queued pings oldest-first, 3 attempts each. Stops at the first network failure and keeps the rest.
+// The whole batch in one request (server /location-ping/batch). UNSUPPORTED = older server: send one by one.
+type BatchResult =
+  | { kind: "OK"; done: string[] }
+  | { kind: "RETRY" }
+  | { kind: "STOP"; code: string }
+  | { kind: "UNSUPPORTED" };
+let batchUnsupported = false;
+
+async function sendBatch(empId: string, points: PingPayload[]): Promise<BatchResult> {
+  if (batchUnsupported) return { kind: "UNSUPPORTED" };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS * 2);
+  try {
+    const res = await fetch(BATCH_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ empId, points }),
+      signal: controller.signal,
+    });
+    if (res.status === 404 || res.status === 405) {
+      batchUnsupported = true;
+      return { kind: "UNSUPPORTED" };
+    }
+    if (!res.ok) return { kind: "RETRY" }; // 5xx, 401 (token renewed next time), 426, 429 ...
+    const j: any = await res.json().catch(() => null);
+    if (!j) return { kind: "RETRY" };
+    if (j.stop) {
+      await noteDiag("stop", `Server said ${j.stop}`);
+      return { kind: "STOP", code: String(j.stop) };
+    }
+    const done: string[] = [...(Array.isArray(j.accepted) ? j.accepted : [])];
+    for (const d of Array.isArray(j.dropped) ? j.dropped : []) {
+      if (d?.pingId) done.push(String(d.pingId));
+      await noteDiag("drop", `Server refused a point (${d?.code || "?"})`);
+    }
+    return { kind: "OK", done };
+  } catch {
+    return { kind: "RETRY" }; // offline, timeout
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Sends queued points oldest-first, in batches (3 attempts each). A point is deleted only after the server
+// confirmed it (stored or refused for good). Stops at the first network failure and keeps the rest.
 export function flushOutbox(): Promise<void> {
   return withLock(async () => {
-    let items = await loadOutbox();
-    while (items.length > 0) {
-      const next = items[0];
-      let result: SendResult = "RETRY";
+    for (let guard = 0; guard < 100; guard++) {
+      const items = await queuePeek(BATCH_SIZE);
+      if (items.length === 0) return;
+      const empId = items[0].empId;
+      const group = items.filter((i) => i.empId === empId);
+
+      let result: BatchResult = { kind: "RETRY" };
       for (const wait of SEND_BACKOFF_MS) {
         if (wait) await sleep(wait);
-        result = await sendOnce(next);
-        if (result !== "RETRY") break;
+        result = await sendBatch(empId, group);
+        if (result.kind !== "RETRY") break;
       }
-      if (result === "RETRY") break; // still offline: try again at the next opportunity
-      if (result === "STOP") {
-        await saveOutbox([]);
+
+      if (result.kind === "UNSUPPORTED") {
+        // older server: one point per request (as before)
+        for (const next of group) {
+          let r: SendResult = "RETRY";
+          for (const wait of SEND_BACKOFF_MS) {
+            if (wait) await sleep(wait);
+            r = await sendOnce(next);
+            if (r !== "RETRY") break;
+          }
+          if (r === "RETRY") return; // still offline: try again at the next opportunity
+          if (r === "STOP") {
+            await queueClear();
+            await teardownTracking();
+            return;
+          }
+          await queueRemove([next.pingId]); // OK or DROP
+        }
+        continue;
+      }
+      if (result.kind === "RETRY") return;
+      if (result.kind === "STOP") {
+        // the server refuses every point of this employee (not a sales / tracked role today)
+        await queueClear();
         await teardownTracking();
         return;
       }
-      items = items.slice(1); // OK or DROP
-      await saveOutbox(items);
+      if (result.done.length === 0) return; // nothing confirmed (server problem): keep everything, try later
+      await queueRemove(result.done);
     }
   });
 }
@@ -374,6 +535,8 @@ async function captureAndQueue(seeds: Location.LocationObject[]): Promise<void> 
     toSend.push({ seed: null, reason: "HEARTBEAT" }); // app opened: nothing was sent for a while
   }
 
+  if (ordered.length > 0) await adjustPowerMode(toSend.some((t) => t.reason === "MOVED" || t.reason === "FIRST"));
+
   if (toSend.length === 0) {
     await flushOutbox(); // nothing new, but deliver anything still pending
     return;
@@ -405,6 +568,33 @@ async function captureAndQueue(seeds: Location.LocationObject[]): Promise<void> 
   await flushOutbox();
 }
 
+// Battery saving: standing still for LOW_POWER_AFTER_MS -> low-power sampling (the 10-minute heartbeat still takes
+// a precise fix); any movement -> high accuracy again. A failed switch simply keeps the current mode.
+async function adjustPowerMode(moved: boolean): Promise<void> {
+  try {
+    const now = Date.now();
+    const mode = (await AsyncStorage.getItem(KEY.mode)) || "HIGH";
+    if (moved) {
+      await AsyncStorage.setItem(KEY.lastMoveAt, String(now));
+      if (mode === "LOW") {
+        await startLocationService("HIGH");
+      }
+      return;
+    }
+    if (mode !== "HIGH") return;
+    const lastMove = Number((await AsyncStorage.getItem(KEY.lastMoveAt)) || 0);
+    if (!lastMove) {
+      await AsyncStorage.setItem(KEY.lastMoveAt, String(now));
+      return;
+    }
+    if (now - lastMove >= LOW_POWER_AFTER_MS) {
+      await startLocationService("LOW");
+    }
+  } catch (e: any) {
+    console.warn("Power mode switch failed:", e?.message);
+  }
+}
+
 // Must run at root bundle level (App.tsx imports this file)
 // The background task does not exist on the web, so it is only defined on phones
 if (Platform.OS !== "web") TaskManager.defineTask(SHIFT_LOCATION_TASK, async ({ data, error }: any) => {
@@ -424,11 +614,33 @@ if (Platform.OS !== "web") TaskManager.defineTask(SHIFT_LOCATION_TASK, async ({ 
 // shift point and sends it through the same outbox, so it lands in route_data_json. Only during a checked-in shift.
 const handledPings = new Set<string>();
 
-export async function respondToPing(requestId: string) {
+export async function respondToPing(requestId: string, reason?: string, pushEmpId?: string) {
   if (requestId) {
     if (handledPings.has(requestId)) return;
     handledPings.add(requestId);
   }
+  const watchdog = reason === "WATCHDOG";
+  // Server watchdog (no point for 30 min): restart the tracking service if the phone stopped it, or start it again
+  // from the server's check-in state when this phone lost it (reinstall, logout, check-in on another phone).
+  if (Platform.OS === "android") {
+    try {
+      const localActive = (await AsyncStorage.getItem(KEY.active)) === "true";
+      if (!localActive && pushEmpId) {
+        await syncTrackingWithServer(pushEmpId, "push");
+      } else if (localActive) {
+        const running = await Location.hasStartedLocationUpdatesAsync(SHIFT_LOCATION_TASK).catch(() => false);
+        if (!running) {
+          await startLocationService("HIGH");
+          const id = (await AsyncStorage.getItem(KEY.empId)) || pushEmpId || "";
+          reportTrackingStatus(id, "RESTARTED", `Tracking was stopped by the phone - restarted by the server at ${hhmm(Date.now())}`).catch(() => {});
+        }
+      }
+    } catch (e: any) {
+      const id = (await AsyncStorage.getItem(KEY.empId)) || pushEmpId || "";
+      reportTrackingStatus(id, "START_FAILED", `Phone refused to restart tracking: ${String(e?.message || e).slice(0, 120)}`).catch(() => {});
+    }
+  }
+
   const empId = await AsyncStorage.getItem(KEY.empId);
   const active = await AsyncStorage.getItem(KEY.active);
   if (!empId || active !== "true") return; // not checked in: never share location
@@ -436,7 +648,8 @@ export async function respondToPing(requestId: string) {
   const battery = await readBattery();
   const point = await buildPoint(empId, null, battery, true); // always builds a point; remarks explain a weak/missing position
   point.pingId = `${point.pingId}-REQ${Date.now().toString(36)}`; // unique, so it is never treated as a duplicate
-  point.remarks = point.remarks ? `Manager ping - ${point.remarks}` : "Manager ping";
+  const label = watchdog ? "Tracking check" : "Manager ping";
+  point.remarks = point.remarks ? `${label} - ${point.remarks}` : label;
   await enqueue(point);
 
   if (point.latitude != null && point.longitude != null && point.quality !== "STALE") {
@@ -447,11 +660,14 @@ export async function respondToPing(requestId: string) {
   }
   await flushOutbox();
 
-  // Tell the employee, so a location request is never invisible
-  Notifications.scheduleNotificationAsync({
-    content: { title: "Location shared", body: "Your manager requested your current location." },
-    trigger: null,
-  }).catch(() => {});
+  // Tell the employee, so a manager's location request is never invisible (the automatic tracking check is
+  // part of the shift tracking the employee already sees in the "Shift Tracking Active" notification)
+  if (!watchdog) {
+    Notifications.scheduleNotificationAsync({
+      content: { title: "Location shared", body: "Your manager requested your current location." },
+      trigger: null,
+    }).catch(() => {});
+  }
 }
 
 // "Phone status" from the admin: reply with the phone's own settings. No location is sent and nothing is saved.
@@ -491,7 +707,7 @@ export async function respondToStatus(requestId: string, empId: string) {
     const d = raw ? JSON.parse(raw) : {};
     lastStop = d.stop ?? null;
     lastDrop = d.drop ?? null;
-    outboxPending = (await loadOutbox()).length;
+    outboxPending = await queueCount();
   } catch {
     /* optional extras */
   }
@@ -536,6 +752,7 @@ interface PushRequest {
   type: "PING_REQUEST" | "STATUS_REQUEST";
   requestId: string;
   empId?: string;
+  reason?: string; // "WATCHDOG" = the server's automatic tracking check
 }
 
 function findRequest(node: any, depth = 0): PushRequest | null {
@@ -553,7 +770,12 @@ function findRequest(node: any, depth = 0): PushRequest | null {
   }
   if (typeof node !== "object") return null;
   if ((node.type === "PING_REQUEST" || node.type === "STATUS_REQUEST") && typeof node.requestId === "string") {
-    return { type: node.type, requestId: node.requestId, empId: typeof node.empId === "string" ? node.empId : undefined };
+    return {
+      type: node.type,
+      requestId: node.requestId,
+      empId: typeof node.empId === "string" ? node.empId : undefined,
+      reason: typeof node.reason === "string" ? node.reason : undefined,
+    };
   }
   for (const k of Object.keys(node)) {
     const found = findRequest(node[k], depth + 1);
@@ -566,7 +788,7 @@ function handleRequest(req: PushRequest | null) {
   if (!req) return Promise.resolve();
   return req.type === "STATUS_REQUEST"
     ? respondToStatus(req.requestId, req.empId ?? "")
-    : respondToPing(req.requestId);
+    : respondToPing(req.requestId, req.reason, req.empId);
 }
 
 // Runs when a ping / status push arrives while the app is closed or in the background
@@ -584,6 +806,53 @@ export function registerPingListeners(): () => void {
   });
   Notifications.registerTaskAsync(PING_PUSH_TASK).catch(() => {}); // ping push while the app is closed
   return () => sub.remove();
+}
+
+// ------------------------------- tracking status for the admin page -------------------------------
+// The phone tells the server WHY tracking cannot start or run (or that it runs again), while the app is open.
+// No push (FCM) needed. The same report is sent at most once every 10 minutes. Never throws.
+type ClientStatusCode =
+  | "STARTED"
+  | "RESTARTED"
+  | "DISCLOSURE_DECLINED"
+  | "PERMISSION_DENIED"
+  | "BACKGROUND_DENIED"
+  | "PRECISE_OFF"
+  | "GPS_OFF"
+  | "START_FAILED"
+  | "OUTBOX_PENDING"
+  | "BATTERY_RESTRICTED"
+  | "IOS_NOT_SUPPORTED";
+
+const KEY_STATUS_SENT = "tracking_client_status_sent";
+const STATUS_REPEAT_MS = 10 * 60 * 1000;
+
+export async function reportTrackingStatus(empId: string, code: ClientStatusCode, message: string): Promise<void> {
+  if (!empId) return;
+  try {
+    const raw = await AsyncStorage.getItem(KEY_STATUS_SENT);
+    const last = raw ? JSON.parse(raw) : null;
+    if (last && last.empId === empId && last.code === code && last.message === message && Date.now() - last.at < STATUS_REPEAT_MS) {
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${BASE_HOST}/api/tracking/client-status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ empId, code, message }),
+        signal: controller.signal,
+      });
+      if (res.ok) {
+        await AsyncStorage.setItem(KEY_STATUS_SENT, JSON.stringify({ empId, code, message, at: Date.now() }));
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    /* offline or old server: the admin page still works it out from the missing points */
+  }
 }
 
 // ------------------------------- public API -------------------------------
@@ -608,7 +877,7 @@ function showBackgroundLocationDisclosure(): Promise<boolean> {
 
 async function teardownTracking() {
   await AsyncStorage.setItem(KEY.active, "false");
-  await AsyncStorage.multiRemove([KEY.empId, KEY.lastSent, KEY.lastGood]);
+  await AsyncStorage.multiRemove([KEY.empId, KEY.lastSent, KEY.lastGood, KEY.mode, KEY.lastMoveAt]);
   try {
     if (await Location.hasStartedLocationUpdatesAsync(SHIFT_LOCATION_TASK)) {
       await Location.stopLocationUpdatesAsync(SHIFT_LOCATION_TASK);
@@ -625,7 +894,12 @@ export async function startShiftTracking(
 ): Promise<{ started: boolean; warning?: string }> {
   // Live tracking is Android-only for now: on iPhone no background task or "Always" permission is requested.
   // Check-in and check-out locations are still saved by the punch itself.
-  if (Platform.OS !== "android") return { started: false };
+  if (Platform.OS !== "android") {
+    if (Platform.OS === "ios" && (workMode || "").toUpperCase() === "SALES") {
+      reportTrackingStatus(empId, "IOS_NOT_SUPPORTED", "iPhone: route tracking runs on Android phones only").catch(() => {});
+    }
+    return { started: false };
+  }
 
   // Expo Go cannot run background location on Android at all: skip quietly instead of throwing its error.
   // Use a development build or the installed APK to test tracking.
@@ -648,16 +922,23 @@ export async function startShiftTracking(
   if (bgBefore?.status !== "granted") {
     const accepted = await showBackgroundLocationDisclosure();
     if (!accepted) {
+      reportTrackingStatus(empId, "DISCLOSURE_DECLINED", `Employee declined location tracking at ${hhmm(Date.now())}`).catch(() => {});
       return { started: false, warning: "Shift route tracking is off because location access was not allowed." };
     }
   }
 
   const fg = await Location.requestForegroundPermissionsAsync();
   if (fg.status !== "granted") {
+    reportTrackingStatus(empId, "PERMISSION_DENIED", `Location permission denied (${hhmm(Date.now())})`).catch(() => {});
     return { started: false, warning: "Location permission is required for shift tracking." };
   }
   const bg = await Location.requestBackgroundPermissionsAsync();
   if (bg.status !== "granted") {
+    reportTrackingStatus(
+      empId,
+      "BACKGROUND_DENIED",
+      `Location permission is 'While using the app' - tracking cannot run in background (${hhmm(Date.now())})`
+    ).catch(() => {});
     return {
       started: false,
       warning: "Please choose 'Allow all the time' in location permission so your shift route can be recorded.",
@@ -665,9 +946,18 @@ export async function startShiftTracking(
   }
 
   let warning: string | undefined;
+  let statusCode: ClientStatusCode = "STARTED";
+  let statusMsg = `Tracking started at ${hhmm(Date.now())}`;
   if ((fg as any).android?.accuracy === "coarse") {
     warning =
       "'Precise location' is turned off. Turn it on in app settings, otherwise locations can be about 2 km off.";
+    statusCode = "PRECISE_OFF";
+    statusMsg = "Precise location is off - points may be about 2 km off";
+  }
+  const gpsOn = await Location.hasServicesEnabledAsync().catch(() => true);
+  if (!gpsOn) {
+    statusCode = "GPS_OFF";
+    statusMsg = `Phone location (GPS) is OFF (${hhmm(Date.now())})`;
   }
 
   const wasActive =
@@ -684,20 +974,186 @@ export async function startShiftTracking(
   }
 
   if (!(await Location.hasStartedLocationUpdatesAsync(SHIFT_LOCATION_TASK))) {
-    await Location.startLocationUpdatesAsync(SHIFT_LOCATION_TASK, {
-      accuracy: Location.Accuracy.High,
-      timeInterval: SAMPLE_INTERVAL_MS, // Android only (iPhone is not tracked)
-      distanceInterval: 0, // time-based: a stationary rep still needs an entry
-      pausesUpdatesAutomatically: false,
-      showsBackgroundLocationIndicator: true,
-      foregroundService: {
-        notificationTitle: "Shift Tracking Active",
-        notificationBody: "Logging periodic location for your shift.",
-        notificationColor: "#5B4FD1",
-      },
-    });
+    try {
+      await startLocationService();
+    } catch (e: any) {
+      reportTrackingStatus(empId, "START_FAILED", `Phone refused to start tracking: ${String(e?.message || e).slice(0, 120)}`).catch(() => {});
+      throw e;
+    }
+    // it was running for this employee before, but the phone stopped it (battery saver / app closed)
+    if (wasActive) {
+      statusCode = statusCode === "STARTED" ? "RESTARTED" : statusCode;
+      if (statusCode === "RESTARTED") {
+        statusMsg = `Tracking was stopped by the phone (battery saver / app closed) - restarted at ${hhmm(Date.now())}`;
+      }
+    }
   }
+  reportTrackingStatus(empId, statusCode, statusMsg).catch(() => {});
   return { started: true, warning };
+}
+
+// The background location service with the shift tracking settings.
+// HIGH = GPS every 2 minutes (moving); LOW = low-power position every 4 minutes (standing still for 30+ minutes).
+// Calling it again while running just changes the settings.
+async function startLocationService(mode: "HIGH" | "LOW" = "HIGH") {
+  await Location.startLocationUpdatesAsync(SHIFT_LOCATION_TASK, {
+    accuracy: mode === "HIGH" ? Location.Accuracy.High : Location.Accuracy.Balanced,
+    timeInterval: mode === "HIGH" ? SAMPLE_INTERVAL_MS : LOW_SAMPLE_INTERVAL_MS, // Android only (iPhone is not tracked)
+    distanceInterval: 0, // time-based: a stationary rep still needs an entry
+    pausesUpdatesAutomatically: false,
+    showsBackgroundLocationIndicator: true,
+    foregroundService: {
+      notificationTitle: "Shift Tracking Active",
+      notificationBody: "Logging periodic location for your shift.",
+      notificationColor: "#5B4FD1",
+    },
+  });
+  await AsyncStorage.setItem(KEY.mode, mode);
+  if (mode === "HIGH") await AsyncStorage.setItem(KEY.lastMoveAt, String(Date.now()));
+}
+
+/**
+ * Call when the app opens or comes back to the front (App.tsx does). Only for a shift that is already being
+ * tracked on this phone: never asks for permissions and never starts tracking for someone new.
+ *  - the phone stopped the tracking service -> start it again and report it
+ *  - permission removed / phone location off -> report the reason (the admin page shows it)
+ *  - then a due point is taken and anything waiting is uploaded (runTrackingHealthCheck)
+ */
+export async function resumeTrackingIfActive(): Promise<void> {
+  if (Platform.OS !== "android") return;
+  if (Constants.executionEnvironment === ExecutionEnvironment.StoreClient) return;
+  try {
+    const empId = await AsyncStorage.getItem(KEY.empId);
+    const active = (await AsyncStorage.getItem(KEY.active)) === "true";
+    if (!empId || !active) return;
+
+    const fg = await Location.getForegroundPermissionsAsync().catch(() => null);
+    if (fg && fg.status !== "granted") {
+      await reportTrackingStatus(empId, "PERMISSION_DENIED", `Location permission was removed (${hhmm(Date.now())})`);
+      return;
+    }
+    const bg = await Location.getBackgroundPermissionsAsync().catch(() => null);
+    if (bg && bg.status !== "granted") {
+      await reportTrackingStatus(
+        empId,
+        "BACKGROUND_DENIED",
+        `'Allow all the time' permission was removed - tracking cannot run in background (${hhmm(Date.now())})`
+      );
+      return;
+    }
+    const gpsOn = await Location.hasServicesEnabledAsync().catch(() => true);
+    if (!gpsOn) {
+      await reportTrackingStatus(empId, "GPS_OFF", `Phone location (GPS) is OFF (${hhmm(Date.now())})`);
+    }
+
+    const running = await Location.hasStartedLocationUpdatesAsync(SHIFT_LOCATION_TASK).catch(() => false);
+    if (!running) {
+      try {
+        await startLocationService();
+        await reportTrackingStatus(
+          empId,
+          "RESTARTED",
+          `Tracking was stopped by the phone (battery saver / app closed) - restarted at ${hhmm(Date.now())}`
+        );
+      } catch (e: any) {
+        await reportTrackingStatus(empId, "START_FAILED", `Phone refused to restart tracking: ${String(e?.message || e).slice(0, 120)}`);
+        return;
+      }
+    } else if (gpsOn) {
+      await reportTrackingStatus(empId, "STARTED", "Tracking running");
+    }
+
+    await runTrackingHealthCheck();
+
+    const pending = await queueCount();
+    if (pending >= 5) {
+      await reportTrackingStatus(empId, "OUTBOX_PENDING", `${pending} points waiting to upload (no internet)`);
+    }
+  } catch (e: any) {
+    console.warn("Tracking resume check failed:", e?.message);
+  }
+}
+
+/**
+ * App open / back to the front, and the server's tracking check (push): asks the server whether this employee is
+ * checked in and tracked today, and makes this phone match:
+ *   - checked in + tracked, phone already tracking  -> resumeTrackingIfActive (restart if stopped, report status)
+ *   - checked in + tracked, phone NOT tracking       -> start without any prompt when the permissions allow it
+ *     (after a logout, reinstall, or a check-in on another phone); otherwise report the missing permission
+ *   - checked out                                    -> stop
+ * Only for the employee logged in on this phone. Offline: falls back to what this phone knows.
+ */
+export async function syncTrackingWithServer(empId: string, source: "app" | "push" = "app"): Promise<void> {
+  if (Platform.OS !== "android" || !empId) return;
+  if (Constants.executionEnvironment === ExecutionEnvironment.StoreClient) return;
+  const id = empId.trim().toUpperCase();
+  try {
+    const remembered = (await AsyncStorage.getItem("paycore_remembered_emp_id")) || "";
+    if (remembered.trim().toUpperCase() !== id) return; // never track another ID on this phone
+  } catch {
+    return;
+  }
+
+  let data: any = null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const res = await fetch(`${BASE_HOST}/api/attendance/today?empId=${encodeURIComponent(id)}`, { signal: controller.signal });
+    if (res.ok) data = await res.json();
+  } catch {
+    data = null;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!data) {
+    await resumeTrackingIfActive(); // offline: keep what this phone knows
+    return;
+  }
+
+  const localActive =
+    (await AsyncStorage.getItem(KEY.active)) === "true" && ((await AsyncStorage.getItem(KEY.empId)) || "").toUpperCase() === id;
+  if (data.last_punch_out) {
+    if (localActive) await stopShiftTracking(); // checked out (on another phone, or automatically)
+    return;
+  }
+  const checkedIn = !!data.first_punch_in;
+  if (!checkedIn || data.requires_live_tracking !== true) return;
+
+  if (localActive) {
+    await resumeTrackingIfActive();
+    return;
+  }
+
+  // checked in and tracked, but this phone is not tracking
+  const fg = await Location.getForegroundPermissionsAsync().catch(() => null);
+  const bg = await Location.getBackgroundPermissionsAsync().catch(() => null);
+  if (fg?.status !== "granted" || bg?.status !== "granted") {
+    await reportTrackingStatus(
+      id,
+      fg?.status !== "granted" ? "PERMISSION_DENIED" : "BACKGROUND_DENIED",
+      "Checked in, but tracking cannot start: location 'Allow all the time' is missing (open the Punch screen to fix)"
+    );
+    return;
+  }
+  await AsyncStorage.multiSet([
+    [KEY.empId, id],
+    [KEY.active, "true"],
+  ]);
+  await AsyncStorage.removeItem(KEY.lastSent);
+  try {
+    if (!(await Location.hasStartedLocationUpdatesAsync(SHIFT_LOCATION_TASK).catch(() => false))) {
+      await startLocationService("HIGH");
+    }
+    await reportTrackingStatus(
+      id,
+      "RESTARTED",
+      `Tracking started ${source === "push" ? "by the server's tracking check" : "when the app opened"} at ${hhmm(Date.now())}`
+    );
+  } catch (e: any) {
+    await reportTrackingStatus(id, "START_FAILED", `Phone refused to start tracking: ${String(e?.message || e).slice(0, 120)}`);
+    return;
+  }
+  if (source === "app") await runTrackingHealthCheck();
 }
 
 // Call on check-out. Delivers pending entries first, then stops.

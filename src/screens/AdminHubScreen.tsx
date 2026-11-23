@@ -512,6 +512,29 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                   </LinearGradient>
                 </TouchableOpacity>
 
+                {/* Policy acceptance (new joiners) */}
+                <TouchableOpacity
+                  onPress={() => navigation.navigate("PolicyAcceptanceReport")}
+                  activeOpacity={0.85}
+                  className="overflow-hidden rounded-[24px] border border-indigo-200/80"
+                  style={{ width: moduleCardWidth, minHeight: 140 }}
+                >
+                  <LinearGradient colors={["#F8F7FF", "#EEEDFE", "#E2E0FD"]} style={{ minHeight: 140, padding: 20 }}>
+                    <View className="flex-row items-center justify-between">
+                      <View className="flex-row items-center gap-3.5 flex-1 pr-3">
+                        <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#EEEDFE", borderWidth: 1, borderColor: "#D4D2FC" }} className="items-center justify-center">
+                          <ShieldCheck size={22} color="#5B4FD1" />
+                        </View>
+                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#1F1B3D] tracking-tight">Policy Acceptance</Text>
+                      </View>
+                      <View style={{ width: 54, height: 34, borderRadius: 17, backgroundColor: "#4F46E5", alignItems: "center", justifyContent: "center" }}>
+                        <ArrowRight size={20} color="#FFFFFF" strokeWidth={3} />
+                      </View>
+                    </View>
+                    <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#7A76A6] mt-3">New joiners: welcome mail & signed policies</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+
                 {/* Users */}
                 <TouchableOpacity
                   onPress={() => setAdminView("users")}

@@ -15,6 +15,7 @@ import { useResponsive } from "../hooks/useResponsive";
 import { UserSession } from "../services/UserSession";
 import { downloadPayslipPdf } from "../services/Payslipdownload";
 import PayslipView, { MonthStepper, monthKey, monthLabel } from "../components/Payslipview";
+import MyAllowancesCard from "../components/MyAllowancesCard";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { Badge, WebPageHeader } from "../components/web/webUi";
 
@@ -418,6 +419,8 @@ const changePhoto = async () => {
               </View>
 
               <PayslipView empId={String(currentUserId)} month={payMonth} mode="my" />
+              {/* sales staff: daily allowance, paid separately from the salary */}
+              <MyAllowancesCard empId={String(currentUserId)} />
             </View>
           )}
 

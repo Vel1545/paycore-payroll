@@ -40,12 +40,12 @@ import { Badge, IconBtn, WebPageHeader, ui } from "../components/web/webUi";
 
 type TabType = "ATTENDANCE" | "LEAVE" | "CLAIMS";
 type LeaveFilterType = "ALL" | "PERMISSION" | "HALF_DAY" | "FULL_DAY";
-type AttendanceFilterType = "ALL" | "PRESENT" | "ABSENT" | "ON_DUTY";
+type AttendanceFilterType = "ALL" | "PRESENT" | "ABSENT" | "ON_DUTY" |"HALF_DAY";
 
 const PAGE_SIZE = 100; // records shown per page
 
 const LEAVE_CATEGORIES: LeaveFilterType[] = ["ALL", "PERMISSION", "HALF_DAY", "FULL_DAY"];
-const ATTENDANCE_STATUS_FILTERS: AttendanceFilterType[] = ["ALL", "PRESENT", "ABSENT", "ON_DUTY"];
+const ATTENDANCE_STATUS_FILTERS: AttendanceFilterType[] = ["ALL", "PRESENT", "ABSENT", "ON_DUTY","HALF_DAY"];
 
 const ALL_COLUMNS = [
   { id: "date", label: "Date" },
@@ -349,6 +349,14 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
       return item.status === selectedAttendanceStatus;
     });
   }, [auditData.attendanceList, selectedAttendanceStatus]);
+
+  // Rows per status for the counts on the status tabs (ALL = every row of the loaded range)
+  const attendanceStatusCounts = useMemo(() => {
+    const list: any[] = auditData.attendanceList || [];
+    const counts: Record<string, number> = { ALL: list.length };
+    for (const item of list) counts[item.status] = (counts[item.status] || 0) + 1;
+    return counts;
+  }, [auditData.attendanceList]);
 
   // Local filter for subcategories of leaves
   const filteredLeaves = useMemo(() => {
@@ -764,7 +772,7 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
                     }`}
                   >
                     <Text className={`text-[10px] font-black uppercase ${isSelected ? "text-white" : "text-[#7A76A6]"}`}>
-                      {status.replace("_", " ")}
+                      {status.replace("_", " ")} ({attendanceStatusCounts[status] || 0})
                     </Text>
                   </TouchableOpacity>
                 );
@@ -884,6 +892,8 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
                                     ? "bg-emerald-100"
                                     : row.status === "ON_DUTY"
                                     ? "bg-amber-100"
+                                    : row.status === "HALF_DAY"
+                                    ? "bg-sky-100"
                                     : "bg-rose-100"
                                 }`}
                               >
@@ -893,10 +903,12 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
                                       ? "text-emerald-800"
                                       : row.status === "ON_DUTY"
                                       ? "text-amber-800"
+                                      : row.status === "HALF_DAY"
+                                      ? "text-sky-800"
                                       : "text-rose-800"
                                   }`}
                                 >
-                                  {row.status}
+                                  {String(row.status || "").replace(/_/g, " ")}
                                 </Text>
                               </View>
                             </View>

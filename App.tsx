@@ -14,7 +14,7 @@ import { useResponsive } from "./src/hooks/useResponsive";
 import WebSidebar from "./src/components/WebSidebar";
 
 // 1. Mandatory Headless Background Task Import (defines the shift-location and admin-ping background tasks)
-import { registerPingListeners } from "./src/services/shiftTrackingManager";
+import { registerPingListeners, resumeTrackingIfActive, syncTrackingWithServer } from "./src/services/shiftTrackingManager";
 import CheckoutApprovalsScreen from "./src/screens/Checkoutapprovalsscreen ";
 import MyCheckoutRequestsScreen from "./src/screens/Mycheckoutrequestsscreen ";
 import SalaryViewScreen from "./src/screens/Salaryviewscreen";
@@ -53,6 +53,9 @@ import { UserSession } from "./src/services/UserSession";
 import { installAuthFetch, loadAuthToken, onSessionExpired, setAuthToken } from "./src/services/apiAuth";
 import { recheckDevice, applyServerUser } from "./src/services/deviceRecheck";
 import AppUpdateGate from "./src/components/AppUpdateGate";
+import PolicyAcceptanceScreen from "./src/screens/PolicyAcceptanceScreen";
+import PolicyAcceptanceReportScreen from "./src/screens/PolicyAcceptanceReportScreen";
+import DailyAllowanceScreen from "./src/screens/DailyAllowanceScreen";
 import BirthdayTodayPopup from "./src/components/BirthdayTodayPopup";
 
 // Every fetch to our server now carries the login token (also inside background tasks)
@@ -124,6 +127,8 @@ const webLinkingConfig = {
         SalaryView: "salary-view",
         Notifications: "notifications",
         AdminHolidays: "admin-holidays",
+        PolicyAcceptanceReport: "policy-acceptance",
+        DailyAllowance: "daily-allowance",
         LiveTracking: "live-tracking",
         AttendanceAuditTabs: "attendance-audit",
       },
@@ -170,6 +175,22 @@ function MainTabs({ userSession, onLogout }: { userSession: any; onLogout: () =>
 
   // Admin "Ping now" / "Phone status" requests arrive as silent pushes (Android)
   useEffect(() => registerPingListeners(), []);
+
+  // Sales shift already being tracked on this phone: when the app opens or comes back to the front, restart
+  // tracking if the phone stopped it, upload waiting points, and tell the admin page about any problem.
+  // Never asks for permissions and never starts tracking for a new shift (check-in does that).
+  // The server decides: checked in + tracked today -> tracking runs on this phone (also after a logout, reinstall
+  // or a check-in on another phone, as long as the location permissions are granted); checked out -> stops.
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const empId = String(userSession?.empId || "");
+    const sync = () => (empId ? syncTrackingWithServer(empId, "app") : resumeTrackingIfActive()).catch(() => {});
+    sync();
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s === "active") sync();
+    });
+    return () => sub.remove();
+  }, [userSession?.empId]);
 
   // Laptop/PC website: left menu instead of the floating bottom bar. Phones keep the bottom bar.
   const { isWebDesktop } = useResponsive();
@@ -306,6 +327,8 @@ tabBarBadgeStyle: { backgroundColor: "#16A34A", color: "#FFFFFF", fontSize: 10, 
         <Tab.Screen name="Notifications" options={{ tabBarItemStyle: { display: "none" } }}>
   {(props) => <NotificationsScreen {...props} userSession={userSession} />}</Tab.Screen>
   <Tab.Screen name="AdminHolidays" component={AdminHolidaysScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+  <Tab.Screen name="PolicyAcceptanceReport" component={PolicyAcceptanceReportScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+  <Tab.Screen name="DailyAllowance" component={DailyAllowanceScreen} options={{ tabBarItemStyle: { display: "none" } }} />
 
       {/* Live Fleet Tracking & Route Polyline Maps */}
       <Tab.Screen name="LiveTracking" component={LiveTrackingScreen} options={{ tabBarItemStyle: { display: "none" } }} />
@@ -365,6 +388,44 @@ const showDeviceVerifyAlert = (message?: string) => {
 // While a restored session's device check has not got a server answer yet (offline), try again this often
 const DEVICE_RECHECK_RETRY_MS = 15 * 1000;
 
+// ---- Company policies at the first login (new joiners only - the server decides by the date of joining) ----
+type PolicyGateState = "checking" | "required" | "ok";
+const policyOkKey = (empId: string) => `paycore_policy_ok_${empId.trim().toUpperCase()}`;
+const POLICY_CHECK_TIMEOUT_MS = 8000;
+
+const readPolicyOk = async (empId: string): Promise<boolean> => {
+  try {
+    return (await AsyncStorage.getItem(policyOkKey(empId))) === "1";
+  } catch {
+    return false;
+  }
+};
+
+const savePolicyOk = async (empId: string) => {
+  try {
+    await AsyncStorage.setItem(policyOkKey(empId), "1");
+  } catch {}
+};
+
+// true = must accept now, false = nothing to accept, null = no answer (offline / old server: never blocks)
+const fetchPolicyRequired = async (empId: string): Promise<boolean | null> => {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = setTimeout(() => ctrl?.abort(), POLICY_CHECK_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${BASE_HOST}/api/policies/status?empId=${encodeURIComponent(empId)}`, {
+      cache: "no-store",
+      ...(ctrl ? { signal: ctrl.signal } : {}),
+    } as any);
+    if (!res.ok) return null;
+    const j = await res.json();
+    return j?.required === true;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 const clearRememberedLogin = async () => {
   try {
     await AsyncStorage.multiRemove(["paycore_remembered_emp_id", "@current_user_details"]);
@@ -398,6 +459,7 @@ function AppRoot() {
   const [initialDeepLinkRoute, setInitialDeepLinkRoute] = useState<string | null>(null);
   // true when the session was restored at start (no server call yet): the device is checked in the background
   const deviceCheckPending = React.useRef(false);
+  const [policyGate, setPolicyGate] = useState<PolicyGateState>("checking");
 
   useEffect(() => {
     const restoreSessionAndCheckLink = async () => {
@@ -442,12 +504,48 @@ function AppRoot() {
 
   const handleLogout = async () => {
     await clearActiveSessionOnly();
+    setPolicyGate("checking");
     setUserSession({
       isAuthenticated: false,
       empId: "",
       isAdmin: false,
     });
   };
+
+  // Company policies: a new joiner sees the policy screen after login until they are accepted.
+  // Already OK on this phone -> the app opens at once and the server is asked in the background.
+  // No server answer (offline) -> never blocks; asked again when the app comes back to the front.
+  useEffect(() => {
+    if (!userSession.isAuthenticated || !userSession.empId) return;
+    const empId = userSession.empId;
+    let cancelled = false;
+
+    const ask = async () => {
+      const required = await fetchPolicyRequired(empId);
+      if (cancelled) return;
+      if (required === true) {
+        setPolicyGate("required");
+      } else {
+        if (required === false) await savePolicyOk(empId);
+        if (!cancelled) setPolicyGate((g) => (g === "required" && required === null ? g : "ok"));
+      }
+    };
+
+    (async () => {
+      const cachedOk = await readPolicyOk(empId);
+      if (cancelled) return;
+      if (cachedOk) setPolicyGate("ok");
+      await ask();
+    })();
+
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") ask();
+    });
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+  }, [userSession.isAuthenticated, userSession.empId]);
 
   // While logged in: re-check account status on app resume and every 2 minutes.
   // If HR sets is_active = false, the user is logged out immediately.
@@ -556,6 +654,16 @@ function AppRoot() {
 
   const isUserAllowedIn = userSession.isAuthenticated;
 
+  if (isUserAllowedIn && policyGate === "checking") {
+    return (
+      <SafeAreaProvider className="flex-1 bg-[#F6F5FC]">
+        <View className="flex-1 justify-center items-center bg-[#F6F5FC]">
+          <ActivityIndicator size="large" color="#5B4FD1" />
+        </View>
+      </SafeAreaProvider>
+    );
+  }
+
   return (
     <AuthProvider>
       <SafeAreaProvider className="flex-1 bg-[#F6F5FC]">
@@ -579,6 +687,19 @@ function AppRoot() {
                           isAdmin: authData.isAdmin,
                         });
                       }}
+                    />
+                  )}
+                </RootStack.Screen>
+              ) : policyGate === "required" ? (
+                <RootStack.Screen name="PolicyGate">
+                  {() => (
+                    <PolicyAcceptanceScreen
+                      empId={userSession.empId}
+                      onAccepted={() => {
+                        savePolicyOk(userSession.empId);
+                        setPolicyGate("ok");
+                      }}
+                      onLogout={handleLogout}
                     />
                   )}
                 </RootStack.Screen>

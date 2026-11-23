@@ -18,7 +18,7 @@ import {
   Clock, Calendar as CalendarIcon, Fingerprint,
   User, Users, Cake, Scale, MessageSquare, Receipt,
   ShieldUser, ChevronLeft, AlertCircle, Sparkles,
-  ShieldCheck, Mail, FileText, DollarSign
+  ShieldCheck, Mail, FileText, IndianRupee
 } from "lucide-react-native";
 import { clearActiveSessionOnly } from "../utils/authStorage";
 import { LinearGradient } from "expo-linear-gradient";
@@ -497,13 +497,13 @@ const handleLogoutPress = async () => {
                     className="items-start justify-between relative rounded-[22px] overflow-hidden"
                   >
                     <View className="absolute -bottom-4 -right-3 items-center justify-center opacity-[0.14] pointer-events-none">
-                      <DollarSign size={100} color="#D97706" />
+                      <IndianRupee size={100} color="#D97706" />
                     </View>
                     <View 
                       className="items-center justify-center pointer-events-none"
                       style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#D97706" }}
                     >
-                      <DollarSign size={20} color="#FFFFFF" />
+                      <IndianRupee size={20} color="#FFFFFF" />
                     </View>
                     <View 
                       className="absolute bg-amber-500/15 rounded-full border border-amber-500/25" 
