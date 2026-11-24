@@ -35,6 +35,7 @@ import { BASE_HOST } from "../constants/config";
 import { authHeaders } from "../services/apiAuth";
 import { UserSession } from "../services/UserSession";
 import { getSavedSession } from "../utils/authStorage";
+import { formatINR } from "../utils/currency";
 import { useResponsive } from "../hooks/useResponsive";
 import { Badge, IconBtn, WebPageHeader, ui } from "../components/web/webUi";
 
@@ -1062,9 +1063,14 @@ export default function AttendanceAuditTabsScreen({ navigation }: any) {
                             <Text className="flex-1 min-w-[120px] text-xs font-semibold text-slate-600" numberOfLines={1}>
                               {row.department}
                             </Text>
-                            <Text className="w-[110px] text-xs font-black text-emerald-600 text-right">
-                              ₹{row.amount}
-                            </Text>
+                            <View className="w-[110px] items-end">
+                              <Text className="text-xs font-black text-emerald-600 text-right">{formatINR(row.amount)}</Text>
+                              {row.requestedAmount != null && Number(row.requestedAmount) !== Number(row.amount) && (
+                                <Text className="text-[10px] font-semibold text-slate-400 text-right">
+                                  asked {formatINR(row.requestedAmount)}
+                                </Text>
+                              )}
+                            </View>
                             <Text className="flex-2 min-w-[220px] text-xs font-medium text-slate-700 pl-4" numberOfLines={2}>
                               {row.purpose || "-"}
                             </Text>

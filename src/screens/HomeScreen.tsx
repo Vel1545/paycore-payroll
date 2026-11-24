@@ -480,7 +480,7 @@ const handleLogoutPress = async () => {
               {/* Pay Slip */}
               {(allow("PAYSLIP") || allow("SALARY_VIEW")) ? (
                 <TouchableOpacity 
-                     onPress={() => navigation.navigate(isAdmin ? "SalaryView" : "MyHub", { initialTab: "payslip" })}
+                     onPress={() => navigation.navigate(isAdmin || allow("SALARY_VIEW") ? "SalaryView" : "MyHub", { initialTab: "payslip" })}
                   activeOpacity={0.85}
                   className="overflow-hidden rounded-[22px] border border-amber-100"
                   style={{ 
@@ -615,7 +615,7 @@ const handleLogoutPress = async () => {
                 </TouchableOpacity>
               ) : null}
 
-              {/* Live Tracking: the only page of a sales head (admins reach it from Admin Hub) */}
+              {/* Live Tracking: sales head / account head (admins reach it from Admin Hub) */}
               {allow("LIVE_TRACKING") && !allow("LEAVE_APPROVALS") ? (
                 <TouchableOpacity
                   onPress={() => navigation.navigate("LiveTracking")}

@@ -56,6 +56,7 @@ import AppUpdateGate from "./src/components/AppUpdateGate";
 import PolicyAcceptanceScreen from "./src/screens/PolicyAcceptanceScreen";
 import PolicyAcceptanceReportScreen from "./src/screens/PolicyAcceptanceReportScreen";
 import DailyAllowanceScreen from "./src/screens/DailyAllowanceScreen";
+import DataRetentionScreen from "./src/screens/DataRetentionScreen";
 import BirthdayTodayPopup from "./src/components/BirthdayTodayPopup";
 
 // Every fetch to our server now carries the login token (also inside background tasks)
@@ -129,6 +130,7 @@ const webLinkingConfig = {
         AdminHolidays: "admin-holidays",
         PolicyAcceptanceReport: "policy-acceptance",
         DailyAllowance: "daily-allowance",
+        DataRetention: "old-data",
         LiveTracking: "live-tracking",
         AttendanceAuditTabs: "attendance-audit",
       },
@@ -329,6 +331,7 @@ tabBarBadgeStyle: { backgroundColor: "#16A34A", color: "#FFFFFF", fontSize: 10, 
   <Tab.Screen name="AdminHolidays" component={AdminHolidaysScreen} options={{ tabBarItemStyle: { display: "none" } }} />
   <Tab.Screen name="PolicyAcceptanceReport" component={PolicyAcceptanceReportScreen} options={{ tabBarItemStyle: { display: "none" } }} />
   <Tab.Screen name="DailyAllowance" component={DailyAllowanceScreen} options={{ tabBarItemStyle: { display: "none" } }} />
+  <Tab.Screen name="DataRetention" component={DataRetentionScreen} options={{ tabBarItemStyle: { display: "none" } }} />
 
       {/* Live Fleet Tracking & Route Polyline Maps */}
       <Tab.Screen name="LiveTracking" component={LiveTrackingScreen} options={{ tabBarItemStyle: { display: "none" } }} />

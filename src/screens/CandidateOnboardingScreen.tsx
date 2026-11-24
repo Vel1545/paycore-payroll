@@ -157,6 +157,7 @@ export default function CandidateOnboardingScreen({ route }: any) {
     drivingLicenseFile: null,
     bankPassbookFile: null,
     resumeFile: null,
+    payslipFile: null,   // last payslip / salary bank statement (required for an experienced candidate)
   });
   // Extra course certificates: one slot to start, "Add another" once the last slot has a file (sent as courseFile1, courseFile2 ...)
   const MAX_COURSE_FILES = 5;
@@ -280,6 +281,7 @@ export default function CandidateOnboardingScreen({ route }: any) {
     ];
     if (degreeRequired) neededDocs.push(["degreeFile", "Degree / diploma certificate"]);
     if (licenceRequired) neededDocs.push(["drivingLicenseFile", "Driving licence (required for sales)"]);
+    if (hasExperience) neededDocs.push(["payslipFile", "Last payslip / salary bank statement"]);
     const missingDocs = neededDocs.filter(([k]) => !files[k]).map(([, label]) => label);
     if (missingDocs.length) {
       showMsg("Documents required", `Please attach: ${missingDocs.join(", ")}.`);
@@ -981,6 +983,8 @@ export default function CandidateOnboardingScreen({ route }: any) {
                   { key: "drivingLicenseFile", label: "Driving Licence", required: licenceRequired, tag: "Required for Sales" },
                   { key: "bankPassbookFile", label: "Bank Passbook / Cancelled Cheque", required: true },
                   { key: "resumeFile", label: "Resume", required: true },
+                  { key: "payslipFile", label: "Last Payslip / Salary Bank Statement", required: hasExperience,
+                    note: hasExperience ? "Previous company's last payslip or salary-credit bank statement" : "Required only if you have previous work experience" },
                 ],
               },
             ].map((group) => (

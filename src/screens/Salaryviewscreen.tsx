@@ -10,6 +10,7 @@ import CrossPlatformDatePicker from "../components/CrossPlatformDatePicker";
 import { BASE_HOST } from "../constants/config";
 import { authHeaders } from "../services/apiAuth";
 import { useAuth } from "../context/AuthContext";
+import { can } from "../services/Access";
 import { UserSession } from "../services/UserSession";
 import { downloadPayslipPdf } from "../services/Payslipdownload";
 import MonthDaysPanel from "../components/MonthDaysPanel";
@@ -108,7 +109,8 @@ export default function SalaryViewScreen() {
   const [reloadKey, setReloadKey] = useState(0);
   const [detailTab, setDetailTab] = useState<"SLIP" | "DAYS">("SLIP");
   const { user } = useAuth();
-  const isAdmin = !!(user?.isAdmin || String(user?.role || "").toUpperCase() === "ADMIN");
+  // "isAdmin" here = may see / edit / download all employees: admin, super admin, account head (Access.ts SALARY_VIEW)
+  const isAdmin = !!(user?.isAdmin || String(user?.role || "").toUpperCase() === "ADMIN" || can("SALARY_VIEW", !!user?.isAdmin));
   const myEmpId = String(user?.empId || user?.userId || UserSession.empId || "");
   const [view, setView] = useState<"ALL" | "ME">(isAdmin ? "ALL" : "ME");
   const [myMonth, setMyMonth] = useState(() => monthKey(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1)));

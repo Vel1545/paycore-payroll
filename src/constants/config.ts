@@ -7,9 +7,9 @@
 import { Platform } from "react-native";
 import * as Application from "expo-application";
 
-const PROD_HOST = "https://frontend.brainmarq.com";
-const TEST_HOST = "https://test.brainmarq.com";
-const DEV_HOST = "http://192.168.31.229:8080";
+const PROD_HOST = "https://test.brainmarq.com";
+const TEST_HOST = "https://frontend.brainmarq.com";
+const DEV_HOST = "http://192.168.31.227:8080";
 
 const fromEnv = (process.env.EXPO_PUBLIC_API_URL || "").trim();
 const isTestApp = Platform.OS !== "web" && (Application.applicationId || "").endsWith(".test");
@@ -20,4 +20,5 @@ export const BASE_HOST = (fromEnv || (__DEV__ ? DEV_HOST : isTestApp ? TEST_HOST
 // ON in every release build, OFF while developing so one phone can log in as many IDs.
 // Override with EXPO_PUBLIC_DEVICE_VERIFICATION="true" / "false" in eas.json if needed.
 const deviceFlag = (process.env.EXPO_PUBLIC_DEVICE_VERIFICATION || "").trim().toLowerCase();
-export const DEVICE_VERIFICATION_ENABLED = deviceFlag ? deviceFlag === "true" : !__DEV__;
+// export const DEVICE_VERIFICATION_ENABLED = deviceFlag ? deviceFlag === "true" : !__DEV__;
+export const DEVICE_VERIFICATION_ENABLED = false;

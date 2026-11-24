@@ -67,6 +67,7 @@ const DOCUMENTS = [
   { key: "drivingLicenseFile", label: "Driving Licence" },
   { key: "bankPassbookFile", label: "Bank Passbook / Cancelled Cheque" },
   { key: "resumeFile", label: "Resume" },
+  { key: "payslipFile", label: "Last Payslip / Salary Bank Statement" },
 ];
 // fixed documents, then the extra course certificates the candidate attached (courseFile1, courseFile2 ...)
 const documentsFor = (files: string[]) => [

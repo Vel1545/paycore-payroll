@@ -21,7 +21,7 @@ import {
   Search, Navigation, ChevronRight,
   Landmark,  Edit3,
   UserPlus, X, ClipboardList, BarChart3, FileSpreadsheet, ShieldCheck,
-  ChevronDown,CalendarOff 
+  ChevronDown,CalendarOff, Database
 } from "lucide-react-native";
 import { BASE_HOST } from "../constants/config";
 import { UserSession } from "../services/UserSession";
@@ -532,6 +532,29 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
                       </View>
                     </View>
                     <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#7A76A6] mt-3">New joiners: welcome mail & signed policies</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                {/* Old data: backup to S3 + delete (location traces, raw punch events) */}
+                <TouchableOpacity
+                  onPress={() => navigation.navigate("DataRetention")}
+                  activeOpacity={0.85}
+                  className="overflow-hidden rounded-[24px] border border-rose-200/80"
+                  style={{ width: moduleCardWidth, minHeight: 140 }}
+                >
+                  <LinearGradient colors={["#FFF7F7", "#FFE4E6", "#FECDD3"]} style={{ minHeight: 140, padding: 20 }}>
+                    <View className="flex-row items-center justify-between">
+                      <View className="flex-row items-center gap-3.5 flex-1 pr-3">
+                        <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: "#FFE4E6", borderWidth: 1, borderColor: "#FECDD3" }} className="items-center justify-center">
+                          <Database size={22} color="#E11D48" />
+                        </View>
+                        <Text style={{ fontSize: isDesktop ? 18 : 16 }} className="font-black text-[#1F1B3D] tracking-tight">Old Data & Backups</Text>
+                      </View>
+                      <View style={{ width: 54, height: 34, borderRadius: 17, backgroundColor: "#E11D48", alignItems: "center", justifyContent: "center" }}>
+                        <ArrowRight size={20} color="#FFFFFF" strokeWidth={3} />
+                      </View>
+                    </View>
+                    <Text style={{ fontSize: isDesktop ? 13 : 11 }} className="font-semibold text-[#7A76A6] mt-3">Location & punch data: backup to S3, then delete</Text>
                   </LinearGradient>
                 </TouchableOpacity>
 

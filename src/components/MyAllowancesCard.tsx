@@ -52,7 +52,7 @@ export default function MyAllowancesCard({ empId }: { empId: string }) {
         <Text className="text-sm font-black text-[#1F1B3D] ml-2">Daily allowance</Text>
       </View>
       <Text className="text-[10.5px] font-semibold text-[#7A76A6] mb-3">
-        Paid separately from your salary. Present / OD = full day, half day = 50%.
+        Paid separately from your salary. Present / OD = full day, half day = 50%. Sundays and holidays are not included.
       </Text>
       <MonthStepper month={month} onChange={setMonth} />
 
@@ -83,7 +83,9 @@ export default function MyAllowancesCard({ empId }: { empId: string }) {
           {open && data.days.map((d) => (
             <View key={d.date} className="flex-row justify-between py-1.5 border-b border-[#F6F5FC]">
               <Text className="text-[11px] font-bold text-[#1F1B3D] w-28">{nice(d.date)}</Text>
-              <Text className="text-[11px] font-semibold text-[#7A76A6] flex-1">{d.reason}</Text>
+              <Text className="text-[11px] font-semibold text-[#7A76A6] flex-1">
+                {d.reason?.startsWith("Edited: ") ? `Adjusted by admin: ${d.reason.slice(8)}` : d.reason}
+              </Text>
               <Text className="text-[11px] font-black text-[#1F1B3D]">{inr(d.amount)}{d.paid ? " ✓" : ""}</Text>
             </View>
           ))}

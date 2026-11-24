@@ -2,7 +2,15 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, TouchableOpacity, TextInput, ActivityIndicator, Alert, Platform, Modal, ScrollView } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
-import { ChevronLeft, Plus, RotateCw, Download, CheckCircle2, Trash2, Pencil, X, Search } from "lucide-react-native";
+import { ChevronLeft, Plus, RotateCw, Download, CheckCircle2, Trash2, Pencil, X, Search, History } from "lucide-react-native";
+
+/** One row of /edit-log (who changed which day, from what to what). */
+type HistRow = {
+  id: number; empId: string; name?: string; date: string; action: "EDITED" | "REMOVED" | "RESET" | string;
+  oldAmount?: number | string | null; newAmount?: number | string | null; reason?: string; by?: string; byName?: string; at: string;
+};
+const ACTION_LABEL: Record<string, string> = { EDITED: "Edited", REMOVED: "Removed", RESET: "Reset to automatic" };
+const rupees = (v: any) => `₹${Number(v || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 import ScreenContainer from "../components/ScreenContainer";
 import CrossPlatformDatePicker from "../components/CrossPlatformDatePicker";
 import { BASE_HOST } from "../constants/config";
@@ -25,19 +33,39 @@ type ReportRow = {
   empId: string; name: string; designation: string; fullDays: number; halfDays: number; odDays: number;
   rate: string; total: number; unpaid: number; paid: number;
 };
-type Entry = { date: string; rate: number; pct: number; amount: number; reason: string; paid: boolean };
+type Entry = {
+  date: string; rate: number; pct: number; amount: number; reason: string; paid: boolean;
+  edited?: boolean; editReason?: string | null; editedBy?: string | null; editedAt?: string | null;
+  dayType?: string | null; noRule?: boolean;
+};
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const ymd = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const monthStart = () => { const d = new Date(); return ymd(new Date(d.getFullYear(), d.getMonth(), 1)); };
 const monthEnd = () => { const d = new Date(); return ymd(new Date(d.getFullYear(), d.getMonth() + 1, 0)); };
 const atLeastCutover = (s: string) => (s < CUTOVER ? CUTOVER : s);
+type Period = "THIS" | "LAST" | "LAST2" | "CUSTOM";
+const PERIODS: [Period, string][] = [["THIS", "This month"], ["LAST", "Last month"], ["LAST2", "Last 2 months"], ["CUSTOM", "Custom"]];
+/** From / To of a quick period (From never before the cutover). */
+const periodRange = (p: Period): [string, string] => {
+  const d = new Date();
+  const y = d.getFullYear(), m = d.getMonth();
+  if (p === "LAST") return [atLeastCutover(ymd(new Date(y, m - 1, 1))), ymd(new Date(y, m, 0))];
+  if (p === "LAST2") return [atLeastCutover(ymd(new Date(y, m - 1, 1))), ymd(new Date(y, m + 1, 0))];
+  return [atLeastCutover(ymd(new Date(y, m, 1))), ymd(new Date(y, m + 1, 0))];
+};
 const inr = (v: any) => `₹${Number(v || 0).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 const nice = (s?: string) => {
   if (!s) return "-";
   const d = new Date(s.slice(0, 10) + "T00:00:00");
   return isNaN(d.getTime()) ? s : d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 };
+const niceDay = (s: string) => {
+  const d = new Date(s.slice(0, 10) + "T00:00:00");
+  return isNaN(d.getTime()) ? s : d.toLocaleDateString("en-IN", { weekday: "short", day: "2-digit", month: "short" });
+};
+// the day's status text (the server prefixes an admin edit with "Edited: ")
+const dayLabel = (d: Entry) => (d.edited ? "Edited by admin" : d.reason || "-");
 const notify = (t: string, m: string) => (Platform.OS === "web" ? window.alert(`${t}\n\n${m}`) : Alert.alert(t, m));
 const ask = (t: string, m: string, yes: string, onYes: () => void) => {
   if (Platform.OS === "web") { if (window.confirm(`${t}\n\n${m}`)) onYes(); }
@@ -98,12 +126,60 @@ export default function DailyAllowanceScreen({ navigation }: { navigation?: any 
   const [to, setTo] = useState(monthEnd());
   const [fDesig, setFDesig] = useState("ALL");
   const [paidFilter, setPaidFilter] = useState<"ALL" | "UNPAID" | "PAID">("ALL");
+  const [period, setPeriod] = useState<Period>("THIS");
+  const [search, setSearch] = useState("");
+  const [appliedQ, setAppliedQ] = useState("");
+  const [editedOnly, setEditedOnly] = useState(false);
+  // search is sent to the server after typing stops
+  useEffect(() => {
+    const t = setTimeout(() => setAppliedQ(search.trim()), 400);
+    return () => clearTimeout(t);
+  }, [search]);
+  const pickPeriod = (p: Period) => {
+    setPeriod(p);
+    if (p !== "CUSTOM") { const [a, b] = periodRange(p); setFrom(a); setTo(b); }
+  };
+  const filtersActive = period !== "THIS" || fDesig !== "ALL" || paidFilter !== "ALL" || !!search.trim() || editedOnly;
+  const clearFilters = () => {
+    const [a, b] = periodRange("THIS");
+    setPeriod("THIS"); setFrom(a); setTo(b);
+    setFDesig("ALL"); setPaidFilter("ALL"); setSearch(""); setAppliedQ(""); setEditedOnly(false);
+  };
+  const filterQs = () =>
+    `from=${from}&to=${to}&paid=${paidFilter}` +
+    (fDesig !== "ALL" ? `&designation=${encodeURIComponent(fDesig)}` : "") +
+    (appliedQ ? `&q=${encodeURIComponent(appliedQ)}` : "") +
+    (editedOnly ? "&edited=true" : "");
   const [report, setReport] = useState<{ total: number; unpaid: number; rows: ReportRow[]; lastCalculatedDay?: string } | null>(null);
   const [repLoading, setRepLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [openEmp, setOpenEmp] = useState<string | null>(null);
   const [days, setDays] = useState<Entry[]>([]);
+  const [daysLoading, setDaysLoading] = useState(false);
   const [statements, setStatements] = useState<any[]>([]);
+
+  // ---- day edit
+  const [dayEdit, setDayEdit] = useState<{ empId: string; name: string; day: Entry; ruleRate: number } | null>(null);
+  const [dayAmount, setDayAmount] = useState("");
+  const [dayReason, setDayReason] = useState("");
+
+  // ---- edit history (like the salary page History)
+  const [hist, setHist] = useState<{ title: string; rows: HistRow[] } | null>(null);
+  const [histLoading, setHistLoading] = useState(false);
+  const openHistory = async (empId?: string, name?: string) => {
+    setHist({ title: empId ? `${name || empId} (${empId})` : "All sales staff", rows: [] });
+    setHistLoading(true);
+    try {
+      const qs = `from=${from}&to=${to}` + (empId ? `&empId=${encodeURIComponent(empId)}` : appliedQ ? `&q=${encodeURIComponent(appliedQ)}` : "");
+      const r = await call(`${API}/edit-log?${qs}`);
+      setHist((h) => (h ? { ...h, rows: Array.isArray(r?.rows) ? r.rows : [] } : h));
+    } catch (e: any) {
+      notify("Could not load the edit history", e.message);
+      setHist(null);
+    } finally {
+      setHistLoading(false);
+    }
+  };
 
   const loadBase = useCallback(async () => {
     try {
@@ -127,18 +203,18 @@ export default function DailyAllowanceScreen({ navigation }: { navigation?: any 
     }
   }, []);
 
-  const loadReport = useCallback(async () => {
+  const loadReport = useCallback(async (keepOpen?: boolean) => {
     setRepLoading(true);
-    setOpenEmp(null);
+    if (keepOpen !== true) setOpenEmp(null);
     try {
-      const qs = `from=${from}&to=${to}&paid=${paidFilter}` + (fDesig !== "ALL" ? `&designation=${encodeURIComponent(fDesig)}` : "");
-      setReport(await call(`${API}/report?${qs}`));
+      setReport(await call(`${API}/report?${filterQs()}`));
     } catch (e: any) {
       notify("Could not load the report", e.message);
     } finally {
       setRepLoading(false);
     }
-  }, [from, to, paidFilter, fDesig]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [from, to, paidFilter, fDesig, appliedQ, editedOnly]);
 
   const loadStatements = useCallback(async () => {
     try {
@@ -215,22 +291,99 @@ export default function DailyAllowanceScreen({ navigation }: { navigation?: any 
         }
       });
 
+  // Individual picker: designation chips (ASM, DM ...) + people grouped under their designation
+  const [empGroup, setEmpGroup] = useState("ALL");
+  const desigOf = (s: Staff) => (s.designation || "").trim() || "(no designation)";
+  const staffGroups = useMemo(() => {
+    const counts = new Map<string, number>();
+    staff.forEach((s) => counts.set(desigOf(s), (counts.get(desigOf(s)) || 0) + 1));
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [staff]);
   const staffShown = useMemo(() => {
     const t = empSearch.trim().toLowerCase();
-    return staff.filter((s) => !t || `${s.name} ${s.empId} ${s.designation}`.toLowerCase().includes(t)).slice(0, 30);
-  }, [staff, empSearch]);
+    const list = staff
+      .filter((s) => empGroup === "ALL" || desigOf(s) === empGroup)
+      .filter((s) => !t || `${s.name} ${s.empId} ${s.designation}`.toLowerCase().includes(t));
+    const byGroup = new Map<string, Staff[]>();
+    list.forEach((s) => {
+      const g = desigOf(s);
+      if (!byGroup.has(g)) byGroup.set(g, []);
+      byGroup.get(g)!.push(s);
+    });
+    return [...byGroup.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([g, people]) => ({ group: g, people: people.sort((a, b) => (a.name || "").localeCompare(b.name || "")) }));
+  }, [staff, empSearch, empGroup]);
 
   // ---------------------------------------------------------------- report actions
+  const loadDays = async (empId: string) => {
+    setDaysLoading(true);
+    try {
+      const d = await call(`${API}/entries?empId=${encodeURIComponent(empId)}&from=${from}&to=${to}&allDays=true`);
+      setDays(Array.isArray(d) ? d : []);
+    } catch (e: any) {
+      notify("Could not load the days", e.message);
+    } finally {
+      setDaysLoading(false);
+    }
+  };
+
   const openDays = async (empId: string) => {
     if (openEmp === empId) { setOpenEmp(null); return; }
     setOpenEmp(empId);
     setDays([]);
+    loadDays(empId);
+  };
+
+  // the person's usual rate for the quick Full / Half buttons (a day with no rule: the highest rate in the list)
+  const openDayEdit = (r: ReportRow, d: Entry) => {
+    const rate = Number(d.rate) > 0 ? Number(d.rate)
+      : Math.max(0, ...days.filter((x) => !x.edited && Number(x.rate) > 0).map((x) => Number(x.rate)));
+    setDayEdit({ empId: r.empId, name: r.name, day: d, ruleRate: rate });
+    setDayAmount(String(Number(d.amount) || 0));
+    setDayReason(d.editReason || "");
+  };
+
+  const saveDay = async () => {
+    if (!dayEdit) return;
+    const amt = dayAmount.replace(/[,\s₹]/g, "");
+    if (amt === "" || isNaN(Number(amt)) || Number(amt) < 0) return notify("Amount needed", "Enter the amount for the day (0 removes it).");
+    if (dayReason.trim().length < 3) return notify("Reason needed", "Enter why you are changing this day (e.g. Worked Sunday - client visit).");
+    setBusy("day");
     try {
-      const d = await call(`${API}/entries?empId=${encodeURIComponent(empId)}&from=${from}&to=${to}`);
-      setDays(Array.isArray(d) ? d : []);
+      const j = await call(`${API}/day-edit?${q}`, {
+        method: "POST",
+        body: JSON.stringify({ empId: dayEdit.empId, date: dayEdit.day.date, amount: amt, reason: dayReason.trim() }),
+      });
+      const emp = dayEdit.empId;
+      setDayEdit(null);
+      notify("Saved", j.message || "Day updated.");
+      loadDays(emp);
+      loadReport(true);
     } catch (e: any) {
-      notify("Could not load the days", e.message);
+      notify("Could not save", e.message);
+    } finally {
+      setBusy(null);
     }
+  };
+
+  const resetDay = () => {
+    if (!dayEdit) return;
+    const { empId, day } = dayEdit;
+    ask("Reset to automatic", `Remove your edit for ${nice(day.date)}? The system calculation is used again.`, "Reset", async () => {
+      setBusy("day");
+      try {
+        const j = await call(`${API}/day-reset?${q}`, { method: "POST", body: JSON.stringify({ empId, date: day.date }) });
+        setDayEdit(null);
+        notify("Reset", j.message || "Back to automatic.");
+        loadDays(empId);
+        loadReport(true);
+      } catch (e: any) {
+        notify("Could not reset", e.message);
+      } finally {
+        setBusy(null);
+      }
+    });
   };
 
   const recalc = async () => {
@@ -247,6 +400,9 @@ export default function DailyAllowanceScreen({ navigation }: { navigation?: any 
   };
 
   const markPaid = () => {
+    if (appliedQ || editedOnly) {
+      return notify("Clear the search first", "Mark as paid works on the date range and designation only. Clear the search / Edited days filter, then try again.");
+    }
     const unpaid = report?.unpaid || 0;
     if (!(Number(unpaid) > 0)) return notify("Nothing to pay", "There is no unpaid allowance in this range / filter.");
     ask("Mark as paid",
@@ -270,7 +426,7 @@ export default function DailyAllowanceScreen({ navigation }: { navigation?: any 
 
   const exportExcel = async () => {
     setBusy("export");
-    const url = `${API}/export?from=${from}&to=${to}&paid=${paidFilter}` + (fDesig !== "ALL" ? `&designation=${encodeURIComponent(fDesig)}` : "");
+    const url = `${API}/export?${filterQs()}`;
     const fileName = `Allowance_${from}_${to}.xlsx`;
     try {
       if (Platform.OS === "web") {
@@ -356,17 +512,37 @@ export default function DailyAllowanceScreen({ navigation }: { navigation?: any 
                     </View>
                   ) : (
                     <>
+                      <View className="flex-row flex-wrap">
+                        <Chip label={`All (${staff.length})`} on={empGroup === "ALL"} onPress={() => setEmpGroup("ALL")} />
+                        {staffGroups.map(([g, n]) => (
+                          <Chip key={g} label={`${g} (${n})`} on={empGroup === g} onPress={() => setEmpGroup(g)} />
+                        ))}
+                      </View>
                       <View className="flex-row items-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 mb-2">
                         <Search size={14} color="#A6A2CE" />
-                        <TextInput value={empSearch} onChangeText={setEmpSearch} placeholder="Search name or ID" placeholderTextColor="#A6A2CE"
+                        <TextInput value={empSearch} onChangeText={setEmpSearch}
+                          placeholder={empGroup === "ALL" ? "Search name or ID" : `Search in ${empGroup}`} placeholderTextColor="#A6A2CE"
                           className="flex-1 py-2.5 px-2 text-xs font-semibold text-[#1F1B3D]" />
+                        {!!empSearch && (
+                          <TouchableOpacity onPress={() => setEmpSearch("")}><X size={14} color="#7A76A6" /></TouchableOpacity>
+                        )}
                       </View>
-                      <View className="border border-[#F1EFFB] rounded-xl mb-3" style={{ maxHeight: 200 }}>
+                      <View className="border border-[#F1EFFB] rounded-xl mb-3" style={{ maxHeight: 320 }}>
                         <ScrollView nestedScrollEnabled>
-                          {staffShown.map((s) => (
-                            <TouchableOpacity key={s.empId} onPress={() => setPickedEmp(s)} className="px-3 py-2.5 border-b border-[#F6F5FC]">
-                              <Text className="text-xs font-bold text-[#1F1B3D]">{s.name} <Text className="text-[#7A76A6]">• {s.empId} • {s.designation}</Text></Text>
-                            </TouchableOpacity>
+                          {staffShown.length === 0 && (
+                            <Text className="text-[11px] font-semibold text-[#A6A2CE] p-3">No sales employee matches.</Text>
+                          )}
+                          {staffShown.map(({ group, people }) => (
+                            <View key={group}>
+                              <View className="px-3 py-1.5 bg-[#F6F5FC] border-b border-[#EEECFA]">
+                                <Text className="text-[10px] font-black text-[#5B4FD1] uppercase tracking-wider">{group} ({people.length})</Text>
+                              </View>
+                              {people.map((s) => (
+                                <TouchableOpacity key={s.empId} onPress={() => setPickedEmp(s)} className="px-3 py-2.5 border-b border-[#F6F5FC]">
+                                  <Text className="text-xs font-bold text-[#1F1B3D]">{s.name} <Text className="text-[#7A76A6]">• {s.empId}</Text></Text>
+                                </TouchableOpacity>
+                              ))}
+                            </View>
                           ))}
                         </ScrollView>
                       </View>
@@ -430,10 +606,38 @@ export default function DailyAllowanceScreen({ navigation }: { navigation?: any 
         {tab === "report" && (
           <>
             <Card>
-              <View className="flex-col md:flex-row gap-2 mb-3">
-                <CrossPlatformDatePicker label="From date" value={from} onChange={(v: string) => { setFrom(v); if (v > to) setTo(v); }} />
-                <CrossPlatformDatePicker label="To date" value={to} onChange={(v: string) => { setTo(v); if (v < from) setFrom(v); }} />
+              <View className="flex-row items-center justify-between mb-2">
+                <Text className="text-sm font-black text-[#1F1B3D]">Filters</Text>
+                {filtersActive && (
+                  <TouchableOpacity onPress={clearFilters} className="flex-row items-center px-2.5 py-1.5 rounded-lg bg-[#FFF1F2] border border-[#FECDD3]">
+                    <X size={12} color="#BE123C" />
+                    <Text className="text-[11px] font-black text-[#BE123C] ml-1">Clear filters</Text>
+                  </TouchableOpacity>
+                )}
               </View>
+
+              <Label t="Period" />
+              <View className="flex-row flex-wrap">
+                {PERIODS.map(([k, l]) => <Chip key={k} label={l} on={period === k} onPress={() => pickPeriod(k)} />)}
+              </View>
+              {period === "CUSTOM" && (
+                <View className="flex-col md:flex-row gap-2 mb-3">
+                  <CrossPlatformDatePicker label="From date" value={from} onChange={(v: string) => { setFrom(v); if (v > to) setTo(v); }} />
+                  <CrossPlatformDatePicker label="To date" value={to} onChange={(v: string) => { setTo(v); if (v < from) setFrom(v); }} />
+                </View>
+              )}
+
+              <Label t="Search employee" />
+              <View className="flex-row items-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 mb-3">
+                <Search size={14} color="#7A76A6" />
+                <TextInput value={search} onChangeText={setSearch} placeholder="Name or employee ID"
+                  placeholderTextColor="#A6A2CE" autoCapitalize="none"
+                  className="flex-1 py-2.5 px-2 text-xs font-semibold text-[#1F1B3D]" />
+                {!!search && (
+                  <TouchableOpacity onPress={() => setSearch("")}><X size={14} color="#7A76A6" /></TouchableOpacity>
+                )}
+              </View>
+
               <Label t="Designation" />
               <View className="flex-row flex-wrap">
                 <Chip label="All" on={fDesig === "ALL"} onPress={() => setFDesig("ALL")} />
@@ -442,9 +646,21 @@ export default function DailyAllowanceScreen({ navigation }: { navigation?: any 
               <Label t="Show" />
               <View className="flex-row flex-wrap">
                 {(["ALL", "UNPAID", "PAID"] as const).map((p) => <Chip key={p} label={p === "ALL" ? "All" : p === "UNPAID" ? "Unpaid" : "Paid"} on={paidFilter === p} onPress={() => setPaidFilter(p)} />)}
+                <Chip label="Edited days only" on={editedOnly} onPress={() => setEditedOnly(!editedOnly)} />
+              </View>
+
+              <View className="bg-[#F6F5FC] rounded-xl px-3 py-2 mb-2">
+                <Text className="text-[11px] font-bold text-[#1F1B3D]">
+                  Showing: {nice(from)} – {nice(to)}
+                  {fDesig !== "ALL" ? ` • ${fDesig}` : ""}
+                  {paidFilter !== "ALL" ? ` • ${paidFilter === "UNPAID" ? "Unpaid" : "Paid"}` : ""}
+                  {appliedQ ? ` • "${appliedQ}"` : ""}
+                  {editedOnly ? " • Edited days" : ""}
+                  {report ? ` • ${report.rows.length} people • ${inr(report.total)}` : ""}
+                </Text>
               </View>
               <View className="flex-row flex-wrap gap-2 mt-1">
-                <TouchableOpacity onPress={loadReport} className="px-3 h-10 rounded-xl bg-white border border-[#E7E4F5] flex-row items-center">
+                <TouchableOpacity onPress={() => loadReport()} className="px-3 h-10 rounded-xl bg-white border border-[#E7E4F5] flex-row items-center">
                   {repLoading ? <ActivityIndicator size="small" color="#5B4FD1" /> : <RotateCw size={14} color="#5B4FD1" />}
                   <Text className="text-xs font-black text-[#5B4FD1] ml-1.5">Refresh</Text>
                 </TouchableOpacity>
@@ -455,6 +671,10 @@ export default function DailyAllowanceScreen({ navigation }: { navigation?: any 
                 <TouchableOpacity onPress={exportExcel} disabled={!!busy} className="px-3 h-10 rounded-xl bg-white border border-[#E7E4F5] flex-row items-center">
                   {busy === "export" ? <ActivityIndicator size="small" color="#5B4FD1" /> : <Download size={14} color="#5B4FD1" />}
                   <Text className="text-xs font-black text-[#5B4FD1] ml-1.5">Excel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => openHistory()} className="px-3 h-10 rounded-xl bg-white border border-[#E7E4F5] flex-row items-center">
+                  <History size={14} color="#5B4FD1" />
+                  <Text className="text-xs font-black text-[#5B4FD1] ml-1.5">Edit history</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={markPaid} disabled={!!busy} className="px-3 h-10 rounded-xl bg-emerald-600 flex-row items-center">
                   {busy === "paid" ? <ActivityIndicator size="small" color="#fff" /> : <CheckCircle2 size={14} color="#fff" />}
@@ -499,14 +719,53 @@ export default function DailyAllowanceScreen({ navigation }: { navigation?: any 
                 </TouchableOpacity>
                 {openEmp === r.empId && (
                   <View className="px-3.5 pb-3 border-t border-[#F1EFFB]">
-                    {days.length === 0 && <ActivityIndicator size="small" color="#5B4FD1" style={{ marginTop: 8 }} />}
-                    {days.map((d) => (
-                      <View key={d.date} className="flex-row justify-between py-1.5 border-b border-[#F6F5FC]">
-                        <Text className="text-[11px] font-bold text-[#1F1B3D] w-24">{nice(d.date)}</Text>
-                        <Text className="text-[11px] font-semibold text-[#7A76A6] flex-1">{d.reason} ({d.pct}%)</Text>
-                        <Text className="text-[11px] font-black text-[#1F1B3D]">{inr(d.amount)}{d.paid ? " ✓" : ""}</Text>
-                      </View>
-                    ))}
+                    <TouchableOpacity onPress={() => openHistory(r.empId, (r as any).name)} className="self-end flex-row items-center mt-2 px-2.5 py-1.5 rounded-lg bg-[#F6F5FC] border border-[#E7E4F5]">
+                      <History size={12} color="#5B4FD1" />
+                      <Text className="text-[11px] font-black text-[#5B4FD1] ml-1">History</Text>
+                    </TouchableOpacity>
+                    {daysLoading && days.length === 0 && <ActivityIndicator size="small" color="#5B4FD1" style={{ marginTop: 8 }} />}
+                    {!daysLoading && days.length === 0 && (
+                      <Text className="text-[11px] font-semibold text-[#A6A2CE] mt-2">No finished day in this range yet.</Text>
+                    )}
+                    {days.length > 0 && (
+                      <Text className="text-[10px] font-semibold text-[#A6A2CE] mt-2 mb-1">
+                        Tap Edit to change or remove a day • Sundays / holidays are ₹0 unless you add them • paid days are locked
+                      </Text>
+                    )}
+                    {days.map((d) => {
+                      const off = !!d.dayType;
+                      return (
+                        <View key={d.date}
+                          className={`flex-row items-center py-2 px-2 rounded-lg mb-1 ${d.edited ? "bg-[#EEF2FF]" : off ? "bg-[#FFF7ED]" : ""}`}>
+                          <View className="w-24">
+                            <Text className={`text-[11px] font-bold ${off ? "text-orange-700" : "text-[#1F1B3D]"}`}>{niceDay(d.date)}</Text>
+                            {off && <Text className="text-[9.5px] font-black text-orange-600 uppercase">{d.dayType}</Text>}
+                          </View>
+                          <View className="flex-1 pr-2">
+                            <Text className={`text-[11px] font-semibold ${d.noRule && !d.edited ? "text-[#A6A2CE]" : "text-[#7A76A6]"}`}>
+                              {dayLabel(d)}{!d.edited && !d.noRule ? ` (${d.pct}%)` : ""}
+                            </Text>
+                            {d.edited && (
+                              <Text className="text-[10px] font-semibold text-[#5B4FD1]" numberOfLines={2}>
+                                {d.editReason}{d.editedBy ? ` • ${d.editedBy}` : ""}
+                              </Text>
+                            )}
+                          </View>
+                          <Text className="text-[11.5px] font-black text-[#1F1B3D] mr-2">{inr(d.amount)}</Text>
+                          {d.paid ? (
+                            <View className="px-2 py-1 rounded-md bg-emerald-50 border border-emerald-200">
+                              <Text className="text-[10px] font-black text-emerald-700">Paid ✓</Text>
+                            </View>
+                          ) : (
+                            <TouchableOpacity onPress={() => openDayEdit(r, d)}
+                              className="px-2 py-1 rounded-md bg-white border border-[#D9D5F2] flex-row items-center">
+                              <Pencil size={11} color="#5B4FD1" />
+                              <Text className="text-[10px] font-black text-[#5B4FD1] ml-1">Edit</Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                      );
+                    })}
                   </View>
                 )}
               </View>
@@ -558,6 +817,104 @@ export default function DailyAllowanceScreen({ navigation }: { navigation?: any 
             <TouchableOpacity onPress={saveEdit} disabled={busy === "edit"} className="bg-[#5B4FD1] rounded-xl py-3 items-center">
               {busy === "edit" ? <ActivityIndicator size="small" color="#fff" /> : <Text className="text-white text-xs font-black uppercase">Save changes</Text>}
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* edit one day */}
+      <Modal visible={!!dayEdit} transparent animationType="fade" onRequestClose={() => setDayEdit(null)}>
+        <View className="flex-1 bg-black/50 justify-center items-center p-4">
+          <View className="w-full max-w-md bg-white rounded-3xl p-5">
+            <View className="flex-row justify-between items-center mb-1">
+              <Text className="text-base font-black text-[#1F1B3D]">Edit day allowance</Text>
+              <TouchableOpacity onPress={() => setDayEdit(null)}><X size={18} color="#7A76A6" /></TouchableOpacity>
+            </View>
+            {dayEdit && (
+              <>
+                <Text className="text-xs font-bold text-[#7A76A6]">{dayEdit.name} • {dayEdit.empId}</Text>
+                <Text className="text-sm font-black text-[#1F1B3D] mt-1">
+                  {nice(dayEdit.day.date)}{dayEdit.day.dayType ? ` • ${dayEdit.day.dayType}` : ""}
+                </Text>
+                <Text className="text-[11px] font-semibold text-[#7A76A6] mb-3">
+                  Now: {dayLabel(dayEdit.day)} • {inr(dayEdit.day.amount)}
+                </Text>
+
+                <Label t="Quick choose" />
+                <View className="flex-row flex-wrap mb-2">
+                  {dayEdit.ruleRate > 0 && (
+                    <Chip label={`Full day ${inr(dayEdit.ruleRate)}`} on={Number(dayAmount) === dayEdit.ruleRate}
+                      onPress={() => setDayAmount(String(dayEdit.ruleRate))} />
+                  )}
+                  {dayEdit.ruleRate > 0 && (
+                    <Chip label={`Half day ${inr(dayEdit.ruleRate / 2)}`} on={Number(dayAmount) === dayEdit.ruleRate / 2}
+                      onPress={() => setDayAmount(String(dayEdit.ruleRate / 2))} />
+                  )}
+                  <Chip label="Remove (₹0)" on={dayAmount.trim() !== "" && Number(dayAmount) === 0} onPress={() => setDayAmount("0")} />
+                </View>
+
+                <Label t="Amount for this day (₹)" />
+                <TextInput value={dayAmount} onChangeText={setDayAmount} keyboardType="decimal-pad" placeholder="e.g. 300"
+                  className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-sm font-black text-[#1F1B3D] mb-3" />
+                <Label t="Reason (required)" />
+                <TextInput value={dayReason} onChangeText={setDayReason} placeholder="e.g. Worked Sunday - client visit"
+                  className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl p-3 text-xs font-semibold text-[#1F1B3D] mb-4" />
+
+                <TouchableOpacity onPress={saveDay} disabled={busy === "day"} className="bg-[#5B4FD1] rounded-xl py-3 items-center">
+                  {busy === "day" ? <ActivityIndicator size="small" color="#fff" /> : <Text className="text-white text-xs font-black uppercase">Save day</Text>}
+                </TouchableOpacity>
+                {dayEdit.day.edited && (
+                  <TouchableOpacity onPress={resetDay} disabled={busy === "day"} className="mt-2 border border-[#E7E4F5] rounded-xl py-3 flex-row items-center justify-center">
+                    <RotateCw size={13} color="#7A76A6" />
+                    <Text className="text-[#7A76A6] text-xs font-black uppercase ml-1.5">Reset to automatic</Text>
+                  </TouchableOpacity>
+                )}
+                {dayEdit.day.edited && !!dayEdit.day.editedAt && (
+                  <Text className="text-[10px] font-semibold text-[#A6A2CE] mt-2 text-center">
+                    Last edited by {dayEdit.day.editedBy || "-"} on {nice(dayEdit.day.editedAt)}
+                  </Text>
+                )}
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* edit history */}
+      <Modal visible={!!hist} transparent animationType="fade" onRequestClose={() => setHist(null)}>
+        <View className="flex-1 bg-black/50 justify-center items-center p-4">
+          <View className="w-full max-w-lg bg-white rounded-3xl p-5" style={{ maxHeight: "85%" }}>
+            <View className="flex-row justify-between items-start mb-1">
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text className="text-base font-black text-[#1F1B3D]">Edit history</Text>
+                <Text className="text-[11px] font-bold text-[#7A76A6]">{hist?.title} • {nice(from)} – {nice(to)}</Text>
+              </View>
+              <TouchableOpacity onPress={() => setHist(null)}><X size={18} color="#7A76A6" /></TouchableOpacity>
+            </View>
+            {histLoading && <ActivityIndicator size="small" color="#5B4FD1" style={{ marginVertical: 16 }} />}
+            {!histLoading && hist && hist.rows.length === 0 && (
+              <Text className="text-xs font-semibold text-[#A6A2CE] text-center my-6">No changes in this period.</Text>
+            )}
+            <ScrollView style={{ marginTop: 8 }}>
+              {(hist?.rows || []).map((h) => (
+                <View key={h.id} className="border border-[#E7E4F5] rounded-2xl p-3 mb-2">
+                  <View className="flex-row justify-between items-center">
+                    <Text className="text-xs font-black text-[#1F1B3D]">
+                      {nice(h.date)}{hist?.title === "All sales staff" ? ` • ${h.name || h.empId}` : ""}
+                    </Text>
+                    <Text className={`text-[10px] font-black uppercase ${h.action === "REMOVED" ? "text-rose-600" : h.action === "RESET" ? "text-[#7A76A6]" : "text-[#5B4FD1]"}`}>
+                      {ACTION_LABEL[h.action] || h.action}
+                    </Text>
+                  </View>
+                  <Text className="text-xs font-bold text-[#1F1B3D] mt-1">
+                    {rupees(h.oldAmount)} → {rupees(h.newAmount)}
+                  </Text>
+                  {!!h.reason && <Text className="text-[11px] font-semibold text-[#7A76A6] mt-0.5">Reason: {h.reason}</Text>}
+                  <Text className="text-[10px] font-semibold text-[#A6A2CE] mt-1">
+                    By {h.byName || h.by || "-"}{h.by && h.byName ? ` (${h.by})` : ""} • {nice(h.at)} {String(h.at).slice(11, 16)}
+                  </Text>
+                </View>
+              ))}
+            </ScrollView>
           </View>
         </View>
       </Modal>

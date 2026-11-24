@@ -109,7 +109,12 @@ interface InboxRequest {
   date: string;
   status: "PENDING" | "APPROVED" | "REJECTED";
   balance?: number;
-  amount?: string;
+  amount?: string;              // requested amount text (claim / advance)
+  // claim / advance money: the admin's approved amount is the final settlement
+  requestedAmount?: number | null;
+  approvedAmount?: number | null;
+  finalAmount?: number | null;  // approved when APPROVED, else requested
+  amountChanged?: boolean;
   hasBill?: boolean; // claim: the bill file is stored (older claims have only a file name)
   billName?: string | null;
   requestedHours?: number;
@@ -120,6 +125,18 @@ interface InboxRequest {
   actionedAt?: string;
   rejectionReason?: string;
 }
+
+// claim / advance: the admin enters the approved amount (final settlement)
+const isMoney = (r: { category?: string } | null | undefined) => {
+  const c = String(r?.category || "").toLowerCase();
+  return c === "expense" || c === "claim" || c === "advance";
+};
+// requested amount as a number (older servers send only the "₹1,250" text)
+const requestedOf = (r: InboxRequest): number | null => {
+  if (r.requestedAmount != null && !isNaN(Number(r.requestedAmount))) return Number(r.requestedAmount);
+  const n = parseFloat(String(r.amount || "").replace(/[^0-9.]/g, ""));
+  return isNaN(n) ? null : n;
+};
 
 // The 4 admin groups (tabs). A notification opens one of them: route.params = { tab, requestId, kind }
 type Group = "leave" | "otod" | "money" | "checkout";
@@ -359,11 +376,12 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
 
   // State update helper
   const handleActionSuccess = (
-    targetRequestId: string, 
-    approve: boolean, 
-    remarks?: string, 
-    approvedHours?: number | null, 
-    approvedDays?: number | null
+    targetRequestId: string,
+    approve: boolean,
+    remarks?: string,
+    approvedHours?: number | null,
+    approvedDays?: number | null,
+    approvedAmount?: number | null
   ) => {
     const formattedActionDate = new Date().toLocaleString("en-US", {
       month: "short",
@@ -386,6 +404,13 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
             rejectionReason: remarks || (approve ? `Approved by ${approverName}` : `Rejected by ${approverName}`),
             approvedHours: approvedHours !== undefined && approvedHours !== null ? approvedHours : req.approvedHours,
             approvedDays: approvedDays !== undefined && approvedDays !== null ? approvedDays : req.approvedDays,
+            ...(approve && approvedAmount != null
+              ? {
+                  approvedAmount,
+                  finalAmount: approvedAmount,
+                  amountChanged: requestedOf(req) != null && Number(requestedOf(req)) !== Number(approvedAmount),
+                }
+              : {}),
           };
         }
         return req;
@@ -407,13 +432,26 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
       const endpointType = activeItem.category.toLowerCase();
       const isApproved = actionType === "APPROVE";
 
+      // claim / advance: the approved amount is the final settlement and must be entered
+      if (isApproved && isMoney(activeItem)) {
+        const amt = parseFloat(customAmount.replace(/[^0-9.]/g, ""));
+        if (!(amt > 0)) {
+          setIsModalOpen(true);
+          const m = "Enter the approved amount (final settlement), more than 0. To give nothing, reject the request.";
+          Platform.OS === "web" ? window.alert(m) : Alert.alert("Approved amount needed", m);
+          return;
+        }
+      }
+
       const payload = {
         approved: isApproved,
         adminName: approverName,
         remarks: adminRemarks || (isApproved ? `Approved by ${approverName}` : `Rejected by ${approverName}`),
         approvedHours: customHours ? parseFloat(customHours) : null,
         approvedDays: customDays ? parseFloat(customDays) : null,
-        approvedAmount: customAmount ? parseFloat(customAmount) : null
+        approvedAmount: isApproved && isMoney(activeItem) && customAmount
+          ? parseFloat(customAmount.replace(/[^0-9.]/g, ""))
+          : null
       };
 
       const res = await fetch(
@@ -426,14 +464,17 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
       );
 
       if (res.ok) {
-        handleActionSuccess(activeItem.id, isApproved, payload.remarks, payload.approvedHours, payload.approvedDays);
-        const msg = `Request ${activeItem.id} ${isApproved ? "Approved" : "Rejected"} successfully!`;
+        handleActionSuccess(activeItem.id, isApproved, payload.remarks, payload.approvedHours, payload.approvedDays, payload.approvedAmount);
+        const msg = `Request ${activeItem.id} ${isApproved ? "Approved" : "Rejected"} successfully!` +
+          (isApproved && payload.approvedAmount != null ? `\nFinal amount: ${formatINR(payload.approvedAmount)}` : "");
         Platform.OS === "web" ? window.alert(msg) : Alert.alert("Success", msg);
       } else {
-        throw new Error();
+        const j = await res.json().catch(() => null);
+        throw new Error(j?.message || `Server error (${res.status})`);
       }
-    } catch {
-      Alert.alert("Error", "Could not process review decision.");
+    } catch (e: any) {
+      const m = e?.message || "Could not process review decision.";
+      Platform.OS === "web" ? window.alert(m) : Alert.alert("Could not save", m);
     } finally {
       setProcessingId(null);
       setActiveItem(null);
@@ -442,6 +483,11 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
 
   // Direct Quick Action
   const handleDirectAction = async (item: InboxRequest, approve: boolean) => {
+    // claim / advance: approving always opens the box to enter the final amount
+    if (approve && isMoney(item)) {
+      openDecisionModal(item, true);
+      return;
+    }
     try {
       setProcessingId(item.id);
       const targetUserId = item.userId || currentUserId;
@@ -483,7 +529,17 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
   };
 
   // Bulk Approval
-  const handleBulkApprove = async (ids: string[]) => {
+  const handleBulkApprove = async (idsIn: string[]) => {
+    // claims and advances need the final amount one by one: never bulk-approved
+    const skipped = idsIn.filter((id) => {
+      const r = requests.find((x) => x.id === id);
+      return !!r && isMoney(r);
+    });
+    const ids = idsIn.filter((id) => !skipped.includes(id));
+    if (skipped.length > 0) {
+      const m = `${skipped.length} claim / advance request(s) were skipped: open each one and enter the approved amount (final settlement).`;
+      Platform.OS === "web" ? window.alert(m) : Alert.alert("Approve one by one", m);
+    }
     if (ids.length === 0) return;
     try {
       setLoading(true);
@@ -982,9 +1038,31 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
                     <Text className="text-xs font-bold text-[#1F1B3D]">
                       {userRole === "ADMIN" ? item.type : item.details}
                     </Text>
-                    {item.amount && (
+                    {item.amount && !isMoney(item) && (
                       <Text className="text-xs font-black text-[#5B4FD1]">{formatINR(item.amount)}</Text>
                     )}
+                    {isMoney(item) && (() => {
+                      // pending: requested; approved: the final settlement (requested shown when different); rejected: requested
+                      const st = String(item.status || "").toUpperCase();
+                      const req = requestedOf(item);
+                      const fin = st === "APPROVED" && item.approvedAmount != null ? Number(item.approvedAmount) : req;
+                      const changed = st === "APPROVED" && item.approvedAmount != null && req != null && Number(item.approvedAmount) !== req;
+                      return (
+                        <View className="items-end">
+                          <Text className={`text-[9px] font-black uppercase ${st === "APPROVED" ? "text-emerald-600" : st === "REJECTED" ? "text-slate-400" : "text-[#7A76A6]"}`}>
+                            {st === "APPROVED" ? "Approved" : st === "REJECTED" ? "Requested • Rejected" : "Requested"}
+                          </Text>
+                          <Text className={`text-xs font-black ${st === "APPROVED" ? "text-emerald-700" : st === "REJECTED" ? "text-slate-400" : "text-[#5B4FD1]"}`}>
+                            {fin != null ? formatINR(fin) : formatINR(item.amount)}
+                          </Text>
+                          {changed && (
+                            <Text className="text-[10px] font-semibold text-slate-400" style={{ textDecorationLine: "line-through" }}>
+                              {formatINR(req)}
+                            </Text>
+                          )}
+                        </View>
+                      );
+                    })()}
                     {item.balance !== undefined && (
                       <Text className="text-[10px] font-black text-emerald-600">
                         Quota Bal: {item.balance}d
@@ -1196,16 +1274,32 @@ export default function ApprovalsScreen({ navigation, route }: ApprovalsScreenPr
                         </Text>
                       )
                     )}
-                    <Text className="text-[11px] font-bold text-[#1F1B3D] mb-1">
-                      Approved Amount (Requested: {activeItem?.amount ? formatINR(activeItem.amount) : "N/A"})
+                    <View className="flex-row items-center justify-between bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-2 mb-2">
+                      <Text className="text-[11px] font-bold text-[#7A76A6]">Employee requested</Text>
+                      <Text className="text-sm font-black text-[#1F1B3D]">
+                        {activeItem && requestedOf(activeItem) != null ? formatINR(requestedOf(activeItem)) : formatINR(activeItem?.amount)}
+                      </Text>
+                    </View>
+                    <Text className="text-[11px] font-black text-[#1F1B3D] mb-1">
+                      Approved amount (final settlement) *
                     </Text>
                     <TextInput
                       value={customAmount}
                       onChangeText={setCustomAmount}
-                      placeholder="e.g. 450.00"
+                      placeholder="e.g. 5000"
                       keyboardType="numeric"
-                      className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-2 text-xs font-bold text-[#1F1B3D]"
+                      className="bg-white border-2 border-[#5B4FD1]/40 rounded-xl px-3 py-2.5 text-sm font-black text-[#1F1B3D]"
                     />
+                    <Text className="text-[10px] font-semibold text-[#7A76A6] mt-1">
+                      {activeItem?.category === "Advance"
+                        ? "Only this amount is approved and deducted from the salary. The employee sees this amount."
+                        : "Only this amount is approved and paid with the salary. The employee sees this amount."}
+                      {(() => {
+                        const r = activeItem ? requestedOf(activeItem) : null;
+                        const a = parseFloat(customAmount.replace(/[^0-9.]/g, ""));
+                        return r != null && a > 0 && a !== r ? `  (${a < r ? "less" : "more"} than requested by ${formatINR(Math.abs(r - a))} - add a remark below)` : "";
+                      })()}
+                    </Text>
                   </View>
                 )}
 

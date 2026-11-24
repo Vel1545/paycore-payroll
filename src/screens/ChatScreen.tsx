@@ -10,7 +10,10 @@ import {
   Modal,
   KeyboardAvoidingView,
   AppState,
+  Image,
 } from "react-native";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
 import * as Linking from "expo-linking";
 import { useIsFocused } from "@react-navigation/native";
 import {
@@ -85,13 +88,40 @@ interface Announcement {
   pinned?: boolean;
   teams?: { id: string; name: string }[];       // empty = sent to everyone
   tagged?: { empId: string; name: string }[];   // people tagged with @
+  attachments?: AnnAttachment[];                // images / documents posted with the notice
 }
+
+// A file attached to an announcement. url = "/api/workspace/announcements/attachments/<id>" (checked on the server)
+interface AnnAttachment {
+  id: number;
+  name: string;
+  type?: string;
+  sizeMb?: number;
+  isImage?: boolean;
+  url: string;
+}
+
+// A file the admin picked for a new notice (web keeps the File object)
+interface PickedAnnFile {
+  name: string;
+  size: number;
+  mimeType: string;
+  uri: string;
+  file?: any;
+}
+
+const MAX_ANN_FILES = 5;
+const MAX_ANN_FILE_MB = 10;
+const ANN_FILE_EXTS = ["jpg", "jpeg", "png", "webp", "gif", "heic", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt"];
+const extOfName = (n: string) => (n.includes(".") ? n.split(".").pop()!.toLowerCase() : "");
 
 // A real employee, loaded from the server (user_configs)
 interface Person {
   empId: string;
   name: string;
   department?: string | null;
+  designation?: string | null; // only in the group member list
+  isAdmin?: boolean;           // only in the group member list
 }
 
 // GENERAL = everyone, DEPARTMENT = that department, CUSTOM = private group made by an admin
@@ -181,6 +211,13 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
   } | null>(null);
 
   const [showMemberList, setShowMemberList] = useState(false);
+  // Group members panel
+  const [memberFilter, setMemberFilter] = useState("");
+  const [pickedMember, setPickedMember] = useState<string | null>(null);
+  const [addMode, setAddMode] = useState(false);
+  const [addIds, setAddIds] = useState<string[]>([]);
+  const [addSearch, setAddSearch] = useState("");
+  const [memberBusy, setMemberBusy] = useState(false);
   const [showMentionSuggestions, setShowMentionSuggestions] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
 
@@ -205,6 +242,8 @@ export default function ChatScreen({ navigation, userSession, route }: ChatScree
   const [annTeamIds, setAnnTeamIds] = useState<string[]>([]);
   const [annTagged, setAnnTagged] = useState<Person[]>([]);
   const [annMentionQuery, setAnnMentionQuery] = useState<string | null>(null);
+  const [annFiles, setAnnFiles] = useState<PickedAnnFile[]>([]);
+  const [postingNotice, setPostingNotice] = useState(false);
 
   // Newest request wins: an older, slower response can never replace the room that is open now
   const roomSeq = useRef(0);
@@ -360,6 +399,7 @@ timestamp: m.createdAt ? new Date(m.createdAt).toLocaleString("en-US", {
           pinned: a.pinned || a.is_pinned || false,
           teams: Array.isArray(a.targetChannels) ? a.targetChannels : [],
           tagged: Array.isArray(a.mentions) ? a.mentions : [],
+          attachments: Array.isArray(a.attachments) ? a.attachments : [],
         }));
         setAnnouncements(formatted);
       }
@@ -706,6 +746,119 @@ timestamp: m.createdAt ? new Date(m.createdAt).toLocaleString("en-US", {
     }
   };
 
+  // ----------------------------- group members panel -----------------------------
+  const canManageMembers = isAdmin && chatType === "groups" && currentChannel?.type === "CUSTOM";
+
+  const openMembers = () => {
+    setMemberFilter("");
+    setPickedMember(null);
+    setAddMode(false);
+    setAddIds([]);
+    setAddSearch("");
+    setShowMemberList(true);
+    loadRoomMembers(activeConversation);
+  };
+
+  // you first, then by name; search by name, ID, designation or department
+  const membersShown = useMemo(() => {
+    const t = memberFilter.trim().toLowerCase();
+    return roomMembers
+      .filter((p) =>
+        !t ||
+        `${p.name} ${p.empId} ${p.designation || ""} ${p.department || ""}`.toLowerCase().includes(t))
+      .sort((a, b) =>
+        a.empId === currentEmpId ? -1 : b.empId === currentEmpId ? 1 : (a.name || "").localeCompare(b.name || ""));
+  }, [roomMembers, memberFilter, currentEmpId]);
+
+  // people who can be added: active employees not in the group yet
+  const addCandidates = useMemo(() => {
+    const inGroup = new Set(roomMembers.map((m) => m.empId));
+    const t = addSearch.trim().toLowerCase();
+    return directory
+      .filter((p) => !inGroup.has(p.empId))
+      .filter((p) => !t || `${p.name} ${p.empId} ${p.department || ""}`.toLowerCase().includes(t))
+      .slice(0, 80);
+  }, [directory, roomMembers, addSearch]);
+
+  const memberMessage = (p: Person) => {
+    setShowMemberList(false);
+    handleSelectDirectUser({ empId: p.empId, name: p.name, department: p.department });
+  };
+
+  const memberTag = (p: Person) => {
+    setShowMemberList(false);
+    setInputText((prev) => `${prev}${prev && !prev.endsWith(" ") ? " " : ""}@${p.name} `);
+  };
+
+  const saveAddMembers = async () => {
+    if (addIds.length === 0) return notify("Choose people", "Tick at least one employee to add.");
+    setMemberBusy(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/channels/${encodeURIComponent(activeConversation)}/members`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ empId: currentEmpId, memberIds: addIds }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        notify("Could not add", data?.error || "Please try again.");
+        return;
+      }
+      setAddMode(false);
+      setAddIds([]);
+      setAddSearch("");
+      await loadRoomMembers(activeConversation);
+      loadChannels();
+      notify("Added", data.message || "Members added.");
+    } catch {
+      notify("Error", "Could not add the members.");
+    } finally {
+      setMemberBusy(false);
+    }
+  };
+
+  const removeMember = (p: Person) => {
+    const self = p.empId === currentEmpId;
+    const run = async () => {
+      setMemberBusy(true);
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/channels/${encodeURIComponent(activeConversation)}/members?empId=${empQuery}&memberId=${encodeURIComponent(p.empId)}`,
+          { method: "DELETE" }
+        );
+        if (!res.ok) {
+          notify("Could not remove", await readError(res, "Please try again."));
+          return;
+        }
+        setPickedMember(null);
+        if (self) {
+          // you left the group: it disappears from your list
+          setShowMemberList(false);
+          await loadChannels();
+          closeChat();
+          return;
+        }
+        await loadRoomMembers(activeConversation);
+        loadChannels();
+      } catch {
+        notify("Error", "Could not remove the member.");
+      } finally {
+        setMemberBusy(false);
+      }
+    };
+    const msg = self
+      ? "Remove yourself from this group? You will no longer see it or its messages."
+      : `Remove ${p.name} (${p.empId}) from this group? They will no longer see it or its messages.`;
+    if (Platform.OS === "web") {
+      if (window.confirm(msg)) run();
+    } else {
+      Alert.alert("Remove member", msg, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Remove", style: "destructive", onPress: run },
+      ]);
+    }
+  };
+
   // ----------------------------- announcements -----------------------------
   // Teams an admin can send to: department groups and private groups (not "General" - that is "Everyone")
   const teamChoices = channels.filter((c) => c.type !== "GENERAL");
@@ -758,42 +911,158 @@ timestamp: m.createdAt ? new Date(m.createdAt).toLocaleString("en-US", {
     );
   };
 
+  // Admin: pick images / documents for the notice (up to 5, 10 MB each). The server checks them again.
+  const pickAnnFiles = async () => {
+    if (annFiles.length >= MAX_ANN_FILES) {
+      notify("Limit reached", `You can attach up to ${MAX_ANN_FILES} files.`);
+      return;
+    }
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: "*/*", multiple: true, copyToCacheDirectory: true });
+      if (result.canceled || !result.assets?.length) return;
+      const next = [...annFiles];
+      const refused: string[] = [];
+      for (const a of result.assets) {
+        const name = a.name || "file";
+        const size = Number(a.size || (a as any).file?.size || 0);
+        if (!ANN_FILE_EXTS.includes(extOfName(name))) { refused.push(`${name} (type not allowed)`); continue; }
+        if (size > MAX_ANN_FILE_MB * 1024 * 1024) { refused.push(`${name} (over ${MAX_ANN_FILE_MB} MB)`); continue; }
+        if (next.length >= MAX_ANN_FILES) { refused.push(`${name} (only ${MAX_ANN_FILES} files)`); continue; }
+        if (next.some((f) => f.name === name && f.size === size)) continue;
+        next.push({ name, size, mimeType: a.mimeType || "application/octet-stream", uri: a.uri, file: (a as any).file });
+      }
+      setAnnFiles(next);
+      if (refused.length) {
+        notify("Some files were not added",
+          refused.join("\n") + "\n\nAllowed: images (JPG, PNG, WEBP, GIF, HEIC) and PDF, Word, Excel, PowerPoint, TXT.");
+      }
+    } catch (e) {
+      notify("Error", "Could not open the file picker.");
+    }
+  };
+
   const handleCreateAnnouncement = async () => {
     if (!newTitle.trim() || !newContent.trim()) {
       notify("Incomplete Form", "Please enter both title and description.");
       return;
     }
+    if (postingNotice) return;
 
+    setPostingNotice(true);
     try {
       const categoryPayload = newPriority === "Urgent" ? "URGENT" : newPriority === "High" ? "POLICY" : "GENERAL";
-      const res = await fetch(`${API_BASE_URL}/announcements`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          empId: currentEmpId,
-          title: newTitle.trim(),
-          content: newContent.trim(),
-          category: categoryPayload,
-          isPinned: newPriority === "Urgent",
-          targetChannels: annTeamIds,
-          // only people whose @Name is still in the text
-          mentions: annTagged.filter((p) => newContent.includes(`@${p.name}`)).map((p) => p.empId),
-        }),
-      });
+      // only people whose @Name is still in the text
+      const mentions = annTagged.filter((p) => newContent.includes(`@${p.name}`)).map((p) => p.empId);
+      let res: Response;
+      if (annFiles.length > 0) {
+        // with files: one multipart request; if a file fails nothing is posted
+        const form = new FormData();
+        form.append("empId", currentEmpId);
+        form.append("title", newTitle.trim());
+        form.append("content", newContent.trim());
+        form.append("category", categoryPayload);
+        form.append("isPinned", String(newPriority === "Urgent"));
+        form.append("targetChannels", JSON.stringify(annTeamIds));
+        form.append("mentions", JSON.stringify(mentions));
+        for (const f of annFiles) {
+          if (Platform.OS === "web" && f.file) form.append("files", f.file, f.name);
+          else form.append("files", { uri: f.uri, name: f.name, type: f.mimeType } as any);
+        }
+        res = await fetch(`${API_BASE_URL}/announcements/with-files`, {
+          method: "POST",
+          headers: { Accept: "application/json" },
+          body: form,
+        });
+      } else {
+        res = await fetch(`${API_BASE_URL}/announcements`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            empId: currentEmpId,
+            title: newTitle.trim(),
+            content: newContent.trim(),
+            category: categoryPayload,
+            isPinned: newPriority === "Urgent",
+            targetChannels: annTeamIds,
+            mentions,
+          }),
+        });
+      }
 
-      const data = await res.json();
-      if (data.success || res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success !== false) {
         setNewTitle("");
         setNewContent("");
         setNewPriority("Normal");
         setAnnTeamIds([]);
         setAnnTagged([]);
         setAnnMentionQuery(null);
+        setAnnFiles([]);
         setShowNewAnnouncementModal(false);
         fetchAnnouncementsFromDb();
+      } else {
+        notify("Could not post", data?.error || (res.status === 404 ? "Please update the server to send files." : "Please try again."));
       }
     } catch (e) {
       notify("Error", "Failed to broadcast notice.");
+    } finally {
+      setPostingNotice(false);
+    }
+  };
+
+  // Announcement file: full link with who is opening it (+ login token for <Image>, browser and downloads)
+  const annFileLink = (att: AnnAttachment, download = false) =>
+    withAuthToken(`${BASE_HOST}${att.url}?empId=${encodeURIComponent(currentEmpId)}${download ? "&download=true" : ""}`);
+
+  const openAnnFile = async (att: AnnAttachment) => {
+    const url = annFileLink(att);
+    if (Platform.OS === "web") window.open(url, "_blank");
+    else await Linking.openURL(url);
+  };
+
+  const downloadAnnFile = async (att: AnnAttachment) => {
+    const url = annFileLink(att, true);
+    if (Platform.OS === "web") {
+      // the server answers with "save as" (attachment); a new tab keeps the app open
+      window.open(url, "_blank");
+      return;
+    }
+    try {
+      // token in the link (not a header): the server redirects to S3, which must not get our login header
+      const safe = att.name.replace(/[^a-zA-Z0-9._-]+/g, "_");
+      const out = await FileSystem.downloadAsync(url, `${FileSystem.cacheDirectory}${Date.now()}_${safe}`);
+      if (out.status !== 200) throw new Error(`HTTP ${out.status}`);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(out.uri, { mimeType: att.type || undefined, dialogTitle: att.name });
+      } else {
+        notify("Downloaded", `Saved: ${att.name}`);
+      }
+    } catch (e) {
+      notify("Download failed", "Could not download the file. Please try again.");
+    }
+  };
+
+  const handleDeleteAnnouncement = (item: Announcement) => {
+    const run = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/announcements/${item.id}?empId=${empQuery}`, { method: "DELETE" });
+        if (!res.ok) {
+          notify("Could not delete", await readError(res, "Please try again."));
+          return;
+        }
+        fetchAnnouncementsFromDb();
+      } catch {
+        notify("Error", "Could not delete the notice.");
+      }
+    };
+    const msg = `Delete "${item.title}"${item.attachments?.length ? ` and its ${item.attachments.length} file(s)` : ""}? This cannot be undone.`;
+    if (Platform.OS === "web") {
+      if (window.confirm(msg)) run();
+    } else {
+      Alert.alert("Delete notice", msg, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: run },
+      ]);
     }
   };
 
@@ -1120,7 +1389,7 @@ timestamp: m.createdAt ? new Date(m.createdAt).toLocaleString("en-US", {
               )}
               {chatType === "groups" && (
                 <TouchableOpacity
-                  onPress={() => setShowMemberList(!showMemberList)}
+                  onPress={openMembers}
                   className="bg-[#F6F5FC] border border-[#E7E4F5] px-2.5 py-1 rounded-xl flex-row items-center"
                 >
                   <Users size={12} color="#5B4FD1" />
@@ -1128,27 +1397,6 @@ timestamp: m.createdAt ? new Date(m.createdAt).toLocaleString("en-US", {
                 </TouchableOpacity>
               )}
             </View>
-
-            {/* Member drawer: tap a person to tag them */}
-            {showMemberList && chatType === "groups" && (
-              <View className="bg-white border-x border-b border-[#E7E4F5] p-2.5 shrink-0">
-                <Text className="text-[9px] font-bold text-[#7A76A6] mb-1.5">Tap a name to tag them</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row gap-2">
-                  {mentionCandidates.map((m) => (
-                    <TouchableOpacity
-                      key={m.empId}
-                      onPress={() => setInputText((prev) => `${prev}${prev && !prev.endsWith(" ") ? " " : ""}@${m.name} `)}
-                      className="bg-[#EEECFA] px-2.5 py-1 rounded-lg border border-[#5B4FD1]/20 flex-row items-center mr-2"
-                    >
-                      <Text className="text-[10px] font-bold text-[#5B4FD1]">@{m.name}</Text>
-                    </TouchableOpacity>
-                  ))}
-                  {mentionCandidates.length === 0 && (
-                    <Text className="text-[10px] font-semibold text-[#7A76A6]">No other members yet</Text>
-                  )}
-                </ScrollView>
-              </View>
-            )}
 
             {/* Main chat stream */}
             <View className="flex-1 min-h-0 bg-[#F6F5FC] border-x border-b border-[#E7E4F5] rounded-b-3xl p-3 flex-col justify-between overflow-hidden shadow-xs">
@@ -1443,11 +1691,47 @@ timestamp: m.createdAt ? new Date(m.createdAt).toLocaleString("en-US", {
                   </View>
                 </View>
 
+                {/* Attachments: images and documents */}
+                <View>
+                  <View className="flex-row items-center justify-between mb-1.5">
+                    <Text className="text-[10px] font-bold text-[#7A76A6] uppercase">
+                      Attachments ({annFiles.length}/{MAX_ANN_FILES})
+                    </Text>
+                    <TouchableOpacity
+                      onPress={pickAnnFiles}
+                      disabled={postingNotice || annFiles.length >= MAX_ANN_FILES}
+                      className={`flex-row items-center px-3 py-1 rounded-lg border ${annFiles.length >= MAX_ANN_FILES ? "border-[#E7E4F5] bg-slate-50" : "border-[#5B4FD1]/40 bg-[#EEECFA]"}`}
+                    >
+                      <Paperclip size={12} color="#5B4FD1" />
+                      <Text className="text-[10px] font-black text-[#5B4FD1] ml-1">Attach files</Text>
+                    </TouchableOpacity>
+                  </View>
+                  {annFiles.map((f, i) => (
+                    <View key={`${f.name}-${i}`} className="flex-row items-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-2 mb-1">
+                      <FileText size={13} color="#5B4FD1" />
+                      <Text className="flex-1 text-[11px] font-bold text-[#1F1B3D] ml-2" numberOfLines={1}>{f.name}</Text>
+                      <Text className="text-[10px] font-semibold text-[#7A76A6] mx-2">{(f.size / (1024 * 1024)).toFixed(1)} MB</Text>
+                      <TouchableOpacity onPress={() => setAnnFiles((p) => p.filter((_, j) => j !== i))} disabled={postingNotice}>
+                        <X size={14} color="#E11D48" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  {annFiles.length === 0 && (
+                    <Text className="text-[10px] font-semibold text-[#A6A2CE]">
+                      Optional • images or PDF / Word / Excel / PowerPoint / TXT • up to {MAX_ANN_FILES} files, {MAX_ANN_FILE_MB} MB each
+                    </Text>
+                  )}
+                </View>
+
                 <TouchableOpacity
                   onPress={handleCreateAnnouncement}
+                  disabled={postingNotice}
                   className="bg-[#5B4FD1] py-3 rounded-2xl items-center shadow-md active:opacity-90"
+                  style={{ opacity: postingNotice ? 0.6 : 1 }}
                 >
-                  <Text className="text-white font-black text-xs uppercase tracking-wider">{broadcastLabel()}</Text>
+                  <Text className="text-white font-black text-xs uppercase tracking-wider">
+                    {postingNotice ? (annFiles.length ? "Uploading files..." : "Posting...") : broadcastLabel()}
+                  </Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -1520,9 +1804,57 @@ timestamp: m.createdAt ? new Date(m.createdAt).toLocaleString("en-US", {
                       ))}
                     </View>
                   )}
-                  <Text className="text-[10px] font-bold text-[#1F1B3D] border-t border-slate-100 pt-2">
-                    Posted by: {item.postedBy}
-                  </Text>
+                  {/* Attachments: images as thumbnails, documents as file chips */}
+                  {(item.attachments?.length ?? 0) > 0 && (
+                    <View className="mb-2">
+                      {item.attachments!.some((a) => a.isImage) && (
+                        <View className="flex-row flex-wrap mb-1">
+                          {item.attachments!.filter((a) => a.isImage).map((a) => (
+                            <View key={a.id} className="mr-2 mb-2">
+                              <TouchableOpacity onPress={() => openAnnFile(a)} activeOpacity={0.85}>
+                                <Image
+                                  source={{ uri: annFileLink(a) }}
+                                  style={{ width: 120, height: 120, borderRadius: 12, backgroundColor: "#EEECFA" }}
+                                  resizeMode="cover"
+                                />
+                              </TouchableOpacity>
+                              <TouchableOpacity onPress={() => downloadAnnFile(a)} className="flex-row items-center mt-1">
+                                <Download size={11} color="#5B4FD1" />
+                                <Text className="text-[10px] font-black text-[#5B4FD1] ml-1" numberOfLines={1} style={{ maxWidth: 100 }}>
+                                  Download
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                      {item.attachments!.filter((a) => !a.isImage).map((a) => (
+                        <View key={a.id} className="flex-row items-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-2 mb-1.5">
+                          <FileText size={14} color="#5B4FD1" />
+                          <View className="flex-1 ml-2 mr-2">
+                            <Text className="text-[11px] font-bold text-[#1F1B3D]" numberOfLines={1}>{a.name}</Text>
+                            {a.sizeMb != null && <Text className="text-[9.5px] font-semibold text-[#7A76A6]">{a.sizeMb} MB</Text>}
+                          </View>
+                          <TouchableOpacity onPress={() => openAnnFile(a)} className="px-2.5 py-1 rounded-lg bg-white border border-[#5B4FD1]/30 mr-1.5">
+                            <Text className="text-[10px] font-black text-[#5B4FD1]">View</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => downloadAnnFile(a)} className="px-2.5 py-1 rounded-lg bg-[#5B4FD1] flex-row items-center">
+                            <Download size={11} color="#FFFFFF" />
+                            <Text className="text-[10px] font-black text-white ml-1">Download</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                  <View className="flex-row items-center justify-between border-t border-slate-100 pt-2">
+                    <Text className="text-[10px] font-bold text-[#1F1B3D]">Posted by: {item.postedBy}</Text>
+                    {isAdmin && (
+                      <TouchableOpacity onPress={() => handleDeleteAnnouncement(item)} className="flex-row items-center px-2 py-1 rounded-lg bg-rose-50 border border-rose-200">
+                        <Trash2 size={11} color="#E11D48" />
+                        <Text className="text-[10px] font-black text-rose-600 ml-1">Delete</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </View>
               ))
             )}
@@ -1704,6 +2036,192 @@ timestamp: m.createdAt ? new Date(m.createdAt).toLocaleString("en-US", {
                 <Text className="text-[11px] font-semibold text-[#7A76A6] p-3">No employee matches.</Text>
               )}
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ========================================================================= */}
+      {/* MODAL: GROUP MEMBERS (view; admins add / remove in private groups)         */}
+      {/* ========================================================================= */}
+      <Modal visible={showMemberList && chatType === "groups"} transparent animationType="slide"
+        onRequestClose={() => setShowMemberList(false)}>
+        <View className={`flex-1 bg-black/50 ${isWebDesktop ? "justify-center items-center p-4" : "justify-end"}`}>
+          <View className={`w-full bg-white border border-[#E7E4F5] p-5 shadow-2xl ${isWebDesktop ? "max-w-md rounded-3xl" : "rounded-t-3xl"}`}
+            style={{ maxHeight: "88%" }}>
+            {/* header */}
+            <View className="flex-row items-start justify-between pb-2.5 border-b border-slate-100 mb-3">
+              <View className="flex-1 pr-2">
+                <Text className="text-sm font-black text-[#1F1B3D]" numberOfLines={1}>
+                  {addMode ? "Add members" : currentChannel?.name || "Group"}
+                </Text>
+                <Text className="text-[10.5px] font-semibold text-[#7A76A6]">
+                  {addMode
+                    ? `${addIds.length} selected`
+                    : `${channelSubtitle(currentChannel, roomMembers.length || memberCount)}`}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => (addMode ? setAddMode(false) : setShowMemberList(false))} className="p-1">
+                {addMode ? <ChevronLeft size={18} color="#7A76A6" /> : <X size={18} color="#7A76A6" />}
+              </TouchableOpacity>
+            </View>
+
+            {!addMode ? (
+              <>
+                <View className="flex-row items-center bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 mb-2">
+                  <Search size={13} color="#7A76A6" />
+                  <TextInput
+                    value={memberFilter}
+                    onChangeText={setMemberFilter}
+                    placeholder="Search name, ID, designation or department"
+                    placeholderTextColor="#A6A2CE"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    className="flex-1 px-2 py-2.5 text-xs font-semibold text-[#1F1B3D]"
+                  />
+                  {!!memberFilter && (
+                    <TouchableOpacity onPress={() => setMemberFilter("")}><X size={13} color="#7A76A6" /></TouchableOpacity>
+                  )}
+                </View>
+
+                {canManageMembers && (
+                  <TouchableOpacity
+                    onPress={() => { setAddMode(true); setAddIds([]); setAddSearch(""); }}
+                    className="flex-row items-center justify-center bg-[#5B4FD1] rounded-xl py-2.5 mb-2"
+                  >
+                    <Plus size={14} color="#fff" />
+                    <Text className="text-white text-xs font-black ml-1.5">Add members</Text>
+                  </TouchableOpacity>
+                )}
+                {!canManageMembers && currentChannel && currentChannel.type !== "CUSTOM" && (
+                  <Text className="text-[10px] font-semibold text-[#A6A2CE] mb-2">
+                    {currentChannel.type === "GENERAL"
+                      ? "Everyone in the company is in this group automatically."
+                      : "Everyone in this department is in this group automatically."}
+                  </Text>
+                )}
+
+                <ScrollView className="flex-grow-0" style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
+                  {membersShown.map((p) => {
+                    const self = p.empId === currentEmpId;
+                    const open = pickedMember === p.empId;
+                    return (
+                      <View key={p.empId} className={`rounded-xl mb-1 ${open ? "bg-[#F6F5FC] border border-[#E7E4F5]" : ""}`}>
+                        <TouchableOpacity
+                          onPress={() => setPickedMember(open ? null : p.empId)}
+                          className="flex-row items-center p-2.5"
+                        >
+                          <View className={`w-9 h-9 rounded-full items-center justify-center mr-3 ${self ? "bg-[#5B4FD1]" : "bg-[#EEECFA]"}`}>
+                            <Text className={`text-[11px] font-black ${self ? "text-white" : "text-[#5B4FD1]"}`}>{initial(p.name)}</Text>
+                          </View>
+                          <View className="flex-1">
+                            <View className="flex-row items-center flex-wrap">
+                              <Text className="text-xs font-black text-[#1F1B3D] mr-1.5" numberOfLines={1}>{p.name}</Text>
+                              {self && (
+                                <View className="px-1.5 py-0.5 rounded-md bg-[#EEECFA] mr-1">
+                                  <Text className="text-[9px] font-black text-[#5B4FD1]">YOU</Text>
+                                </View>
+                              )}
+                              {p.isAdmin && (
+                                <View className="px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-200">
+                                  <Text className="text-[9px] font-black text-amber-700">ADMIN</Text>
+                                </View>
+                              )}
+                            </View>
+                            <Text className="text-[10px] font-semibold text-[#7A76A6]" numberOfLines={1}>
+                              {p.empId}
+                              {p.designation ? `  •  ${p.designation}` : ""}
+                              {p.department ? `  •  ${p.department}` : ""}
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                        {open && (
+                          <View className="flex-row flex-wrap gap-2 px-2.5 pb-2.5">
+                            {!self && (
+                              <TouchableOpacity onPress={() => memberMessage(p)}
+                                className="flex-row items-center px-3 py-1.5 rounded-lg bg-white border border-[#D9D5F2]">
+                                <MessageSquare size={12} color="#5B4FD1" />
+                                <Text className="text-[10.5px] font-black text-[#5B4FD1] ml-1">Message</Text>
+                              </TouchableOpacity>
+                            )}
+                            {!self && (
+                              <TouchableOpacity onPress={() => memberTag(p)}
+                                className="flex-row items-center px-3 py-1.5 rounded-lg bg-white border border-[#D9D5F2]">
+                                <AtSign size={12} color="#5B4FD1" />
+                                <Text className="text-[10.5px] font-black text-[#5B4FD1] ml-1">Tag in chat</Text>
+                              </TouchableOpacity>
+                            )}
+                            {canManageMembers && (
+                              <TouchableOpacity onPress={() => removeMember(p)} disabled={memberBusy}
+                                className="flex-row items-center px-3 py-1.5 rounded-lg bg-rose-50 border border-rose-200">
+                                <Trash2 size={12} color="#E11D48" />
+                                <Text className="text-[10.5px] font-black text-rose-600 ml-1">{self ? "Leave group" : "Remove"}</Text>
+                              </TouchableOpacity>
+                            )}
+                            {self && !canManageMembers && (
+                              <Text className="text-[10px] font-semibold text-[#A6A2CE] py-1.5">This is you</Text>
+                            )}
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })}
+                  {roomMembers.length === 0 && (
+                    <Text className="text-[11px] font-semibold text-[#7A76A6] p-3">Loading members…</Text>
+                  )}
+                  {roomMembers.length > 0 && membersShown.length === 0 && (
+                    <Text className="text-[11px] font-semibold text-[#7A76A6] p-3">No member matches.</Text>
+                  )}
+                </ScrollView>
+              </>
+            ) : (
+              <>
+                <TextInput
+                  value={addSearch}
+                  onChangeText={setAddSearch}
+                  placeholder="Search employees by name, ID or department"
+                  placeholderTextColor="#A6A2CE"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-2.5 text-xs font-semibold text-[#1F1B3D] mb-2"
+                />
+                <ScrollView className="flex-grow-0" style={{ maxHeight: 380 }} keyboardShouldPersistTaps="handled">
+                  {addCandidates.map((p) => {
+                    const on = addIds.includes(p.empId);
+                    return (
+                      <TouchableOpacity
+                        key={p.empId}
+                        onPress={() => setAddIds((prev) => (on ? prev.filter((x) => x !== p.empId) : [...prev, p.empId]))}
+                        className={`flex-row items-center p-2.5 rounded-xl mb-1 ${on ? "bg-[#EEECFA]" : ""}`}
+                      >
+                        <View className={`w-5 h-5 rounded-md border mr-3 items-center justify-center ${on ? "bg-[#5B4FD1] border-[#5B4FD1]" : "border-[#C9C4EA] bg-white"}`}>
+                          {on && <Check size={12} color="#fff" />}
+                        </View>
+                        <View className="flex-1">
+                          <Text className="text-xs font-black text-[#1F1B3D]" numberOfLines={1}>{p.name}</Text>
+                          <Text className="text-[10px] font-semibold text-[#7A76A6]" numberOfLines={1}>
+                            {p.empId}{p.department ? `  •  ${p.department}` : ""}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                  {addCandidates.length === 0 && (
+                    <Text className="text-[11px] font-semibold text-[#7A76A6] p-3">
+                      {addSearch ? "No employee matches." : "Everyone is already in this group."}
+                    </Text>
+                  )}
+                </ScrollView>
+                <TouchableOpacity
+                  onPress={saveAddMembers}
+                  disabled={memberBusy || addIds.length === 0}
+                  className={`rounded-xl py-3 items-center mt-3 ${addIds.length === 0 ? "bg-[#C9C4EA]" : "bg-[#5B4FD1]"}`}
+                >
+                  <Text className="text-white text-xs font-black uppercase">
+                    {memberBusy ? "Adding…" : `Add ${addIds.length || ""} member${addIds.length === 1 ? "" : "s"}`}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
       </Modal>

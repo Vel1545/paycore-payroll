@@ -10,12 +10,15 @@ export type FeatureKey =
 const EMPLOYEE: FeatureKey[] = ["HOME", "ATTENDANCE", "APPLY", "PAYSLIP", "MY_HUB"];
 const ADMIN_ONLY: FeatureKey[] = ["LEAVE_APPROVALS", "OT_APPROVALS", "CHECKOUT_APPROVALS", "ATTENDANCE_AUDIT", "SALARY_VIEW", "LIVE_TRACKING"];
 const SALES_HEAD:FeatureKey[] = ["HOME", "ATTENDANCE", "APPLY", "PAYSLIP", "MY_HUB","LIVE_TRACKING"];
+// Account head: normal employee pages + salary page (view / edit / download all employees) + live tracking. No other admin pages.
+const ACCOUNT_HEAD: FeatureKey[] = [...EMPLOYEE, "SALARY_VIEW", "LIVE_TRACKING"];
 
 const ROLE_FEATURES: Record<string, FeatureKey[]> = {
   EMPLOYEE: EMPLOYEE,
   ADMIN: [...EMPLOYEE, ...ADMIN_ONLY],   // normal app + admin pages (today's admin)
   SUPER_ADMIN: ADMIN_ONLY,               // admin pages only, no user pages
   SALES_HEAD:SALES_HEAD ,         // live tracking only
+  ACCOUNT_HEAD: ACCOUNT_HEAD,     // salary page + live tracking
 };
 
 /** "Super Admin", "superadmin" -> SUPER_ADMIN;  "Sales", "Sales Head" -> SALES_HEAD;  "User" -> EMPLOYEE */
@@ -24,6 +27,7 @@ export function normalizeRole(raw?: string | null, isAdminFlag?: boolean): strin
   const flat = r.replace(/_/g, "");
   if (flat === "SUPERADMIN") return "SUPER_ADMIN";
   if (flat === "SALES" || flat === "SALESHEAD") return "SALES_HEAD";
+  if (flat === "ACCOUNTS" || flat === "ACCOUNTHEAD" || flat === "ACCOUNTSHEAD") return "ACCOUNT_HEAD";
   if (flat === "ADMIN" || flat === "ADMINISTRATOR") return "ADMIN";
   if (flat === "USER" || flat === "EMPLOYEE" || flat === "STAFF") return "EMPLOYEE";
   if (!r) return isAdminFlag ? "ADMIN" : "EMPLOYEE";
@@ -33,6 +37,7 @@ const EMP_ROLE_OVERRIDES: Record<string, string> = {
   F9CEO: "SUPER_ADMIN",
   F9CAO: "SUPER_ADMIN",
   F9005: "SALES_HEAD",
+  F9002: "ACCOUNT_HEAD",
 };
 export function currentRole(isAdminFlag?: boolean) {
   const empId = String((UserSession as any).empId ?? "").toUpperCase();

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   View,KeyboardAvoidingView,
   Text,
@@ -520,20 +520,28 @@ const otValid = otMinutes > 0 && otMinutes <= OT_MAX_MIN;
 
 // Advance limit from the server (50% of the salary earned for the working days so far, Sundays excluded)
 const [advLimit, setAdvLimit] = useState<any>(null);
+const [advLimitError, setAdvLimitError] = useState(false);
+const advLimitSeq = useRef(0);
+// newest call wins; on failure the card shows "tap to retry" instead of loading forever (the server still checks on submit)
+const loadAdvLimit = async () => {
+  const seq = ++advLimitSeq.current;
+  setAdvLimitError(false);
+  try {
+    const res = await fetch(`${API_BASE_URL}/users/${encodeURIComponent(String(UserSession.empId || ""))}/advance-limit`, { cache: "no-store" });
+    if (seq !== advLimitSeq.current) return;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    setAdvLimit(await res.json());
+  } catch {
+    if (seq === advLimitSeq.current) setAdvLimitError(true);
+  }
+};
 useEffect(() => {
   if (activeTab !== "advance") return;
-  let alive = true;
-  (async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/users/${UserSession.empId}/advance-limit`, { cache: "no-store" });
-      if (res.ok && alive) setAdvLimit(await res.json());
-    } catch {
-      /* keep the last value; the server still checks on submit */
-    }
-  })();
+  loadAdvLimit();
   return () => {
-    alive = false;
+    advLimitSeq.current++; // ignore an answer that arrives after leaving the tab
   };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [activeTab]);
 const inr = (n: any) => `₹${Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -739,10 +747,7 @@ const handleSubmitAdvance = async () => {
         setAdvanceAmount("");
         setAdvanceReason("");
         setAdvLimit(null);
-        fetch(`${API_BASE_URL}/users/${UserSession.empId}/advance-limit`, { cache: "no-store" })
-          .then((r) => (r.ok ? r.json() : null))
-          .then((j) => j && setAdvLimit(j))
-          .catch(() => {});
+        loadAdvLimit();
       } else {
         // Parse backend rejection or exception message
         const errData = await res.json().catch(() => null);
@@ -1264,16 +1269,22 @@ const handleSubmitAdvance = async () => {
               </View>
 
               <Text className="text-3xl font-black text-white tracking-tight mt-2">
-                {advLimit ? inr(advLimit.available) : "..."}
+                {advLimit ? inr(advLimit.available) : advLimitError ? "—" : "..."}
               </Text>
 
-              <View className="flex-row items-center mt-2">
-                <Text className="text-xs font-semibold text-white/80">
-                  {advLimit
-                    ? `${advLimit.workedDays} days worked × ${inr(advLimit.perDay)} = ${inr(advLimit.earned)} earned (Sundays excluded)`
-                    : "Checking your limit..."}
-                </Text>
-              </View>
+              {advLimitError && !advLimit ? (
+                <TouchableOpacity onPress={loadAdvLimit} className="flex-row items-center mt-2 self-start bg-white/20 rounded-lg px-2.5 py-1">
+                  <Text className="text-xs font-bold text-white">Could not load your limit – tap to retry</Text>
+                </TouchableOpacity>
+              ) : (
+                <View className="flex-row items-center mt-2">
+                  <Text className="text-xs font-semibold text-white/80">
+                    {advLimit
+                      ? `${advLimit.workedDays} days worked × ${inr(advLimit.perDay)} = ${inr(advLimit.earned)} earned (Sundays excluded)`
+                      : "Checking your limit..."}
+                  </Text>
+                </View>
+              )}
               {!!advLimit && Number(advLimit.alreadyRequested) > 0 && (
                 <Text className="text-[10px] font-semibold text-white/80 mt-1">
                   Already requested this month: {inr(advLimit.alreadyRequested)}

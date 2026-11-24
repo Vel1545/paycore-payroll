@@ -56,6 +56,16 @@ try {
   /* not installed: the photo is used as taken */
 }
 
+// Fallback when the in-app camera will not start: the phone's own camera app (expo-image-picker).
+// Loaded safely so an older build without the module simply hides the "Use phone camera" button.
+let ImagePicker: any = null;
+try {
+  ImagePicker = require("expo-image-picker");
+} catch {
+  /* not in this build */
+}
+const PHONE_CAMERA_AVAILABLE = Platform.OS !== "web" && typeof ImagePicker?.launchCameraAsync === "function";
+
 interface PunchClockScreenProps {
   navigation: {
     goBack: () => void;
@@ -116,6 +126,45 @@ interface FetchResult {
 
 const API_BASE_URL = `${BASE_HOST}/api/attendance`;
 const TOTAL_BREAK_LIMIT_MINS = 80;
+
+// Server "break_rules" (BreakRuleService.status): fixed windows for office / WFH staff
+type BreakSlotState = "UPCOMING" | "OPEN" | "ACTIVE" | "TAKEN" | "CLOSED";
+type BreakSlotInfo = {
+  slot: "MORNING" | "LUNCH" | "EVENING";
+  title: string;
+  state: BreakSlotState;
+  window?: string;
+  start?: string;
+  end?: string;
+  minutes?: number;
+  closesInMinutes?: number;
+};
+type BreakRules = {
+  applies: boolean;
+  lunchMinutes?: number;
+  penaltyInr?: number;
+  slots?: BreakSlotInfo[];
+  activeSlot?: string;
+  activeDeadlineEpochMs?: number;
+  activeEndBy?: string;
+};
+
+const slotHint = (s: BreakSlotInfo, penalty: number): string => {
+  switch (s.state) {
+    case "OPEN":
+      return s.slot === "LUNCH"
+        ? `Any time · max ${s.minutes ?? 50} min · ₹${penalty} if not ended`
+        : `Open now till ${s.end}${s.closesInMinutes !== undefined ? ` (${s.closesInMinutes + 1} min left)` : ""}`;
+    case "UPCOMING":
+      return `Opens at ${s.start} (${s.window})`;
+    case "TAKEN":
+      return "Already taken today";
+    case "ACTIVE":
+      return "Running now";
+    default:
+      return `Closed · only ${s.window}`;
+  }
+};
 const NETWORK_TIMEOUT_MS = 10000;
 const PUNCH_TIMEOUT_MS = 25000; // slow servers / cold starts
 const LOCATION_TIMEOUT_MS = 8000;
@@ -131,13 +180,18 @@ const PRECISE_LOCATION_HINT =
     : "Turn on 'Precise location' for this app in Settings.";
 const CAMERA_CAPTURE_TIMEOUT_MS = 10000;
 const CAMERA_REMOUNT_AFTER_BG_MS = 10000; // remount the camera only after a REAL background period
-const CAMERA_READY_TIMEOUT_MS = 8000;
+// Some phones (often Xiaomi / Oppo / Vivo / older Android) never send "camera ready" although the camera works:
+// after this wait the camera is restarted once automatically, then "Take photo anyway" / "Use phone camera" appear.
+const CAMERA_READY_TIMEOUT_MS = 12000;
 const RESUME_REFRESH_MIN_AWAY_MS = 3000; // ignore brief focus blips (permission dialogs etc.)
 const RESTART_WINDOW_MINUTES = 15; // matches the server-side window in restartShift()
 // The selfie is only a camera check on the phone and is NOT stored, so no upload ticket is requested.
 // Set to true only if you later store photos and /upload-ticket returns a real key.
 const USE_UPLOAD_TICKET = false;
 const SELFIE_NOT_STORED = "NOT_STORED";
+// Punch made with "Continue without photo" (camera broken): sent as the selfie key so HR can find these punches
+const SELFIE_CAMERA_FAILED = "CAMERA_FAILED";
+const NO_PHOTO = "NO_PHOTO"; // capturedPhotoUri value meaning "continuing without a photo"
 
 // ---------------------------------------------------------------------------
 // Helpers (pure, outside the component so they never re-create)
@@ -421,6 +475,11 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraKey, setCameraKey] = useState(0); // bump to force a full native remount
+  // true = the camera never said "ready" even after one automatic restart; it stays on screen and
+  // the user can still try the shutter ("Take photo anyway") or use the phone camera app
+  const [cameraSlow, setCameraSlow] = useState(false);
+  const cameraAutoRetried = useRef(false);
+  const noPhotoRef = useRef(false); // the current punch is "without photo" (camera broken)
   const [appActive, setAppActive] = useState(AppState.currentState === "active");
 
   // ----- screen state -----
@@ -479,6 +538,8 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
   const [activeBreakStartTime, setActiveBreakStartTime] = useState<string | null>(null);
   const [breakAnchorMs, setBreakAnchorMs] = useState<number | null>(null);
   const [isBreakModalVisible, setIsBreakModalVisible] = useState(false);
+  // Fixed break times (office / WFH staff) from the server; applies = false keeps the old 80-minute pool
+  const [breakRules, setBreakRules] = useState<BreakRules | null>(null);
   const [breakHistory, setBreakHistory] = useState<BreakSessionItem[]>([]);
 
   // ----- refs (always hold the latest value, safe to read inside async code) -----
@@ -536,7 +597,19 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
   const resetCamera = () => {
     setCameraReady(false);
     setCameraError(null);
+    setCameraSlow(false);
     setCameraKey((k) => k + 1);
+  };
+
+  // "without photo" lasts only while the placeholder is shown (cleared after the punch / on retake)
+  useEffect(() => {
+    if (capturedPhotoUri !== NO_PHOTO) noPhotoRef.current = false;
+  }, [capturedPhotoUri]);
+
+  // the user pressed "Retry camera": allow one more silent automatic restart after it
+  const retryCamera = () => {
+    cameraAutoRetried.current = false;
+    resetCamera();
   };
 
   const setWork = (base: number, anchor: number) => {
@@ -816,6 +889,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
 
       setUsedBreakMinutes(data.break_minutes || 0);
       if (history) setBreakHistory(history);
+      setBreakRules(data.break_rules && typeof data.break_rules === "object" ? (data.break_rules as BreakRules) : null);
 
       let nextState: PunchState = "NOT_CHECKED_IN";
       if (data.first_punch_in) {
@@ -922,11 +996,13 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
     return () => clearInterval(id);
   }, [attendanceState]);
 
-  // Camera that never reports ready: offer a retry instead of an endless spinner
+  // Camera that never reports ready: restart it once by itself; if it is still not ready, keep it on screen and
+  // offer "Take photo anyway" (the shutter often works without the ready signal) and "Use phone camera"
   useEffect(() => {
     if (
       !cameraReady &&
       !cameraError &&
+      !cameraSlow &&
       isFocused &&
       appActive &&
       permission?.granted &&
@@ -934,14 +1010,16 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
       attendanceState !== "CHECKED_OUT"
     ) {
       const timeout = setTimeout(() => {
-        setCameraReady((ready) => {
-          if (!ready) setCameraError("Camera is taking too long to start. Please retry.");
-          return ready;
-        });
+        if (!cameraAutoRetried.current) {
+          cameraAutoRetried.current = true;
+          resetCamera(); // silent second attempt
+        } else {
+          setCameraSlow(true);
+        }
       }, CAMERA_READY_TIMEOUT_MS);
       return () => clearTimeout(timeout);
     }
-  }, [cameraKey, isFocused, appActive, cameraReady, cameraError, capturedPhotoUri, permission?.granted, attendanceState]);
+  }, [cameraKey, isFocused, appActive, cameraReady, cameraError, cameraSlow, capturedPhotoUri, permission?.granted, attendanceState]);
 
   const handleManualRefresh = async () => {
     if (isPullRefreshing) return;
@@ -966,8 +1044,8 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
       const lat = fix?.latitude ?? lastFixRef.current?.latitude ?? 0;
       const lng = fix?.longitude ?? lastFixRef.current?.longitude ?? 0;
 
-      let cloudKey = SELFIE_NOT_STORED;
-      if (USE_UPLOAD_TICKET) {
+      let cloudKey = noPhotoRef.current ? SELFIE_CAMERA_FAILED : SELFIE_NOT_STORED;
+      if (USE_UPLOAD_TICKET && !noPhotoRef.current) {
         const ticketRes = await fetchWithTimeout(
           `${API_BASE_URL}/upload-ticket?empId=${EMP_ID}&punchType=${type}`,
           {},
@@ -1037,9 +1115,10 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
     }
   };
 
-  const handleTakeSelfie = () =>
+  // force = "Take photo anyway": try the shutter although the camera never said it was ready
+  const handleTakeSelfie = (force = false) =>
     runExclusive(async () => {
-      if (!cameraRef.current || !cameraReady) {
+      if (!cameraRef.current || (!cameraReady && !force)) {
         notify("Camera Not Ready", "Please wait a moment and try again.");
         return;
       }
@@ -1061,12 +1140,64 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
         photoUri = await shrinkPhoto(photo.uri);
       } catch (err) {
         console.warn("Capture failed:", err);
-        notify("Camera Error", "Could not capture the photo. Please try again.");
-        resetCamera();
+        if (force || cameraSlow) {
+          // the in-app camera really does not work on this phone right now: show the phone-camera option
+          setCameraError(
+            PHONE_CAMERA_AVAILABLE
+              ? "The in-app camera is not responding. Use your phone camera instead."
+              : "The in-app camera is not responding. Please retry."
+          );
+        } else {
+          notify("Camera Error", "Could not capture the photo. Please try again.");
+          resetCamera();
+        }
         return;
       }
       setCapturedPhotoUri(photoUri);
+      await continueWithPhoto(photoUri);
+    });
 
+  // Fallback: the phone's own camera app (works on phones where the in-app preview never starts)
+  const handlePhoneCamera = () =>
+    runExclusive(async () => {
+      if (!PHONE_CAMERA_AVAILABLE) {
+        notify("Not Available", "Please update the app to use the phone camera.");
+        return;
+      }
+      const needsGps = !(activeModeRef.current === "WFH" || exemptRef.current || isOdActiveNow());
+      if (!(await ensureLocationPermission(needsGps)) && needsGps) return;
+
+      let photoUri: string;
+      try {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm?.granted) {
+          notify("Camera Permission", "Allow the camera for this app in Settings, then try again.");
+          return;
+        }
+        const res = await ImagePicker.launchCameraAsync({
+          cameraType: ImagePicker.CameraType?.front ?? "front",
+          quality: 0.6,
+          allowsEditing: false,
+          exif: false,
+        });
+        if (res?.canceled || !res?.assets?.[0]?.uri) return; // the user closed the camera
+        photoUri = await shrinkPhoto(res.assets[0].uri);
+      } catch (err) {
+        console.warn("Phone camera failed:", err);
+        notify("Camera Error", "Could not open the phone camera. Close other apps that use the camera and try again.");
+        return;
+      }
+      setCameraError(null);
+      setCameraSlow(false);
+      setCapturedPhotoUri(photoUri);
+      await continueWithPhoto(photoUri);
+    });
+
+  // Steps after a photo was taken (in-app or phone camera): location checks, then check-in when not checked in yet.
+  // A photo taken while WORKING is only the check-out photo; the Check Out button uses it.
+  const continueWithPhoto = async (photoUri: string) => {
+      void photoUri;
+      const needsGps = !(activeModeRef.current === "WFH" || exemptRef.current || isOdActiveNow());
       // 3. Position: reuse a fix that is at most 20 s old, otherwise ask once
       const fix = await refreshLocation({ interactive: false, maxAgeMs: LOCATION_MAX_AGE_MS });
 
@@ -1120,7 +1251,32 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
           await startTrackingIfNeeded(result.requiresLiveTracking);
         }
       }
-    });
+    };
+
+  // Last resort when the camera does not work at all: continue WITHOUT a photo. Location rules stay the same
+  // (GPS accuracy, office radius, mock GPS); the punch is sent with selfie key CAMERA_FAILED so HR can see it.
+  const handleNoPhoto = () => {
+    const go = () =>
+      runExclusive(async () => {
+        const needsGps = !(activeModeRef.current === "WFH" || exemptRef.current || isOdActiveNow());
+        if (!(await ensureLocationPermission(needsGps)) && needsGps) return;
+        noPhotoRef.current = true;
+        setCapturedPhotoUri(NO_PHOTO);
+        await continueWithPhoto(NO_PHOTO);
+      });
+    const msg =
+      "Your camera is not working, so this " +
+      (attendanceStateRef.current === "NOT_CHECKED_IN" ? "check-in" : "check-out") +
+      " will be saved without a photo. Your location is still checked. HR can see punches made without a photo.";
+    if (Platform.OS === "web") {
+      if (window.confirm(msg)) go();
+    } else {
+      Alert.alert("Continue without photo", msg, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Continue", onPress: go },
+      ]);
+    }
+  };
 
   const handleCheckOut = () =>
     runExclusive(async () => {
@@ -1270,6 +1426,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
           ["active_break_timestamp", String(startMs)],
           ["active_break_type", breakName],
         ]).catch(() => {});
+        fetchTodayAttendanceState(); // background: picks up "end by" for fixed-time breaks
       } catch (error: any) {
         // the answer may have been lost although the server saved the break: ask the server
         const fetched = await fetchTodayAttendanceState();
@@ -1321,6 +1478,8 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
         const durSec = resData.durationSeconds ?? (resData.durationMinutes ? resData.durationMinutes * 60 : 0);
         const durMin = resData.durationMinutes ?? Math.floor(durSec / 60);
         if (resData.totalBreakMinutes !== undefined) setUsedBreakMinutes(resData.totalBreakMinutes);
+        // fixed-time break ended after its deadline: capped at the deadline + penalty
+        if (resData.autoEnded && resData.message) notify("Break Ended Late", resData.message);
         setBreakHistory((prev) => [
           ...prev,
           {
@@ -1349,6 +1508,24 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
         // if the server says the break already ended, the screen simply follows it
       }
     });
+
+  // Fixed-time break: the server ends it at the deadline (+ penalty). Refresh just after that so the screen follows.
+  const activeDeadline = attendanceState === "ON_BREAK" ? breakRules?.activeDeadlineEpochMs : undefined;
+  useEffect(() => {
+    if (!activeDeadline) return;
+    const wait = activeDeadline - getSyncedNowMs() + 70_000; // the server job runs once a minute
+    const t = setTimeout(() => {
+      fetchTodayAttendanceState();
+    }, Math.max(5_000, wait));
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDeadline]);
+
+  const fixedBreaks = !!breakRules?.applies;
+  const openBreakModal = () => {
+    setIsBreakModalVisible(true);
+    if (fixedBreaks) fetchTodayAttendanceState(); // windows change with the time of day
+  };
 
   // ----------------------------- derived values -----------------------------
   const remainingBreakMinutes = Math.max(0, TOTAL_BREAK_LIMIT_MINS - usedBreakMinutes);
@@ -1677,13 +1854,29 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
                     <View className="absolute inset-0 items-center justify-center bg-black/80 px-6">
                       <AlertTriangle size={26} color="#FFFFFF" />
                       <Text className="text-white text-xs font-bold mt-2 text-center">{cameraError}</Text>
-                      <TouchableOpacity onPress={resetCamera} className="mt-3 bg-white/20 px-4 py-2 rounded-full">
+                      <TouchableOpacity onPress={retryCamera} className="mt-3 bg-white/20 px-4 py-2 rounded-full">
                         <Text className="text-white text-xs font-black">Retry Camera</Text>
                       </TouchableOpacity>
                     </View>
                   )}
 
-                  {!cameraReady && !cameraError && (
+                  {/* camera never said "ready" (even after one restart): it stays live, the shutter may still work */}
+                  {cameraSlow && !cameraReady && !cameraError && (
+                    <View className="absolute top-0 left-0 right-0 items-center pt-10 px-8">
+                      <View className="bg-black/70 rounded-2xl px-3 py-2 items-center">
+                        <Text className="text-white text-[11px] font-bold text-center">Camera is slow to start on this phone.</Text>
+                        <TouchableOpacity onPress={() => handleTakeSelfie(true)} disabled={isSyncing}
+                          className="mt-2 bg-[#1FAE5C] px-4 py-1.5 rounded-full">
+                          <Text className="text-white text-[11px] font-black">Take photo anyway</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={retryCamera} className="mt-1.5 px-3 py-1">
+                          <Text className="text-white/80 text-[10.5px] font-bold underline">Retry camera</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  )}
+
+                  {!cameraReady && !cameraError && !cameraSlow && (
                     <View className="absolute inset-0 items-center justify-center bg-black/40">
                       <ActivityIndicator color="#FFFFFF" size="small" />
                     </View>
@@ -1691,10 +1884,10 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
                 </CameraErrorBoundary>
 
                 <TouchableOpacity
-                  onPress={handleTakeSelfie}
-                  disabled={isSyncing || !cameraReady}
+                  onPress={() => handleTakeSelfie(cameraSlow)}
+                  disabled={isSyncing || (!cameraReady && !cameraSlow) || !!cameraError}
                   className="absolute bottom-4 w-12 h-12 rounded-full bg-white/90 border-2 border-[#1FAE5C] items-center justify-center active:scale-95 shadow-md z-10"
-                  style={{ opacity: cameraReady ? 1 : 0.5 }}
+                  style={{ opacity: cameraReady || cameraSlow ? 1 : 0.5 }}
                 >
                   {isSyncing ? <ActivityIndicator color="#1FAE5C" size="small" /> : <CameraIcon size={18} color="#1FAE5C" />}
                 </TouchableOpacity>
@@ -1703,12 +1896,44 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
               <View className="absolute bottom-2 right-3 w-9 h-9 rounded-full bg-[#1FAE5C] border-2 border-white items-center justify-center shadow-sm">
                 <Sparkles size={14} color="#FFFFFF" />
               </View>
+
+              {/* fallbacks when the in-app camera is slow or broken */}
+              {(cameraSlow || !!cameraError) && (
+                <View className="items-center mt-4 w-72">
+                  {PHONE_CAMERA_AVAILABLE && (
+                    <TouchableOpacity onPress={handlePhoneCamera} disabled={isSyncing}
+                      className="w-full bg-[#5B4FD1] rounded-2xl py-3 flex-row items-center justify-center active:opacity-90">
+                      <CameraIcon size={15} color="#FFFFFF" />
+                      <Text className="text-white text-xs font-black ml-2 uppercase tracking-wider">Use phone camera</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity onPress={handleNoPhoto} disabled={isSyncing}
+                    className="w-full mt-2 bg-white border border-amber-300 rounded-2xl py-2.5 items-center active:bg-amber-50">
+                    <Text className="text-amber-700 text-[11px] font-black">
+                      Camera not working? Continue without photo
+                    </Text>
+                  </TouchableOpacity>
+                  <Text className="text-[10px] text-[#7A76A6] font-semibold mt-1.5 text-center">
+                    Your location is still checked. Tip: close other apps using the camera (WhatsApp, video calls).
+                  </Text>
+                </View>
+              )}
             </View>
           ) : (
             <View className="items-center justify-center my-2">
               <View className="relative">
                 <View className="w-72 h-72 rounded-full border-4 border-[#1FAE5C] overflow-hidden shadow-md">
-                  <Image source={{ uri: capturedPhotoUri }} className="w-full h-full" resizeMode="cover" />
+                  {capturedPhotoUri === NO_PHOTO ? (
+                    <View className="w-full h-full bg-amber-50 items-center justify-center px-8">
+                      <CameraIcon size={30} color="#B45309" />
+                      <Text className="text-xs font-black text-amber-800 mt-2 text-center">Continuing without photo</Text>
+                      <Text className="text-[10.5px] font-semibold text-amber-700 mt-1 text-center">
+                        Camera not working • location verified
+                      </Text>
+                    </View>
+                  ) : (
+                    <Image source={{ uri: capturedPhotoUri }} className="w-full h-full" resizeMode="cover" />
+                  )}
                 </View>
                 <View className="absolute bottom-2 right-3 w-10 h-10 rounded-full bg-[#1FAE5C] border-4 border-white items-center justify-center shadow-md">
                   <Check size={18} color="#FFFFFF" strokeWidth={3.5} />
@@ -1730,26 +1955,52 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
         {/* BREAK CONTROLS */}
         {attendanceState !== "NOT_CHECKED_IN" && attendanceState !== "CHECKED_OUT" && (
           <View className="bg-white border border-[#E7E4F5] rounded-3xl p-4 mb-4 shadow-xs">
-            <View className="flex-row items-center justify-between pb-2 mb-3 border-b border-[#E7E4F5]">
-              <View className="flex-row items-center gap-1.5">
-                <Coffee size={15} color="#5B4FD1" />
-                <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">80-Min Break Allowance</Text>
+            {fixedBreaks ? (
+              <View className="pb-2 mb-3 border-b border-[#E7E4F5]">
+                <View className="flex-row items-center gap-1.5 mb-2">
+                  <Coffee size={15} color="#5B4FD1" />
+                  <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">Fixed Break Times</Text>
+                </View>
+                {(breakRules?.slots || []).map((s) => (
+                  <View key={s.slot} className="flex-row items-center justify-between py-0.5">
+                    <Text className="text-[11px] font-bold text-[#1F1B3D]">{s.title}</Text>
+                    <Text
+                      className={`text-[11px] font-bold ${
+                        s.state === "OPEN" ? "text-emerald-600" : s.state === "ACTIVE" ? "text-amber-600" : "text-[#7A76A6]"
+                      }`}
+                    >
+                      {s.state === "TAKEN" ? "Taken ✓" : s.window}
+                    </Text>
+                  </View>
+                ))}
+                <Text className="text-[10px] font-semibold text-[#7A76A6] mt-1">
+                  Not ended in time = auto-ended with ₹{breakRules?.penaltyInr ?? 50} penalty.
+                </Text>
               </View>
-              <Text className={`text-[11px] font-bold ${usedBreakMinutes > 80 ? "text-rose-600" : "text-[#5B4FD1]"}`}>
-                {usedBreakMinutes > 80 ? `Over limit by +${usedBreakMinutes - 80}m` : `${remainingBreakMinutes}m / 80m Left`}
-              </Text>
-            </View>
+            ) : (
+              <>
+                <View className="flex-row items-center justify-between pb-2 mb-3 border-b border-[#E7E4F5]">
+                  <View className="flex-row items-center gap-1.5">
+                    <Coffee size={15} color="#5B4FD1" />
+                    <Text className="text-xs font-black text-[#1F1B3D] uppercase tracking-wider">80-Min Break Allowance</Text>
+                  </View>
+                  <Text className={`text-[11px] font-bold ${usedBreakMinutes > 80 ? "text-rose-600" : "text-[#5B4FD1]"}`}>
+                    {usedBreakMinutes > 80 ? `Over limit by +${usedBreakMinutes - 80}m` : `${remainingBreakMinutes}m / 80m Left`}
+                  </Text>
+                </View>
 
-            <View className="w-full h-2.5 bg-[#F6F5FC] rounded-full overflow-hidden mb-3 border border-[#E7E4F5]">
-              <View
-                className={`h-full rounded-full ${usedBreakMinutes > 80 ? "bg-rose-500" : "bg-[#5B4FD1]"}`}
-                style={{ width: `${Math.min(100, (usedBreakMinutes / TOTAL_BREAK_LIMIT_MINS) * 100)}%` }}
-              />
-            </View>
+                <View className="w-full h-2.5 bg-[#F6F5FC] rounded-full overflow-hidden mb-3 border border-[#E7E4F5]">
+                  <View
+                    className={`h-full rounded-full ${usedBreakMinutes > 80 ? "bg-rose-500" : "bg-[#5B4FD1]"}`}
+                    style={{ width: `${Math.min(100, (usedBreakMinutes / TOTAL_BREAK_LIMIT_MINS) * 100)}%` }}
+                  />
+                </View>
+              </>
+            )}
 
             {attendanceState === "WORKING" && (
               <TouchableOpacity
-                onPress={() => setIsBreakModalVisible(true)}
+                onPress={openBreakModal}
                 disabled={isSyncing}
                 style={{ opacity: isSyncing ? 0.6 : 1 }}
                 className="w-full py-3 bg-[#F6F5FC] border border-[#5B4FD1]/30 rounded-2xl flex-row items-center justify-center active:bg-[#EEECFA]"
@@ -1775,6 +2026,11 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
                     offsetMs={serverOffsetMs.current}
                     className="text-2xl font-black text-amber-700 tracking-widest font-mono"
                   />
+                  {fixedBreaks && breakRules?.activeEndBy ? (
+                    <Text className="text-[11px] font-black text-rose-600 mt-1 text-center px-3">
+                      End before {breakRules.activeEndBy} · else auto-ended with ₹{breakRules.penaltyInr ?? 50} penalty
+                    </Text>
+                  ) : null}
                 </View>
 
                 <TouchableOpacity
@@ -1932,9 +2188,39 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
             <View className="w-full bg-white rounded-3xl p-5 shadow-xl border border-[#E7E4F5]">
               <Text className="text-base font-black text-[#1F1B3D] text-center mb-1">Select Break Category</Text>
               <Text className="text-xs font-semibold text-[#7A76A6] text-center mb-4">
-                Remaining break bank: {remainingBreakMinutes} mins today
+                {fixedBreaks
+                  ? `Fixed times · each break once a day · ₹${breakRules?.penaltyInr ?? 50} if not ended in time`
+                  : `Remaining break bank: ${remainingBreakMinutes} mins today`}
               </Text>
 
+              {fixedBreaks ? (
+                (breakRules?.slots || []).map((s, i, all) => {
+                  const open = s.state === "OPEN";
+                  const Icon = s.slot === "LUNCH" ? Utensils : Coffee;
+                  return (
+                    <TouchableOpacity
+                      key={s.slot}
+                      onPress={() => handleStartBreak(s.title)}
+                      disabled={!open}
+                      style={{ opacity: open ? 1 : 0.5 }}
+                      className={`flex-row items-center p-3.5 border rounded-2xl ${i === all.length - 1 ? "mb-4" : "mb-2.5"} ${
+                        open ? "bg-emerald-50 border-emerald-200 active:bg-emerald-100" : "bg-[#F6F5FC] border-[#E7E4F5]"
+                      }`}
+                    >
+                      <Icon size={18} color={open ? "#059669" : "#7A76A6"} />
+                      <View className="ml-3 flex-1">
+                        <Text className="text-xs font-black text-[#1F1B3D]">
+                          {s.title} <Text className="text-[10px] font-bold text-[#7A76A6]">({s.window})</Text>
+                        </Text>
+                        <Text className={`text-[10px] font-semibold ${open ? "text-emerald-700" : "text-[#7A76A6]"}`}>
+                          {slotHint(s, breakRules?.penaltyInr ?? 50)}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })
+              ) : (
+              <>
               <TouchableOpacity
                 onPress={() => handleStartBreak("Morning Tea Break")}
                 className="flex-row items-center p-3.5 bg-[#F6F5FC] border border-[#E7E4F5] rounded-2xl mb-2.5 active:bg-[#EEECFA]"
@@ -1967,6 +2253,8 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
                   <Text className="text-[10px] font-semibold text-[#7A76A6]">Flexible minutes from 80m pool</Text>
                 </View>
               </TouchableOpacity>
+              </>
+              )}
 
               <TouchableOpacity
                 onPress={() => setIsBreakModalVisible(false)}
