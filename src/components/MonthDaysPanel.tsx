@@ -12,6 +12,8 @@ interface Day {
   date: string; dayName: string; type: "WORKING" | "FIXED_OFF" | "HOLIDAY"; status: string; label: string;
   detail: string | null; in: string | null; out: string | null; netMinutes: number | null;
   lateMinutes: number | null; penaltyInr: number | null; edited: boolean; credit: number | null;
+  /** breaks not ended in time with no automatic penalty: admin decides with Edit day */
+  breakAlerts?: string[];
 }
 interface Week { from: string; to: string; requiredDays: number; workedDays: number; lopDays: number; approvedOffs: number; pendingOffs: number }
 interface Data {
@@ -152,6 +154,9 @@ export default function MonthDaysPanel({ empId, month, adminEmpId, isDesktop }: 
               {d.lateMinutes ? <Text style={{ fontSize: 11, color: "#b45309" }}>Late {d.lateMinutes} min{d.penaltyInr ? ` · penalty ₹${d.penaltyInr}` : ""}</Text> : null}
               {d.detail ? <Text style={{ fontSize: 11, color: "#64748b" }}>{d.detail}</Text> : null}
               {d.edited ? <Text style={{ fontSize: 11, color: "#7c3aed" }}>Edited by admin</Text> : null}
+              {(d.breakAlerts || []).map((a, i) => (
+                <Text key={i} style={{ fontSize: 11, color: "#b91c1c", fontWeight: "600" }}>⚠ {a} · add a penalty with Edit day if needed</Text>
+              ))}
             </View>
           </View>
         );

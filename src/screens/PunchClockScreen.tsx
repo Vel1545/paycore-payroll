@@ -143,17 +143,21 @@ type BreakRules = {
   applies: boolean;
   lunchMinutes?: number;
   penaltyInr?: number;
+  autoPenalty?: boolean;   // false: penalty is only a warning, the admin decides
   slots?: BreakSlotInfo[];
   activeSlot?: string;
   activeDeadlineEpochMs?: number;
   activeEndBy?: string;
 };
 
-const slotHint = (s: BreakSlotInfo, penalty: number): string => {
+/** "₹50 penalty" when charged automatically, "₹50 penalty may apply" when the admin decides */
+const penaltyText = (r: BreakRules | null) => `₹${r?.penaltyInr ?? 50} penalty${r?.autoPenalty ? "" : " may apply"}`;
+
+const slotHint = (s: BreakSlotInfo, penalty: number, auto = true): string => {
   switch (s.state) {
     case "OPEN":
       return s.slot === "LUNCH"
-        ? `Any time · max ${s.minutes ?? 50} min · ₹${penalty} if not ended`
+        ? `Any time · max ${s.minutes ?? 50} min · ₹${penalty}${auto ? "" : " may apply"} if not ended`
         : `Open now till ${s.end}${s.closesInMinutes !== undefined ? ` (${s.closesInMinutes + 1} min left)` : ""}`;
     case "UPCOMING":
       return `Opens at ${s.start} (${s.window})`;
@@ -806,7 +810,8 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
   // ----------------------------- attendance state -----------------------------
   // Applies the server state FIRST and starts GPS afterwards without waiting for it,
   // so the page never sits in "loading" because of a slow GPS fix.
-  const fetchTodayAttendanceState = async (): Promise<FetchResult | null> => {
+  // quiet = state only (no GPS): used by the light poll that picks up breaks started on the biometric machine
+  const fetchTodayAttendanceState = async (opts?: { quiet?: boolean }): Promise<FetchResult | null> => {
     lastFetchAtRef.current = Date.now();
     const my = ++stateReq.current;
     try {
@@ -928,8 +933,8 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
         typeof data.requires_live_tracking === "boolean" ? data.requires_live_tracking : undefined;
       syncTracking(nextState, requiresTracking);
 
-      // GPS runs in the background of the screen: never awaited here
-      refreshLocation({ interactive: false, rules: parsedBranches, exempt: exemptFlag }).catch(() => {});
+      // GPS runs in the background of the screen: never awaited here (skipped by the quiet poll)
+      if (!opts?.quiet) refreshLocation({ interactive: false, rules: parsedBranches, exempt: exemptFlag }).catch(() => {});
 
       return { state: nextState, requiresTracking };
     } catch (error: any) {
@@ -988,6 +993,18 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
     const f = lastFixRef.current;
     if (f) applyGeofenceToScreen(f.latitude, f.longitude, geofenceRulesRef.current, activeMode, isGeofenceExempt);
   }, [activeMode, isGeofenceExempt]);
+
+  // A break can also be started / ended on the biometric machine: while this screen is open and the person is checked
+  // in, re-read the state every 30 s (no GPS) so the break timer starts / stops on the phone by itself.
+  useEffect(() => {
+    if (!isFocused || !appActive) return;
+    if (attendanceState !== "WORKING" && attendanceState !== "ON_BREAK") return;
+    const id = setInterval(() => {
+      if (Date.now() - lastFetchAtRef.current > 25_000) fetchTodayAttendanceState({ quiet: true });
+    }, 30_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFocused, appActive, attendanceState]);
 
   // Keeps the "restart shift" countdown fresh after check-out (the only thing that needs a ticker there)
   useEffect(() => {
@@ -1398,7 +1415,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ empId: EMP_ID, breakType: bType, breakTitle: breakName }),
+            body: JSON.stringify({ empId: EMP_ID, breakType: bType, breakTitle: breakName, source: "PHONE" }),
           },
           NETWORK_TIMEOUT_MS
         );
@@ -1456,6 +1473,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
               empId: EMP_ID,
               breakType: activeBreakType?.toLowerCase().includes("lunch") ? "LUNCH" : "TEA",
               breakTitle: activeBreakType || "Personal Break",
+              source: "PHONE",
             }),
           },
           NETWORK_TIMEOUT_MS
@@ -1479,7 +1497,9 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
         const durMin = resData.durationMinutes ?? Math.floor(durSec / 60);
         if (resData.totalBreakMinutes !== undefined) setUsedBreakMinutes(resData.totalBreakMinutes);
         // fixed-time break ended after its deadline: capped at the deadline + penalty
-        if (resData.autoEnded && resData.message) notify("Break Ended Late", resData.message);
+        if (resData.autoEnded && resData.message) notify("Break Not Ended In Time", resData.message);
+        // over the free break minutes: warning only (no penalty), shows the extra minutes
+        else if (resData.excessWarning && resData.message) notify("Break Time Exceeded", resData.message);
         setBreakHistory((prev) => [
           ...prev,
           {
@@ -1974,7 +1994,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
                   </View>
                 ))}
                 <Text className="text-[10px] font-semibold text-[#7A76A6] mt-1">
-                  Not ended in time = auto-ended with ₹{breakRules?.penaltyInr ?? 50} penalty.
+                  Not ended in time = closed automatically, {penaltyText(breakRules)}.
                 </Text>
               </View>
             ) : (
@@ -2028,7 +2048,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
                   />
                   {fixedBreaks && breakRules?.activeEndBy ? (
                     <Text className="text-[11px] font-black text-rose-600 mt-1 text-center px-3">
-                      End before {breakRules.activeEndBy} · else auto-ended with ₹{breakRules.penaltyInr ?? 50} penalty
+                      End before {breakRules.activeEndBy} · else closed automatically, {penaltyText(breakRules)}
                     </Text>
                   ) : null}
                 </View>
@@ -2189,7 +2209,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
               <Text className="text-base font-black text-[#1F1B3D] text-center mb-1">Select Break Category</Text>
               <Text className="text-xs font-semibold text-[#7A76A6] text-center mb-4">
                 {fixedBreaks
-                  ? `Fixed times · each break once a day · ₹${breakRules?.penaltyInr ?? 50} if not ended in time`
+                  ? `Fixed times · each break once a day · ${penaltyText(breakRules)} if not ended in time`
                   : `Remaining break bank: ${remainingBreakMinutes} mins today`}
               </Text>
 
@@ -2213,7 +2233,7 @@ export default function PunchClockScreen({ navigation }: PunchClockScreenProps) 
                           {s.title} <Text className="text-[10px] font-bold text-[#7A76A6]">({s.window})</Text>
                         </Text>
                         <Text className={`text-[10px] font-semibold ${open ? "text-emerald-700" : "text-[#7A76A6]"}`}>
-                          {slotHint(s, breakRules?.penaltyInr ?? 50)}
+                          {slotHint(s, breakRules?.penaltyInr ?? 50, !!breakRules?.autoPenalty)}
                         </Text>
                       </View>
                     </TouchableOpacity>

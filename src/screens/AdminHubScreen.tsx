@@ -405,7 +405,8 @@ export default function AdminHubScreen({ navigation }: AdminHubScreenProps) {
     <View className="flex-1 bg-[#F4F6F9]">
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ flexGrow: 1, paddingBottom: 120 }}
+        // phones: extra bottom room so the floating tab bar (with the fingerprint button) never covers the last buttons
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: isDesktop ? 120 : 200 }}
         className="flex-1"
       >
         {/* 1. HERO HEADER */}

@@ -7,7 +7,7 @@ import { UserSession } from "../services/UserSession";
 const notify = (title: string, msg: string) => (Platform.OS === "web" ? window.alert(`${title}\n\n${msg}`) : Alert.alert(title, msg));
 
 // Settings > Change Password. Needs the current password. Forgot it? Log out and use "Forgot password?" on the login screen.
-export default function ChangePasswordForm({ onDone, minLength = 6 }: { onDone: () => void; minLength?: number }) {
+export default function ChangePasswordForm({ onDone, minLength = 8 }: { onDone: () => void; minLength?: number }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [again, setAgain] = useState("");
@@ -19,6 +19,7 @@ export default function ChangePasswordForm({ onDone, minLength = 6 }: { onDone: 
     setMsg(null);
     if (!current) return setMsg("Enter your current password.");
     if (next.length < minLength) return setMsg(`The new password needs at least ${minLength} characters.`);
+    if (!/[A-Za-z]/.test(next) || !/[0-9]/.test(next)) return setMsg("Use both letters and numbers in the new password.");
     if (next !== again) return setMsg("The two new passwords are not the same.");
     setBusy(true);
     try {
@@ -67,6 +68,10 @@ export default function ChangePasswordForm({ onDone, minLength = 6 }: { onDone: 
       {field("Current password", current, setCurrent, "Your current password")}
       {field("New password", next, setNext, `At least ${minLength} characters`)}
       {field("New password again", again, setAgain, "Same new password")}
+      <Text className="text-[10.5px] font-semibold text-[#7A76A6] mb-2">
+        At least {minLength} characters with letters and numbers. Not 123456 / password / your Employee ID, mobile, date of
+        birth or name.
+      </Text>
       {!!msg && <Text className="text-[11px] font-bold text-[#E4453C] mb-2">{msg}</Text>}
       <Text className="text-[10.5px] font-semibold text-[#7A76A6] mb-3">
         Forgot your current password? Log out, enter your Employee ID and tap "Forgot password?" - an OTP is sent to your

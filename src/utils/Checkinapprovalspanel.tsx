@@ -58,6 +58,9 @@ export default function CheckinApprovalsPanel({
   const [ampm, setAmpm] = useState<"AM" | "PM">("PM");
   const [remarks, setRemarks] = useState("");
   const [error, setError] = useState("");
+  // late penalty decision: WITH = normal rule from the approved time, WAIVE = Rs 0, EDIT = typed amount
+  const [penaltyMode, setPenaltyMode] = useState<"WITH" | "WAIVE" | "EDIT">("WITH");
+  const [penaltyAmount, setPenaltyAmount] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -88,6 +91,8 @@ export default function CheckinApprovalsPanel({
     setMode(approve ? "APPROVE" : "REJECT");
     setRemarks("");
     setError("");
+    setPenaltyMode("WITH");
+    setPenaltyAmount("");
     setApDate(r.date);
     const [h24, m] = (r.requestedTime24 || "18:00").split(":").map(Number);
     setAmpm(h24 >= 12 ? "PM" : "AM");
@@ -110,6 +115,12 @@ export default function CheckinApprovalsPanel({
       let h24 = h % 12;
       if (ampm === "PM") h24 += 12;
       body.approvedDateTime = `${apDate}T${pad(h24)}:${pad(m)}`;
+      body.penaltyMode = penaltyMode;
+      if (penaltyMode === "EDIT") {
+        const amt = Number(penaltyAmount.trim());
+        if (penaltyAmount.trim() === "" || isNaN(amt) || amt < 0) return setError("Enter the late penalty amount (0 or more).");
+        body.penaltyAmount = String(Math.round(amt));
+      }
       url = `${API}/${active.requestId}/approve`;
     } else {
       if (!remarks.trim()) return setError("Enter the rejection reason.");
@@ -132,7 +143,13 @@ export default function CheckinApprovalsPanel({
       setActive(null);
       setItems((prev) => prev.filter((r) => r.requestId !== active.requestId));
       onChanged?.();
-      notify("Done", mode === "APPROVE" ? "Late punch approved. Check-in corrected and the day recalculated." : "Request rejected.");
+      const lateInr = json?.penalty?.finalLateInr;
+      notify("Done", mode === "APPROVE"
+        ? "Late punch approved. Check-in corrected and the day recalculated."
+          + (json?.penalty?.reason === "MANUAL_EDIT" ? " (The day was edited in Salary - its penalty is unchanged.)"
+            : penaltyMode === "WAIVE" ? " Late penalty waived."
+            : typeof lateInr === "number" ? ` Late penalty: ₹${lateInr}.` : "")
+        : "Request rejected.");
     } catch {
       setError("Network problem. Try again.");
     } finally {
@@ -318,6 +335,35 @@ export default function CheckinApprovalsPanel({
                     ))}
                   </View>
                 </View>
+
+                {/* late penalty decision */}
+                <Text className="text-[11px] font-bold text-[#1F1B3D] mt-3 mb-1">Late penalty</Text>
+                <View className="flex-row flex-wrap gap-1.5">
+                  {([
+                    ["WITH", "With penalty"],
+                    ["WAIVE", "Without penalty"],
+                    ["EDIT", "Edit amount"],
+                  ] as const).map(([k, label]) => (
+                    <TouchableOpacity key={k} onPress={() => setPenaltyMode(k)}
+                      className={`px-3 py-1.5 rounded-lg border ${penaltyMode === k ? "bg-[#5B4FD1] border-[#5B4FD1]" : "bg-[#F6F5FC] border-[#E7E4F5]"}`}>
+                      <Text className={`text-[11px] font-black ${penaltyMode === k ? "text-white" : "text-[#7A76A6]"}`}>{label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text className="text-[10px] font-semibold text-[#7A76A6] mt-1">
+                  {penaltyMode === "WITH" ? "₹50 per 15 min late, counted from the arrival time above (normal rule)."
+                    : penaltyMode === "WAIVE" ? "No late penalty for this day."
+                    : "The amount you enter is the late penalty for this day."}
+                </Text>
+                {penaltyMode === "EDIT" ? (
+                  <TextInput
+                    value={penaltyAmount}
+                    onChangeText={(t) => setPenaltyAmount(t.replace(/[^0-9]/g, "").slice(0, 6))}
+                    placeholder="Amount in ₹, e.g. 50"
+                    keyboardType="number-pad"
+                    className="mt-1.5 bg-[#F6F5FC] border border-[#E7E4F5] rounded-xl px-3 py-2 text-sm font-black text-[#1F1B3D]"
+                  />
+                ) : null}
               </View>
             ) : (
               <View className="mb-3">

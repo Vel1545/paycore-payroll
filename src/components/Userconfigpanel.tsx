@@ -359,17 +359,21 @@ export default function UserConfigPanel({ empId, adminEmpId, isDesktop, webDesig
         </View>
       ) : null}
 
-      <View className="flex-row gap-3 pt-1">
+      {/* Desktop: side by side. Phone: Cancel, then Save below it, both full width with a FIXED height
+          (no flex grow: inside the Admin Hub page a stretching button used to fill the screen and hide Save). */}
+      <View style={isDesktop
+        ? { flexDirection: "row", alignItems: "center", gap: 12, paddingTop: 4 }
+        : { flexDirection: "column", gap: 10, paddingTop: 4, paddingBottom: 8 }}>
         {editing ? (
           <>
             <TouchableOpacity onPress={() => setEditing(false)} disabled={busy}
-              style={{ width: isDesktop ? 140 : undefined, flex: isDesktop ? undefined : 1 }}
-              className="py-3.5 rounded-xl items-center border border-[#E7E4F5]">
+              style={isDesktop ? { width: 140, height: 48 } : { width: "100%", height: 48, flexGrow: 0, flexShrink: 0 }}
+              className="rounded-xl items-center justify-center border border-[#E7E4F5]">
               <Text style={fs(13, 11)} className="text-[#1F1B3D] font-black uppercase tracking-wider">Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={save} disabled={busy}
-              style={{ width: isDesktop ? 220 : undefined, flex: isDesktop ? undefined : 1 }}
-              className="bg-[#5B4FD1] py-3.5 rounded-xl items-center active:opacity-90">
+              style={isDesktop ? { width: 220, height: 48 } : { width: "100%", height: 48, flexGrow: 0, flexShrink: 0 }}
+              className="bg-[#5B4FD1] rounded-xl items-center justify-center active:opacity-90">
               {busy ? <ActivityIndicator size="small" color="#FFFFFF" /> : (
                 <Text style={fs(13, 11)} className="text-white font-black uppercase tracking-wider">Save work settings</Text>
               )}

@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
+  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -112,7 +113,14 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   // ---- Password login (server auth.password-mode OPTIONAL / REQUIRED). "OFF" = the old OTP-only login below.
   const [pwMode, setPwMode] = useState<string>("OFF");
   const [pwSet, setPwSet] = useState(false);
-  const [minPwLen, setMinPwLen] = useState(6);
+  const [minPwLen, setMinPwLen] = useState(8);
+  const [pwRules, setPwRules] = useState("At least 8 characters with letters and numbers. Not 123456 / password / your Employee ID, mobile, date of birth or name.");
+  // correct but weak password (e.g. 123456): a new password must be set before going in
+  const [forceChange, setForceChange] = useState<{ user: any; token?: string; reason?: string } | null>(null);
+  const [fcNew, setFcNew] = useState("");
+  const [fcAgain, setFcAgain] = useState("");
+  const [fcBusy, setFcBusy] = useState(false);
+  const [fcMsg, setFcMsg] = useState<string | null>(null);
   const [statusReady, setStatusReady] = useState(false); // the server answered for the typed ID
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -129,6 +137,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       setPwMode(data.passwordMode);
       setPwSet(!!data.passwordSet);
       if (Number(data.minPasswordLength) > 0) setMinPwLen(Number(data.minPasswordLength));
+      if (typeof data.passwordRules === "string" && data.passwordRules) setPwRules(data.passwordRules);
     }
     setStatusReady(true);
   };
@@ -584,6 +593,50 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
   };
 
   // ---- Password login handlers -----------------------------------------------------------------
+
+  /** Login answer: go in, or first ask for a stronger password when the server flags the typed one as weak. */
+  const finishLogin = async (data: any) => {
+    if (data?.mustChangePassword) {
+      if (Number(data.minPasswordLength) > 0) setMinPwLen(Number(data.minPasswordLength));
+      if (typeof data.passwordRules === "string" && data.passwordRules) setPwRules(data.passwordRules);
+      setFcNew("");
+      setFcAgain("");
+      setFcMsg(null);
+      setForceChange({ user: data.user, token: data.token, reason: data.passwordWeakReason });
+      return;
+    }
+    await handleSuccessfulAuthentication(data.user, data.token);
+  };
+
+  const submitForcedChange = async () => {
+    if (!forceChange) return;
+    setFcMsg(null);
+    if (fcNew.length < minPwLen) return setFcMsg(`The new password needs at least ${minPwLen} characters.`);
+    if (!/[A-Za-z]/.test(fcNew) || !/[0-9]/.test(fcNew)) return setFcMsg("Use both letters and numbers.");
+    if (fcNew !== fcAgain) return setFcMsg("The two passwords are not the same.");
+    setFcBusy(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/change-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ empId: empId.trim().toUpperCase(), currentPassword: password, newPassword: fcNew }),
+      });
+      const j = await readServerJson(res);
+      if (!res.ok || !j?.success) {
+        setFcMsg(j?.message || "Could not save the new password.");
+        return;
+      }
+      const go = forceChange;
+      setForceChange(null);
+      setPassword("");
+      showUniversalAlert("Password updated", "Use your new password the next time you sign in.");
+      await handleSuccessfulAuthentication(go.user, go.token);
+    } catch {
+      setFcMsg("No connection. Please try again.");
+    } finally {
+      setFcBusy(false);
+    }
+  };
   const isLockMessage = (msg?: string) => !!msg && /limit exceeded/i.test(msg);
 
   const handlePasswordLogin = async () => {
@@ -608,7 +661,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       });
       const data = await readServerJson(res);
       if (data.success && data.user) {
-        await handleSuccessfulAuthentication(data.user, data.token);
+        await finishLogin(data);
         return;
       }
       if (data.status === "PASSWORD_NOT_SET") {
@@ -716,7 +769,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       });
       const data = await readServerJson(res);
       if (data.success && data.user) {
-        await handleSuccessfulAuthentication(data.user, data.token);
+        await finishLogin(data);
         return;
       }
       setOtp(["", "", "", "", "", ""]);
@@ -1039,6 +1092,7 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                         {!!confirmPassword && confirmPassword !== newPassword && (
                           <Text className="text-[11px] font-bold text-red-600">The two passwords are not the same.</Text>
                         )}
+                        <Text className="text-[11px] font-semibold text-brand-muted">{pwRules}</Text>
                       </View>
                     )}
 
@@ -1107,6 +1161,56 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
           </KeyboardAvoidingView>
         </View>
       </View>
+      {/* weak password (e.g. 123456): set a stronger one before going in */}
+      <Modal visible={!!forceChange} transparent animationType="fade" onRequestClose={() => {}}>
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 16 }}>
+          <View className="w-full max-w-md bg-brand-card border border-brand-border rounded-3xl p-6">
+            <Text className="text-lg font-black text-brand-dark mb-1">Set a stronger password</Text>
+            <Text className="text-xs font-semibold text-brand-muted mb-4">
+              {forceChange?.reason || "Your password is too easy to guess."} Please choose a new one to continue.
+            </Text>
+            {[
+              { label: "New password", value: fcNew, set: setFcNew, ph: `At least ${minPwLen} characters` },
+              { label: "Type it again", value: fcAgain, set: setFcAgain, ph: "Same password again" },
+            ].map((f) => (
+              <View key={f.label} className="mb-3">
+                <Text className="text-xs font-black text-brand-dark uppercase tracking-wider mb-2">{f.label}</Text>
+                <View className="flex-row items-center bg-brand-cardTint border border-brand-border rounded-2xl px-4 py-3">
+                  <Lock size={18} color="#5C4D41" />
+                  <TextInput
+                    value={f.value}
+                    onChangeText={f.set}
+                    placeholder={f.ph}
+                    placeholderTextColor="#8C7A6B"
+                    secureTextEntry={!showPw}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    className="flex-1 ml-3 text-sm font-bold text-brand-dark"
+                  />
+                  <TouchableOpacity onPress={() => setShowPw(!showPw)} className="pl-2">
+                    {showPw ? <EyeOff size={18} color="#5C4D41" /> : <Eye size={18} color="#5C4D41" />}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+            <Text className="text-[11px] font-semibold text-brand-muted mb-2">{pwRules}</Text>
+            {!!fcMsg && <Text className="text-[11px] font-bold text-red-600 mb-2">{fcMsg}</Text>}
+            <TouchableOpacity
+              onPress={submitForcedChange}
+              disabled={fcBusy}
+              className="rounded-2xl py-3.5 items-center bg-brand-hero mt-1"
+              style={{ opacity: fcBusy ? 0.6 : 1 }}
+            >
+              {fcBusy ? <ActivityIndicator color="#FFFFFF" size="small" /> : (
+                <Text className="text-white font-black text-sm uppercase tracking-wider">Save password & continue</Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => { setForceChange(null); setPassword(""); }} className="items-center mt-3">
+              <Text className="text-xs font-bold text-brand-muted">Cancel (stay signed out)</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }

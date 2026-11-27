@@ -154,6 +154,150 @@ const ADD_DEFAULTS: Record<string, string> = { role: "EMPLOYEE", pfApplicable: "
 
 const valueOf = (d: Detail | null, key: string): any => (d ? d[key] : null);
 
+// ---------------------------------------------------------------- address + bank (admin edit)
+// Saved like the existing rows: users.bank_details =
+// {"accountHolderName","bankName","account_number","branchName","ifscOrRoutingCode"}; address = {street, village, city, district, state, pincode}
+const ADDR_KEYS = ["street", "village", "city", "district", "state", "pincode"] as const;
+type AddrKey = (typeof ADDR_KEYS)[number];
+type Addr = Record<AddrKey, string>;
+const ADDR_LABELS: Record<AddrKey, string> = {
+  street: "Door no & street", village: "Village / area", city: "City *", district: "District *", state: "State", pincode: "Pincode",
+};
+type BankDraft = { accountHolderName: string; bankName: string; branchName: string; ifscOrRoutingCode: string; newAccountNumber: string; confirmAccountNumber: string };
+type PersonalDraft = { cur: Addr; perm: Addr; same: boolean; bank: BankDraft; maskedAcc: string };
+
+const s = (v: any) => (v === null || v === undefined ? "" : String(v).trim());
+const asObj = (v: any): Record<string, any> => {
+  if (v && typeof v === "object") return v;
+  if (typeof v === "string" && v.trim().startsWith("{")) { try { return JSON.parse(v); } catch { return {}; } }
+  return {};
+};
+const toAddr = (v: any): Addr => {
+  const o = asObj(v);
+  return { street: s(o.street), village: s(o.village), city: s(o.city), district: s(o.district), state: s(o.state), pincode: s(o.pincode || o.zipCode) };
+};
+const addrOut = (a: Addr): Record<string, string> | null => {
+  const o: Record<string, string> = {};
+  ADDR_KEYS.forEach((k) => { const v = a[k].trim(); if (v) o[k] = v; });
+  return Object.keys(o).length ? o : null;
+};
+const toBank = (v: any): BankDraft => {
+  const o = asObj(v);
+  return {
+    accountHolderName: s(o.accountHolderName), bankName: s(o.bankName),
+    branchName: s(o.branchName || o.branch), ifscOrRoutingCode: s(o.ifscOrRoutingCode || o.ifscCode),
+    newAccountNumber: "", confirmAccountNumber: "",
+  };
+};
+const bankOut = (b: BankDraft) => ({
+  accountHolderName: b.accountHolderName.trim(), bankName: b.bankName.trim(), branchName: b.branchName.trim(),
+  ifscOrRoutingCode: b.ifscOrRoutingCode.replace(/\s/g, "").toUpperCase(), newAccountNumber: b.newAccountNumber.replace(/[\s-]/g, ""),
+});
+const EMPTY_ADDR: Addr = { street: "", village: "", city: "", district: "", state: "", pincode: "" };
+const EMPTY_PERSONAL: PersonalDraft = {
+  cur: EMPTY_ADDR, perm: EMPTY_ADDR, same: false, maskedAcc: "",
+  bank: { accountHolderName: "", bankName: "", branchName: "", ifscOrRoutingCode: "", newAccountNumber: "", confirmAccountNumber: "" },
+};
+const personalFrom = (d: Detail | null): PersonalDraft => {
+  if (!d) return EMPTY_PERSONAL;
+  const cur = toAddr(d.currentAddress), perm = toAddr(d.permanentAddress);
+  const c = addrOut(cur), p = addrOut(perm);
+  const b = asObj(d.bank);
+  return { cur, perm, same: !!c && JSON.stringify(c) === JSON.stringify(p), bank: toBank(d.bank), maskedAcc: s(b.account_number || b.accountNumber) };
+};
+/** What to send for address / bank. start = null when adding a new employee. */
+function personalPayload(pd: PersonalDraft, start: PersonalDraft | null): { fields: Record<string, any>; error?: string } {
+  const cur = addrOut(pd.cur);
+  const perm = pd.same ? cur : addrOut(pd.perm);
+  for (const [label, a] of [["Current address", cur], ["Permanent address", perm]] as const) {
+    if (a && (!a.city || !a.district)) return { fields: {}, error: `${label}: city and district are required.` };
+    if (a && a.pincode && !/^\d{6}$/.test(a.pincode)) return { fields: {}, error: `${label}: pincode must be 6 digits.` };
+  }
+  const b = bankOut(pd.bank);
+  const confirm = pd.bank.confirmAccountNumber.replace(/[\s-]/g, "");
+  if (b.newAccountNumber && !/^\d{9,18}$/.test(b.newAccountNumber)) return { fields: {}, error: "Account number must be 9 to 18 digits." };
+  if (b.newAccountNumber && b.newAccountNumber !== confirm) return { fields: {}, error: "The two account numbers do not match." };
+  if (b.ifscOrRoutingCode && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(b.ifscOrRoutingCode))
+    return { fields: {}, error: "IFSC code is not valid (11 characters, example: UCBA0002935)." };
+
+  const out: Record<string, any> = {};
+  const same = (x: any, y: any) => JSON.stringify(x) === JSON.stringify(y);
+  const bankFilled = Object.values(b).some(Boolean);
+  if (!start) {
+    if (cur) out.currentAddress = cur;
+    if (perm) out.permanentAddress = perm;
+    if (bankFilled) out.bankDetails = b;
+  } else {
+    const sCur = addrOut(start.cur), sPerm = start.same ? sCur : addrOut(start.perm);
+    if (!same(cur, sCur)) out.currentAddress = cur ?? "";
+    if (!same(perm, sPerm)) out.permanentAddress = perm ?? "";
+    if (b.newAccountNumber || !same({ ...b, newAccountNumber: "" }, { ...bankOut(start.bank), newAccountNumber: "" })) out.bankDetails = b;
+  }
+  return { fields: out };
+}
+
+function PersonalEditor({ pd, setPd }: { pd: PersonalDraft; setPd: React.Dispatch<React.SetStateAction<PersonalDraft>> }) {
+  const input = (value: string, onChange: (v: string) => void, opts?: { placeholder?: string; numeric?: boolean; caps?: boolean; secure?: boolean }) => (
+    <TextInput value={value} onChangeText={onChange} placeholder={opts?.placeholder} placeholderTextColor="#A6A2CE"
+      keyboardType={opts?.numeric ? "number-pad" : "default"} autoCapitalize={opts?.caps ? "characters" : "words"}
+      secureTextEntry={opts?.secure}
+      className="bg-[#F6F5FC] border border-[#E7E4F5] rounded-lg px-3 py-2 text-xs font-bold text-[#1F1B3D]" />
+  );
+  const addrBlock = (which: "cur" | "perm") => (
+    <View className="bg-white border border-[#E7E4F5] rounded-2xl px-4 py-1">
+      {ADDR_KEYS.map((k) => (
+        <View key={k} className="py-2 border-b border-[#EEECFA]">
+          <Text className="text-[10px] font-bold text-[#7A76A6] mb-1">{ADDR_LABELS[k]}</Text>
+          {input(pd[which][k], (v) => setPd((p) => ({ ...p, [which]: { ...p[which], [k]: k === "pincode" ? v.replace(/\D/g, "").slice(0, 6) : v } })),
+            { numeric: k === "pincode" })}
+        </View>
+      ))}
+    </View>
+  );
+  const bankRow = (key: keyof BankDraft, label: string, opts?: { numeric?: boolean; caps?: boolean; secure?: boolean; placeholder?: string }) => (
+    <View key={key} className="py-2 border-b border-[#EEECFA]">
+      <Text className="text-[10px] font-bold text-[#7A76A6] mb-1">{label}</Text>
+      {input(pd.bank[key], (v) => setPd((p) => ({ ...p, bank: { ...p.bank, [key]: opts?.numeric ? v.replace(/\D/g, "").slice(0, 18) : v } })), opts)}
+    </View>
+  );
+  return (
+    <View>
+      <Text className="text-[11px] font-black text-[#5B4FD1] uppercase tracking-wider mb-1">Current address</Text>
+      <View className="mb-4">{addrBlock("cur")}</View>
+
+      <View className="flex-row items-center justify-between mb-1">
+        <Text className="text-[11px] font-black text-[#5B4FD1] uppercase tracking-wider">Permanent address</Text>
+        <TouchableOpacity onPress={() => setPd((p) => ({ ...p, same: !p.same }))} className="flex-row items-center">
+          {pd.same ? <CheckSquare size={16} color="#5B4FD1" /> : <Square size={16} color="#CBD5E1" />}
+          <Text className="text-[10.5px] font-bold text-[#7A76A6] ml-1.5">Same as current address</Text>
+        </TouchableOpacity>
+      </View>
+      <View className="mb-4">{pd.same ? (
+        <View className="bg-white border border-[#E7E4F5] rounded-2xl px-4 py-3">
+          <Text className="text-[11px] font-semibold text-[#7A76A6]">Same as the current address.</Text>
+        </View>
+      ) : addrBlock("perm")}</View>
+
+      <Text className="text-[11px] font-black text-[#5B4FD1] uppercase tracking-wider mb-1">Bank details</Text>
+      <View className="bg-white border border-[#E7E4F5] rounded-2xl px-4 py-1 mb-4">
+        {bankRow("accountHolderName", "Account holder name *")}
+        {bankRow("bankName", "Bank name *")}
+        {bankRow("branchName", "Branch")}
+        {bankRow("ifscOrRoutingCode", "IFSC code *", { caps: true, placeholder: "e.g. UCBA0002935" })}
+        <View className="py-2 border-b border-[#EEECFA]">
+          <Text className="text-[10px] font-bold text-[#7A76A6]">Account number</Text>
+          <Text className="text-xs font-black text-[#1F1B3D] mt-0.5">
+            {pd.maskedAcc ? `Saved: ${pd.maskedAcc}` : "Not saved yet"}
+          </Text>
+        </View>
+        {bankRow("newAccountNumber", pd.maskedAcc ? "New account number (leave empty to keep)" : "Account number *", { numeric: true })}
+        {!!pd.bank.newAccountNumber && bankRow("confirmAccountNumber", "Confirm account number *", { numeric: true })}
+      </View>
+      <Text className="text-[10px] font-semibold text-[#A6A2CE] mb-4">Only an admin can change the address and bank details.</Text>
+    </View>
+  );
+}
+
 const toText = (v: any, kind?: string): string => {
   if (v === null || v === undefined) return "";
   if (kind === "flag") return v ? "Yes" : "No";
@@ -193,6 +337,10 @@ export default function UserDirectoryScreen({ navigation }: any) {
   // add-employee form
   const [showAdd, setShowAdd] = useState(false);
   const [addDraft, setAddDraft] = useState<Record<string, string>>(ADD_DEFAULTS);
+  // address + bank: edit draft (with its starting values) and the add-employee draft
+  const [pd, setPd] = useState<PersonalDraft>(EMPTY_PERSONAL);
+  const [pdStart, setPdStart] = useState<PersonalDraft>(EMPTY_PERSONAL);
+  const [addPd, setAddPd] = useState<PersonalDraft>(EMPTY_PERSONAL);
   const [adding, setAdding] = useState(false);
 
 
@@ -324,6 +472,9 @@ export default function UserDirectoryScreen({ navigation }: any) {
       d[f.key] = f.kind === "flag" ? String(!!valueOf(detail, f.key)) : toText(valueOf(detail, f.key), f.kind);
     }));
     setDraft(d);
+    const p = personalFrom(detail);
+    setPd(p);
+    setPdStart(p);
     setEditing(true);
   };
 
@@ -342,7 +493,9 @@ export default function UserDirectoryScreen({ navigation }: any) {
 
   const save = async () => {
     if (!openId) return;
-    const fields = changedFields();
+    const personal = personalPayload(pd, pdStart);
+    if (personal.error) { Alert.alert("Check the details", personal.error); return; }
+    const fields = { ...changedFields(), ...personal.fields };
     if (Object.keys(fields).length === 0) { setEditing(false); return; }
     setSaving(true);
     try {
@@ -376,6 +529,13 @@ export default function UserDirectoryScreen({ navigation }: any) {
       if (f.kind === "flag") fields[f.key] = v === "true";
       else if (v !== "") fields[f.key] = v;
     });
+    const personal = personalPayload(addPd, null);
+    if (personal.error) { Alert.alert("Check the details", personal.error); return; }
+    if (personal.fields.bankDetails && !personal.fields.bankDetails.newAccountNumber) {
+      Alert.alert("Check the details", "Enter the bank account number (or leave all bank fields empty).");
+      return;
+    }
+    Object.assign(fields, personal.fields);
     setAdding(true);
     try {
       const created = await api(API, {
@@ -387,6 +547,7 @@ export default function UserDirectoryScreen({ navigation }: any) {
       });
       setShowAdd(false);
       setAddDraft(ADD_DEFAULTS);
+      setAddPd(EMPTY_PERSONAL);
       await loadList(true);
       Alert.alert("Employee added", `${created?.name || empId} was added. Set their login password separately.`);
       openDetail(created?.empId || empId);
@@ -711,7 +872,9 @@ export default function UserDirectoryScreen({ navigation }: any) {
                     </View>
                   </View>
                 ))}
-                {READ_ONLY_JSON.map(b => renderJsonBlock(b.title, detail[b.key]))}
+                {editing
+                  ? <PersonalEditor pd={pd} setPd={setPd} />
+                  : READ_ONLY_JSON.map(b => renderJsonBlock(b.title, detail[b.key]))}
                 {pwInfo && openId && (
                   <View className="mb-4">
                     <Text className="text-[11px] font-black text-[#5B4FD1] uppercase tracking-wider mb-1">Login password</Text>
@@ -738,7 +901,7 @@ export default function UserDirectoryScreen({ navigation }: any) {
                   </View>
                 )}
                 <Text className="text-[10px] font-semibold text-[#7A76A6] text-center">
-                  Address, bank, role and password are view-only here. Work settings (shift, leave quota) are on the Add / Edit User page.
+                  Address and bank details are edited with "Edit details" (admin only). Role and password are view-only here. Work settings (shift, leave quota) are on the Add / Edit User page.
                 </Text>
               </ScrollView>
 
@@ -801,8 +964,10 @@ export default function UserDirectoryScreen({ navigation }: any) {
               ))}
             </View>
 
+            <PersonalEditor pd={addPd} setPd={setAddPd} />
+
             <Text className="text-[10px] font-semibold text-[#7A76A6] text-center">
-              Work settings are added on the Add / Edit User page. Address, bank details and the login password are not set here.
+              Work settings are added on the Add / Edit User page. The login password is not set here.
             </Text>
           </ScrollView>
           <View className="absolute bottom-0 left-0 right-0 bg-white border-t border-[#E7E4F5] p-4">

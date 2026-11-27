@@ -214,7 +214,7 @@ const onPullRefresh = async () => {
   }, [currentDate]);
 
   // Safe selected record calculation
-  const { selectedStatus, leaveBadgeText } = useMemo(() => {
+  const { selectedStatus, leaveBadgeText, selectedNote } = useMemo(() => {
     const y = currentDate.getFullYear();
     const m = String(currentDate.getMonth() + 1).padStart(2, "0");
     const d = String(selectedDayNumber ?? 1).padStart(2, "0");
@@ -225,7 +225,8 @@ const onPullRefresh = async () => {
     const nature = typeof rec === "object" ? rec?.nature : null;
     const badgeText = nature ? `APPROVED LEAVE • ${String(nature).toUpperCase()}` : "APPROVED LEAVE";
 
-    return { selectedStatus: status, leaveBadgeText: badgeText };
+    const note = typeof rec === "object" && rec?.note ? String(rec.note) : "";
+    return { selectedStatus: status, leaveBadgeText: badgeText, selectedNote: note };
   }, [currentDate, selectedDayNumber, monthCalendarData]);
 
 const handleLogoutPress = async () => {
@@ -719,6 +720,10 @@ const handleLogoutPress = async () => {
                   const isAbsent = cellStatus === "ABSENT";
                   const isLeave = cellStatus === "LEAVE" || cellStatus === "ON_LEAVE";
                   const isHalfDay = cellStatus === "HALF_DAY";
+                  // display-only statuses from the server: weekly off / holiday / before joining
+                  const isOff = cellStatus === "OFF";
+                  const isHoliday = cellStatus === "HOLIDAY";
+                  const isNotJoined = cellStatus === "NOT_JOINED";
 
                   return (
                     <TouchableOpacity
@@ -741,6 +746,8 @@ const handleLogoutPress = async () => {
                             ? "bg-[#FDE9E8] border border-[#E4453C]/40"
                             : isLeave
                             ? "bg-[#FEF2D9] border border-[#D08A0C]/40"
+                            : isHoliday
+                            ? "bg-[#F3E8FF] border border-[#9333EA]/30"
                             : isRealToday
                             ? "bg-[#EEECFA] border border-[#5B4FD1]/40"
                             : "bg-transparent"
@@ -754,9 +761,11 @@ const handleLogoutPress = async () => {
                               ? "text-[#E4453C]"
                               : isLeave
                               ? "text-[#D08A0C]"
-                              : !cell.isCurrentMonth
+                              : isHoliday
+                              ? "text-[#9333EA]"
+                              : !cell.isCurrentMonth || isNotJoined
                               ? "text-slate-300"
-                              : isSunday
+                              : isSunday || isOff
                               ? "text-rose-500"
                               : "text-[#1F1B3D]"
                           }`}
@@ -770,6 +779,8 @@ const handleLogoutPress = async () => {
                             {isAbsent ? <View className="w-1.5 h-1.5 rounded-full bg-[#E4453C]" /> : null}
                             {isLeave ? <View className="w-1.5 h-1.5 rounded-full bg-[#D08A0C]" /> : null}
                             {isHalfDay ? <View className="w-1.5 h-1.5 rounded-full bg-amber-500" /> : null}
+                            {isOff ? <View className="w-1.5 h-1.5 rounded-full bg-[#FB7185]" /> : null}
+                            {isHoliday ? <View className="w-1.5 h-1.5 rounded-full bg-[#9333EA]" /> : null}
                           </View>
                         ) : null}
                       </View>
@@ -780,23 +791,20 @@ const handleLogoutPress = async () => {
             )}
 
             {/* Attendance Legend */}
-            <View className="flex-row items-center justify-around px-4 py-3 border-t border-slate-100 bg-slate-50/40">
-              <View className="flex-row items-center gap-2">
-                <View className="w-2.5 h-2.5 rounded-full bg-[#1FAE5C]" />
-                <Text className="text-[11px] font-bold text-[#7A76A6]">Present</Text>
-              </View>
-              <View className="flex-row items-center gap-2">
-                <View className="w-2.5 h-2.5 rounded-full bg-[#E4453C]" />
-                <Text className="text-[11px] font-bold text-[#E4453C]">Absent</Text>
-              </View>
-              <View className="flex-row items-center gap-2">
-                <View className="w-2.5 h-2.5 rounded-full bg-[#D08A0C]" />
-                <Text className="text-[11px] font-bold text-[#7A76A6]">Leave</Text>
-              </View>
-              <View className="flex-row items-center gap-2">
-                <View className="w-2.5 h-2.5 rounded-full bg-rose-400" />
-                <Text className="text-[11px] font-bold text-[#7A76A6]">Weekend</Text>
-              </View>
+            <View className="flex-row flex-wrap items-center justify-around px-4 py-3 border-t border-slate-100 bg-slate-50/40" style={{ rowGap: 6 }}>
+              {([
+                ["#1FAE5C", "Present"],
+                ["#F59E0B", "Half day"],
+                ["#E4453C", "Absent"],
+                ["#D08A0C", "Leave"],
+                ["#FB7185", "Week off"],
+                ["#9333EA", "Holiday"],
+              ] as const).map(([color, label]) => (
+                <View key={label} className="flex-row items-center gap-1.5 px-1">
+                  <View className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+                  <Text className="text-[11px] font-bold text-[#7A76A6]">{label}</Text>
+                </View>
+              ))}
             </View>
 
             {/* Selected Day Status Footer */}
@@ -832,6 +840,12 @@ const handleLogoutPress = async () => {
                 <View className="bg-amber-50 border border-amber-300 px-3 py-1 rounded-full">
                   <Text className="text-[10px] font-black text-amber-700 uppercase">
                     Half Day
+                  </Text>
+                </View>
+              ) : selectedStatus === "OFF" || selectedStatus === "HOLIDAY" || selectedStatus === "NOT_JOINED" ? (
+                <View className={`px-3 py-1 rounded-full border ${selectedStatus === "HOLIDAY" ? "bg-[#F3E8FF] border-[#9333EA]/30" : "bg-rose-50 border-rose-200"}`}>
+                  <Text className={`text-[10px] font-black uppercase ${selectedStatus === "HOLIDAY" ? "text-[#9333EA]" : selectedStatus === "NOT_JOINED" ? "text-slate-500" : "text-rose-500"}`} numberOfLines={1}>
+                    {selectedStatus === "HOLIDAY" ? `Holiday${selectedNote ? ` • ${selectedNote}` : ""}` : selectedStatus === "NOT_JOINED" ? "Not joined yet" : "Week off"}
                   </Text>
                 </View>
               ) : (

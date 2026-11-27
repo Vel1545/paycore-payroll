@@ -61,6 +61,7 @@ const ALL_COLUMNS = [
   { id: "otMinutes", label: "OT Minutes" },
   { id: "penaltyHours", label: "Penalty Hours" },
   { id: "penaltyInr", label: "Penalty Amount" },
+  { id: "penaltyDetails", label: "Penalty Details (late / early exit / break)" },
 ];
 
 // ---------------------------------------------------------------------------
